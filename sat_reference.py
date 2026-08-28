@@ -25,6 +25,8 @@ from .reference import STATE_WIDTH, _integrate_quaternion
 
 CONTRACT_ID = "box3d.obb-pair-collision/v1"
 PAIR_INDICES: Tuple[Tuple[int, int], ...] = ((0, 1), (2, 3), (4, 5))
+DEFAULT_SEED = 23
+ANGULAR_RESPONSE_THRESHOLD_RAD_S = 0.05
 MAX_POSITION_REPAIR_M = 0.2
 
 Vec3 = List[float]
@@ -468,7 +470,7 @@ def _box_inverse_inertia(mass: float, half_extents: Sequence[float]) -> Vec3:
 def make_sat_box_state(
     worlds: int,
     *,
-    seed: int = 23,
+    seed: int = DEFAULT_SEED,
 ) -> Tuple[
     List[List[List[float]]],
     List[List[float]],
@@ -700,6 +702,8 @@ def assert_valid_sat_boxes(
 
 __all__ = [
     "CONTRACT_ID",
+    "DEFAULT_SEED",
+    "ANGULAR_RESPONSE_THRESHOLD_RAD_S",
     "MAX_POSITION_REPAIR_M",
     "PAIR_INDICES",
     "ImpulseResult",

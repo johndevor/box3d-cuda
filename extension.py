@@ -19,13 +19,14 @@ def load_extension():
         raise RuntimeError("Box3D CUDA requires a visible CUDA device")
     root = Path(__file__).resolve().parent
     return load(
-        name="factory_box3d_cuda_v3",
+        name="factory_box3d_cuda_v7",
         sources=[
             str(root / "csrc" / "bindings.cpp"),
             str(root / "csrc" / "step.cu"),
             str(root / "csrc" / "gripper.cu"),
             str(root / "csrc" / "obb.cu"),
             str(root / "csrc" / "sat.cu"),
+            str(root / "csrc" / "manifold.cu"),
         ],
         extra_cflags=["-O3"],
         extra_cuda_cflags=["-O3", "--use_fast_math", "-lineinfo"],
@@ -187,6 +188,74 @@ def sat_step(state, inverse_mass, half_extents, inverse_inertia, pair_indices, c
         half_extents,
         inverse_inertia,
         pair_indices,
+        float(config.dt),
+        int(config.substeps),
+        float(config.gravity_y),
+        float(config.restitution),
+        float(config.friction),
+        float(config.position_slop),
+        float(config.position_correction),
+        float(config.angular_damping),
+        int(config.solver_iterations),
+        float(config.sat_epsilon),
+    )
+
+
+def manifold_step(
+    state,
+    inverse_mass,
+    half_extents,
+    inverse_inertia,
+    pair_indices,
+    cache_feature_ids,
+    cache_impulses,
+    config,
+):
+    """Advance fixed pairs with persistent clipped manifolds and warm starting."""
+
+    import torch
+
+    tensors = (
+        state, inverse_mass, half_extents, inverse_inertia, pair_indices,
+        cache_feature_ids, cache_impulses,
+    )
+    if not all(isinstance(item, torch.Tensor) for item in tensors):
+        raise TypeError("manifold inputs must be torch tensors")
+    if not all(item.is_cuda for item in tensors):
+        raise ValueError("manifold inputs must all be CUDA tensors")
+    if len({item.device for item in tensors}) != 1:
+        raise ValueError("manifold inputs must be on the same CUDA device")
+    float_tensors = (state, inverse_mass, half_extents, inverse_inertia, cache_impulses)
+    if any(item.dtype != torch.float32 for item in float_tensors):
+        raise ValueError("manifold state, material, and impulse tensors must be float32")
+    if pair_indices.dtype != torch.int64 or cache_feature_ids.dtype != torch.int64:
+        raise ValueError("manifold pair indices and feature IDs must be int64")
+    if state.ndim != 3 or state.shape[2] != 13:
+        raise ValueError("manifold state must have shape [worlds,bodies,13]")
+    worlds, bodies = state.shape[:2]
+    if worlds <= 0 or not 2 <= bodies <= 32:
+        raise ValueError("manifold requires positive worlds and 2..32 bodies per world")
+    if tuple(inverse_mass.shape) != (worlds, bodies):
+        raise ValueError("manifold inverse_mass shape mismatch")
+    if tuple(half_extents.shape) != (worlds, bodies, 3) or inverse_inertia.shape != half_extents.shape:
+        raise ValueError("manifold half_extents and inverse_inertia must have shape [worlds,bodies,3]")
+    if pair_indices.ndim != 2 or pair_indices.shape[1] != 2 or not 1 <= pair_indices.shape[0] <= 16:
+        raise ValueError("manifold pair_indices must have shape [1..16,2]")
+    pairs = pair_indices.shape[0]
+    if tuple(cache_feature_ids.shape) != (worlds, pairs, 4):
+        raise ValueError("cache_feature_ids must have shape [worlds,pairs,4]")
+    if tuple(cache_impulses.shape) != (worlds, pairs, 4, 3):
+        raise ValueError("cache_impulses must have shape [worlds,pairs,4,3]")
+    _validate_sat_config(config)
+    _validate_sat_pair_indices(pair_indices, bodies)
+    return load_extension().manifold_step(
+        state,
+        inverse_mass,
+        half_extents,
+        inverse_inertia,
+        pair_indices,
+        cache_feature_ids,
+        cache_impulses,
         float(config.dt),
         int(config.substeps),
         float(config.gravity_y),
