@@ -15,11 +15,12 @@ def load_extension():
         raise RuntimeError("Box3D CUDA requires a visible CUDA device")
     root = Path(__file__).resolve().parent
     return load(
-        name="factory_box3d_cuda_v1",
+        name="factory_box3d_cuda_v2",
         sources=[
             str(root / "csrc" / "bindings.cpp"),
             str(root / "csrc" / "step.cu"),
             str(root / "csrc" / "gripper.cu"),
+            str(root / "csrc" / "obb.cu"),
         ],
         extra_cflags=["-O3"],
         extra_cuda_cflags=["-O3", "--use_fast_math", "-lineinfo"],
@@ -54,4 +55,21 @@ def gripper_step(cube_state, finger_positions, finger_velocity, config):
         float(config.position_correction),
         *map(float, config.cube_half_extent),
         *map(float, config.finger_half_extent),
+    )
+
+
+def obb_step(state, inverse_mass, half_extents, inverse_inertia, config):
+    return load_extension().obb_step(
+        state,
+        inverse_mass,
+        half_extents,
+        inverse_inertia,
+        float(config.dt),
+        int(config.substeps),
+        float(config.gravity_y),
+        float(config.restitution),
+        float(config.friction),
+        float(config.position_slop),
+        float(config.angular_damping),
+        int(config.solver_iterations),
     )

@@ -13,6 +13,11 @@ Stage 1 adds a fixed-topology parallel-jaw workload: two driven box fingers
 close on a dynamic box, lift it through Coulomb friction, open, and prove that
 the released box falls. There is no attachment flag, weld, or cube pose-copy.
 
+Stage 2 adds truly oriented boxes against a plane: rotated vertices,
+world-space inertia, contact-point velocity, angular impulses, a compact
+multi-point manifold, two-axis Coulomb friction, quaternion integration, and
+angular damping. The CPU oracle and CUDA kernel execute the same contract.
+
 ## Measured stages
 
 - State: position, quaternion, linear velocity, angular velocity
@@ -31,14 +36,24 @@ Stage 1 additionally measures:
 - Negative control: identical geometry and motion at zero friction touches the
   cube but does not lift it
 
-Not implemented: oriented/general convex collision, angular contact response,
-broad phase, full Box3D Soft Step contact constraints, articulated joints, CCD,
-sleep/islands, ray queries or rendering.
+Stage 2 additionally measures:
+
+- Shapes: eight independently tumbling oriented boxes per world
+- Gates: every box contacts, every box gains angular velocity, finite state,
+  normalized quaternions, final rotated-corner clearance, and CPU/CUDA parity
+- RTX 5090 result: 25.65M world-steps/s (205.16M body-steps/s) versus
+  ManiSkill/PhysX's 0.428M world-steps/s on the same 4,096-world, 500-step
+  contract (59.92×)
+- CPU/CUDA maximum absolute state error: 4.92e-7
+
+Not implemented: box/box SAT or general convex collision, broad phase, full
+Box3D Soft Step contact constraints, articulated joints, CCD, sleep/islands,
+ray queries or rendering.
 
 ## Port order
 
-1. Fixed-topology joint rows for robot links and grippers.
-2. Oriented box/capsule support and a feature-pair narrow phase.
+1. Oriented box/box SAT and persistent feature-pair manifolds.
+2. Fixed-topology joint rows for robot links and grippers.
 3. Batched ray queries for foveated depth observations.
 4. Constraint graph coloring and parallel contact/joint rows.
 5. Broad phase, CCD and sleep only where profiling shows they are required.
