@@ -8,6 +8,8 @@ from pathlib import Path
 
 
 _SAT_PAIR_VALIDATION_CACHE: dict[int, tuple] = {}
+_RAY_VALIDATION_CACHE: dict[int, tuple] = {}
+_RAY_GEOMETRY_VALIDATION_CACHE: dict[int, tuple] = {}
 
 
 @lru_cache(maxsize=1)
@@ -19,7 +21,7 @@ def load_extension():
         raise RuntimeError("Box3D CUDA requires a visible CUDA device")
     root = Path(__file__).resolve().parent
     return load(
-        name="factory_box3d_cuda_v9",
+        name="factory_box3d_cuda_v10",
         sources=[
             str(root / "csrc" / "bindings.cpp"),
             str(root / "csrc" / "step.cu"),
@@ -28,10 +30,113 @@ def load_extension():
             str(root / "csrc" / "sat.cu"),
             str(root / "csrc" / "manifold.cu"),
             str(root / "csrc" / "joint.cu"),
+            str(root / "csrc" / "ray.cu"),
         ],
         extra_cflags=["-O3"],
         extra_cuda_cflags=["-O3", "--use_fast_math", "-lineinfo"],
         verbose=False,
+    )
+
+
+def _validate_ray_values(ray_directions, maximum_distance) -> None:
+    """Validate static ray packets once per tensor mutation version.
+
+    The cached GPU reductions keep validation out of repeated timed launches
+    while still failing closed after an in-place edit.
+    """
+
+    import torch
+
+    key = id(ray_directions)
+    versions = (
+        int(getattr(ray_directions, "_version", -1)),
+        int(getattr(maximum_distance, "_version", -1)),
+        id(maximum_distance),
+    )
+    cached = _RAY_VALIDATION_CACHE.get(key)
+    if cached is not None and cached[0] is ray_directions and cached[1] is maximum_distance and cached[2:] == versions[:2]:
+        return
+    lengths = torch.linalg.vector_norm(ray_directions, dim=-1)
+    if not bool(torch.isfinite(ray_directions).all().item()):
+        raise ValueError("ray directions must be finite")
+    if not bool(torch.isfinite(maximum_distance).all().item()):
+        raise ValueError("maximum_distance must be finite")
+    if not bool(torch.all(torch.abs(lengths - 1.0) <= 1.0e-4).item()):
+        raise ValueError("ray directions must be unit length within 1e-4")
+    if not bool(torch.all(maximum_distance > 0.0).item()):
+        raise ValueError("maximum_distance must be positive")
+    if len(_RAY_VALIDATION_CACHE) >= 128:
+        _RAY_VALIDATION_CACHE.clear()
+    _RAY_VALIDATION_CACHE[key] = (
+        ray_directions, maximum_distance, versions[0], versions[1]
+    )
+
+
+def _validate_ray_geometry(state, half_extents) -> None:
+    """Fail closed on pose/extents, amortized for immutable geometry packets."""
+
+    import torch
+
+    key = id(state)
+    versions = (
+        int(getattr(state, "_version", -1)),
+        int(getattr(half_extents, "_version", -1)),
+    )
+    cached = _RAY_GEOMETRY_VALIDATION_CACHE.get(key)
+    if cached is not None and cached[0] is state and cached[1] is half_extents and cached[2:] == versions:
+        return
+    if not bool(torch.isfinite(state[..., :7]).all().item()):
+        raise ValueError("ray body poses must be finite")
+    quaternion_length = torch.linalg.vector_norm(state[..., 3:7], dim=-1)
+    if not bool(torch.all(torch.abs(quaternion_length - 1.0) <= 1.0e-4).item()):
+        raise ValueError("ray body quaternions must be unit length within 1e-4")
+    if not bool(torch.isfinite(half_extents).all().item()) or not bool(torch.all(half_extents > 0.0).item()):
+        raise ValueError("half_extents must be finite and positive")
+    if len(_RAY_GEOMETRY_VALIDATION_CACHE) >= 128:
+        _RAY_GEOMETRY_VALIDATION_CACHE.clear()
+    _RAY_GEOMETRY_VALIDATION_CACHE[key] = (state, half_extents, *versions)
+
+
+def ray_cast(state, half_extents, body_enabled, ray_origins, ray_directions, maximum_distance):
+    """Return nearest OBB hit distance, body index, and world-space normal."""
+
+    import torch
+
+    tensors = (state, half_extents, body_enabled, ray_origins, ray_directions, maximum_distance)
+    if not all(isinstance(item, torch.Tensor) for item in tensors):
+        raise TypeError("ray inputs must all be torch tensors")
+    if not all(item.is_cuda for item in tensors):
+        raise ValueError("ray inputs must all be CUDA tensors")
+    if len({item.device for item in tensors}) != 1:
+        raise ValueError("ray inputs must share one CUDA device")
+    if any(item.dtype != torch.float32 for item in (state, half_extents, ray_origins, ray_directions, maximum_distance)):
+        raise ValueError("ray state, geometry, and query tensors must be float32")
+    if body_enabled.dtype != torch.uint8:
+        raise ValueError("body_enabled must be uint8")
+    if state.ndim != 3 or state.shape[2] != 13:
+        raise ValueError("ray state must have shape [worlds,bodies,13]")
+    worlds, bodies = state.shape[:2]
+    if worlds <= 0 or not 1 <= bodies <= 32:
+        raise ValueError("ray worlds require 1..32 bodies")
+    if tuple(half_extents.shape) != (worlds, bodies, 3):
+        raise ValueError("half_extents must have shape [worlds,bodies,3]")
+    if tuple(body_enabled.shape) != (worlds, bodies):
+        raise ValueError("body_enabled must have shape [worlds,bodies]")
+    if ray_origins.ndim != 3 or ray_origins.shape[0] != worlds or ray_origins.shape[2] != 3:
+        raise ValueError("ray_origins must have shape [worlds,rays,3]")
+    rays = ray_origins.shape[1]
+    if not 1 <= rays <= 262144 or worlds * rays > 1048576:
+        raise ValueError("ray batch must contain 1..1,048,576 total rays and at most 262,144 rays/world")
+    if tuple(ray_directions.shape) != (worlds, rays, 3):
+        raise ValueError("ray_directions must have shape [worlds,rays,3]")
+    if tuple(maximum_distance.shape) != (worlds, rays):
+        raise ValueError("maximum_distance must have shape [worlds,rays]")
+    _validate_ray_geometry(state, half_extents)
+    if not bool(torch.isfinite(ray_origins).all().item()):
+        raise ValueError("ray origins must be finite")
+    _validate_ray_values(ray_directions, maximum_distance)
+    return load_extension().ray_cast(
+        state, half_extents, body_enabled, ray_origins, ray_directions, maximum_distance
     )
 
 

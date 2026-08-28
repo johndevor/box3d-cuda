@@ -36,6 +36,12 @@ matched throughput workload is a fixed base plus six revolute links with no
 collision shapes; generic fixed/prismatic behavior is covered by separate
 CPU/CUDA micro-gates.
 
+Stage 6 adds a native batched nearest-hit ray query for up to 32 oriented boxes
+per fixed-small world. It returns range, stable body ID, and an outward unit
+normal with deterministic miss and tie semantics. A broader scalar CPU oracle
+also covers planes, hit positions, calibrated pinhole cameras, multi-camera
+rigs, range images, and optical-axis depth.
+
 ## Measured stages
 
 - State: position, quaternion, linear velocity, angular velocity
@@ -106,17 +112,33 @@ Stage 5 additionally measures:
 - Warm-start stress drift: 14.57 mm versus 22.78 mm cold, with bounded energy
   and finite explicit cache rows
 
+Stage 6 additionally measures:
+
+- Scene: eight exact finite OBBs, including a ground slab and rotated boxes
+- Sensor layout: two ordered 8×16 calibrated ray rigs, 256 rays per world
+- Gates: 100% CPU/CUDA hit-ID and miss agreement, 1.0 minimum normal cosine,
+  all eight IDs observed, deterministic replay, and bit-exact world isolation
+- RTX 5090 result: 21.192B native first-hit OBB ray queries/s across 1,024
+  worlds and 240 query steps; maximum CPU/CUDA range error 1.91e-6 m
+- No PhysX speedup is claimed: PhysX 5's documented batch-query extension wraps
+  scene raycasts and ManiSkill exposes no comparable native CUDA tensor batch
+
+The Stage 6 browser view is a bounded CPU-oracle debug artifact linked by
+SHA-256 to the measured CUDA result. It visualizes both camera bodies, sampled
+rays, hit points, normals, and range previews; it is not live CUDA, RGB, or
+training evidence.
+
 Not implemented: a broad phase, general convex collision, the complete Box3D
-Soft Step constraint set, joint/contact coupling, CCD, sleep/islands, ray
-queries, or GPU rendering. Stage 5 is a fixed-topology joint-only solver; the
-browser shows a deterministic CPU-oracle replay rather than live CUDA.
+Soft Step constraint set, joint/contact coupling, CCD, sleep/islands, meshes,
+or GPU rendering. Stage 6 rays currently test OBBs with a linear per-world body
+scan; there is no acceleration structure or pixel renderer.
 
 ## Port order
 
-1. Batched ray queries for foveated depth observations.
-2. Couple persistent contacts and joint rows in one world step.
-3. Constraint graph coloring and parallel contact/joint rows.
-4. Broad phase, CCD and sleep only where profiling shows they are required.
+1. Couple persistent contacts and joint rows in one world step.
+2. Constraint graph coloring and parallel contact/joint rows.
+3. Add a broad phase for larger per-world scenes, then profile CCD and sleep.
+4. Feed calibrated multi-rig depth packets into the staged RL observation API.
 5. Touch, grasp, lift and move parity against ManiSkill before RL training.
 
 The benchmark intentionally refuses a speedup claim when two result files do

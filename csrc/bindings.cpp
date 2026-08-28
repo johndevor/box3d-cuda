@@ -110,6 +110,14 @@ std::vector<torch::Tensor> box3d_joint_step_cuda(
     double maximum_linear_repair_m,
     double maximum_angular_repair_rad);
 
+std::vector<torch::Tensor> box3d_ray_cast_cuda(
+    torch::Tensor state,
+    torch::Tensor half_extents,
+    torch::Tensor body_enabled,
+    torch::Tensor ray_origins,
+    torch::Tensor ray_directions,
+    torch::Tensor maximum_distance);
+
 torch::Tensor box3d_step(
     torch::Tensor state,
     torch::Tensor inverse_mass,
@@ -467,6 +475,53 @@ std::vector<torch::Tensor> box3d_joint_step(
       angular_slop, maximum_linear_repair_m, maximum_angular_repair_rad);
 }
 
+std::vector<torch::Tensor> box3d_ray_cast(
+    torch::Tensor state,
+    torch::Tensor half_extents,
+    torch::Tensor body_enabled,
+    torch::Tensor ray_origins,
+    torch::Tensor ray_directions,
+    torch::Tensor maximum_distance) {
+  TORCH_CHECK(state.is_cuda() && half_extents.is_cuda() && body_enabled.is_cuda() &&
+              ray_origins.is_cuda() && ray_directions.is_cuda() && maximum_distance.is_cuda(),
+              "all ray tensors must be CUDA");
+  const auto device = state.device();
+  TORCH_CHECK(half_extents.device() == device && body_enabled.device() == device &&
+              ray_origins.device() == device && ray_directions.device() == device &&
+              maximum_distance.device() == device,
+              "all ray tensors must share one CUDA device");
+  TORCH_CHECK(state.scalar_type() == torch::kFloat32 &&
+              half_extents.scalar_type() == torch::kFloat32 &&
+              ray_origins.scalar_type() == torch::kFloat32 &&
+              ray_directions.scalar_type() == torch::kFloat32 &&
+              maximum_distance.scalar_type() == torch::kFloat32,
+              "ray state, geometry, and query tensors must be float32");
+  TORCH_CHECK(body_enabled.scalar_type() == torch::kUInt8,
+              "body_enabled must be uint8");
+  TORCH_CHECK(state.dim() == 3 && state.size(0) > 0 && state.size(1) >= 1 &&
+              state.size(1) <= 32 && state.size(2) == 13,
+              "state must have shape [worlds,1..32,13]");
+  const int64_t worlds = state.size(0), bodies = state.size(1);
+  TORCH_CHECK(half_extents.sizes() == torch::IntArrayRef({worlds, bodies, 3}),
+              "half_extents must have shape [worlds,bodies,3]");
+  TORCH_CHECK(body_enabled.sizes() == torch::IntArrayRef({worlds, bodies}),
+              "body_enabled must have shape [worlds,bodies]");
+  TORCH_CHECK(ray_origins.dim() == 3 && ray_origins.size(0) == worlds &&
+              ray_origins.size(1) > 0 && ray_origins.size(2) == 3,
+              "ray_origins must have shape [worlds,rays,3]");
+  const int64_t rays = ray_origins.size(1);
+  TORCH_CHECK(ray_directions.sizes() == torch::IntArrayRef({worlds, rays, 3}),
+              "ray_directions must have shape [worlds,rays,3]");
+  TORCH_CHECK(maximum_distance.sizes() == torch::IntArrayRef({worlds, rays}),
+              "maximum_distance must have shape [worlds,rays]");
+  TORCH_CHECK(rays <= 262144 && worlds <= 1048576 / rays,
+              "ray batch is too large");
+  return box3d_ray_cast_cuda(
+      state.contiguous(), half_extents.contiguous(), body_enabled.contiguous(),
+      ray_origins.contiguous(), ray_directions.contiguous(),
+      maximum_distance.contiguous());
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
   module.def("step", &box3d_step, "Box3D-derived fixed-world CUDA step");
   module.def("gripper_step", &box3d_gripper_step, "Physical parallel-jaw box grasp CUDA step");
@@ -474,4 +529,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
   module.def("sat_step", &box3d_sat_step, "Oriented box pair SAT contact CUDA step");
   module.def("manifold_step", &box3d_manifold_step, "Persistent clipped OBB manifold CUDA step");
   module.def("joint_step", &box3d_joint_step, "Fixed-topology articulated joint CUDA step");
+  module.def("ray_cast", &box3d_ray_cast, "Batched nearest-hit OBB ray query");
 }
