@@ -19,7 +19,7 @@ def load_extension():
         raise RuntimeError("Box3D CUDA requires a visible CUDA device")
     root = Path(__file__).resolve().parent
     return load(
-        name="factory_box3d_cuda_v7",
+        name="factory_box3d_cuda_v9",
         sources=[
             str(root / "csrc" / "bindings.cpp"),
             str(root / "csrc" / "step.cu"),
@@ -27,6 +27,7 @@ def load_extension():
             str(root / "csrc" / "obb.cu"),
             str(root / "csrc" / "sat.cu"),
             str(root / "csrc" / "manifold.cu"),
+            str(root / "csrc" / "joint.cu"),
         ],
         extra_cflags=["-O3"],
         extra_cuda_cflags=["-O3", "--use_fast_math", "-lineinfo"],
@@ -152,6 +153,31 @@ def _validate_sat_pair_indices(pair_indices, bodies: int) -> None:
     _SAT_PAIR_VALIDATION_CACHE[identity] = (pair_indices, version, bodies)
 
 
+def _validate_joint_config(config) -> None:
+    required = (
+        "dt", "substeps", "gravity_y", "solver_iterations",
+        "position_correction", "position_slop", "angular_slop",
+        "maximum_linear_repair_m", "maximum_angular_repair_rad",
+        "warm_start_factor",
+    )
+    missing = [name for name in required if not hasattr(config, name)]
+    if missing:
+        raise TypeError(f"joint config is missing fields: {', '.join(missing)}")
+    numeric = [name for name in required if name not in ("substeps", "solver_iterations")]
+    if any(isinstance(getattr(config, name), bool) or not isinstance(getattr(config, name), (int, float)) or not math.isfinite(float(getattr(config, name))) for name in numeric):
+        raise ValueError("joint config numeric fields must be finite")
+    if not isinstance(config.substeps, int) or not isinstance(config.solver_iterations, int):
+        raise ValueError("joint substeps and solver_iterations must be integers")
+    if not 0.0 < float(config.dt) <= 1.0 or not 1 <= config.substeps <= 64 or not 1 <= config.solver_iterations <= 64:
+        raise ValueError("joint dt/substeps/solver_iterations are out of bounds")
+    if not 0.0 <= float(config.position_correction) <= 1.0:
+        raise ValueError("joint position_correction must be in [0,1]")
+    if any(float(getattr(config, name)) < 0.0 for name in ("position_slop", "angular_slop", "maximum_linear_repair_m", "maximum_angular_repair_rad")):
+        raise ValueError("joint slop and repair bounds must be non-negative")
+    if not 0.0 <= float(config.warm_start_factor) <= 1.0:
+        raise ValueError("joint warm_start_factor must be in [0,1]")
+
+
 def sat_step(state, inverse_mass, half_extents, inverse_inertia, pair_indices, config):
     """Advance fixed-small worlds with 15-axis OBB pair contact."""
 
@@ -266,4 +292,107 @@ def manifold_step(
         float(config.angular_damping),
         int(config.solver_iterations),
         float(config.sat_epsilon),
+    )
+
+
+def joint_step(
+    state,
+    inverse_mass,
+    inverse_inertia,
+    joint_indices,
+    joint_types,
+    parent_anchor_local,
+    child_anchor_local,
+    axis_parent,
+    reference_quaternion_parent_to_child,
+    lower_limit,
+    upper_limit,
+    damping,
+    motor_enabled,
+    motor_target_velocity,
+    maximum_effort,
+    config,
+    *,
+    motor_target_position=None,
+    stiffness=None,
+    warm_start_cache=None,
+):
+    """Advance fixed-small articulated worlds with explicit joint tensors."""
+
+    import torch
+
+    if motor_target_position is None:
+        motor_target_position = torch.zeros_like(motor_target_velocity)
+    if stiffness is None:
+        stiffness = torch.zeros_like(lower_limit)
+    if warm_start_cache is None:
+        warm_start_cache = torch.zeros(
+            (state.shape[0], joint_indices.shape[0], 8),
+            dtype=torch.float32,
+            device=state.device,
+        )
+    tensors = (
+        state, inverse_mass, inverse_inertia, joint_indices, joint_types,
+        parent_anchor_local, child_anchor_local, axis_parent,
+        reference_quaternion_parent_to_child, lower_limit, upper_limit,
+        damping, motor_enabled, motor_target_velocity, motor_target_position,
+        stiffness, maximum_effort, warm_start_cache,
+    )
+    if not all(isinstance(item, torch.Tensor) for item in tensors):
+        raise TypeError("joint inputs must all be torch tensors")
+    if not all(item.is_cuda for item in tensors):
+        raise ValueError("joint inputs must all be CUDA tensors")
+    if len({item.device for item in tensors}) != 1:
+        raise ValueError("joint inputs must be on the same CUDA device")
+    float_tensors = (
+        state, inverse_mass, inverse_inertia, parent_anchor_local,
+        child_anchor_local, axis_parent, reference_quaternion_parent_to_child,
+        lower_limit, upper_limit, damping, motor_target_velocity,
+        motor_target_position, stiffness, maximum_effort, warm_start_cache,
+    )
+    if any(item.dtype != torch.float32 for item in float_tensors):
+        raise ValueError("joint state, topology, and control tensors must be float32")
+    if joint_indices.dtype != torch.int64 or joint_types.dtype != torch.int64:
+        raise ValueError("joint indices and types must be int64")
+    if motor_enabled.dtype != torch.uint8:
+        raise ValueError("motor_enabled must be uint8")
+    if state.ndim != 3 or state.shape[2] != 13:
+        raise ValueError("joint state must have shape [worlds,bodies,13]")
+    worlds, bodies = state.shape[:2]
+    if worlds <= 0 or not 2 <= bodies <= 32:
+        raise ValueError("joint worlds require 2..32 bodies")
+    if tuple(inverse_mass.shape) != (worlds, bodies):
+        raise ValueError("joint inverse_mass shape mismatch")
+    if tuple(inverse_inertia.shape) != (worlds, bodies, 3):
+        raise ValueError("joint inverse_inertia must have shape [worlds,bodies,3]")
+    if joint_indices.ndim != 2 or joint_indices.shape[1] != 2 or not 1 <= joint_indices.shape[0] <= 16:
+        raise ValueError("joint_indices must have shape [1..16,2]")
+    joints = joint_indices.shape[0]
+    vector_rows = (parent_anchor_local, child_anchor_local, axis_parent)
+    if any(tuple(item.shape) != (joints, 3) for item in vector_rows):
+        raise ValueError("joint anchors and axes must have shape [joints,3]")
+    if tuple(reference_quaternion_parent_to_child.shape) != (joints, 4):
+        raise ValueError("joint reference quaternions must have shape [joints,4]")
+    if any(tuple(item.shape) != (joints,) for item in (joint_types, lower_limit, upper_limit, damping, motor_enabled)):
+        raise ValueError("joint scalar topology arrays must have shape [joints]")
+    if tuple(motor_target_velocity.shape) != (worlds, joints) or tuple(motor_target_position.shape) != (worlds, joints) or tuple(maximum_effort.shape) != (worlds, joints):
+        raise ValueError("joint controls must have shape [worlds,joints]")
+    if tuple(stiffness.shape) != (joints,):
+        raise ValueError("joint stiffness must have shape [joints]")
+    if tuple(warm_start_cache.shape) != (worlds, joints, 8):
+        raise ValueError("joint warm_start_cache must have shape [worlds,joints,8]")
+    _validate_joint_config(config)
+    _validate_sat_pair_indices(joint_indices, bodies)
+    return load_extension().joint_step(
+        state, inverse_mass, inverse_inertia, joint_indices, joint_types,
+        parent_anchor_local, child_anchor_local, axis_parent,
+        reference_quaternion_parent_to_child, lower_limit, upper_limit,
+        damping, motor_enabled, motor_target_velocity, motor_target_position,
+        stiffness, maximum_effort, warm_start_cache,
+        float(config.warm_start_factor),
+        float(config.dt), int(config.substeps), float(config.gravity_y),
+        int(config.solver_iterations), float(config.position_correction),
+        float(config.position_slop), float(config.angular_slop),
+        float(config.maximum_linear_repair_m),
+        float(config.maximum_angular_repair_rad),
     )

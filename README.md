@@ -29,6 +29,13 @@ four points per explicit pair, warm-started normal and two-axis friction
 impulses, and bounded split position repair. Its fixed scene is a four-box
 stack plus an independent friction slider over 720 control steps.
 
+Stage 5 adds maximal-coordinate fixed, revolute, and prismatic joint rows,
+bounded velocity and position motors, joint limits, split anchor/orientation
+repair, and an explicit eight-row warm-start cache per world and joint. The
+matched throughput workload is a fixed base plus six revolute links with no
+collision shapes; generic fixed/prismatic behavior is covered by separate
+CPU/CUDA micro-gates.
+
 ## Measured stages
 
 - State: position, quaternion, linear velocity, angular velocity
@@ -84,15 +91,30 @@ Stage 4 additionally measures:
   1.58e-7 m; maximum cached-impulse error: 7.64e-8 N·s
 - Zero failing CUDA worlds; minimum final contact counts per pair: 2/3/3/3/4
 
+Stage 5 additionally measures:
+
+- Topology: one fixed base, six revolute joints, seven rigid bodies, bounded PD
+  drives, explicit inertia/limits, and no collision shapes
+- Gates: CPU/CUDA state, diagnostic, and warm-cache parity; deterministic
+  state/cache replay; cross-world isolation; limits; quaternion normalization;
+  anchor drift; and warm-start utility under an adversarial one-iteration solve
+- RTX 5090 result: 6.091M world-steps/s (42.64M body-steps/s) versus
+  ManiSkill/PhysX's 0.185M world-steps/s on the same 4,096-world, 720-step
+  contract (32.85x)
+- CPU/CUDA state and cache errors: exactly zero; maximum diagnostic error:
+  5.96e-8
+- Warm-start stress drift: 14.57 mm versus 22.78 mm cold, with bounded energy
+  and finite explicit cache rows
+
 Not implemented: a broad phase, general convex collision, the complete Box3D
-Soft Step constraint set, articulated joints, CCD, sleep/islands, ray queries,
-or GPU rendering. Stage 4 is a fixed-topology explicit-pair stacking solver;
-the browser shows a deterministic CPU-oracle replay rather than live CUDA.
+Soft Step constraint set, joint/contact coupling, CCD, sleep/islands, ray
+queries, or GPU rendering. Stage 5 is a fixed-topology joint-only solver; the
+browser shows a deterministic CPU-oracle replay rather than live CUDA.
 
 ## Port order
 
-1. Fixed-topology joint rows for robot links and grippers.
-2. Batched ray queries for foveated depth observations.
+1. Batched ray queries for foveated depth observations.
+2. Couple persistent contacts and joint rows in one world step.
 3. Constraint graph coloring and parallel contact/joint rows.
 4. Broad phase, CCD and sleep only where profiling shows they are required.
 5. Touch, grasp, lift and move parity against ManiSkill before RL training.
