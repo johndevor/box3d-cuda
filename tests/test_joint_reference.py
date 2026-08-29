@@ -12,6 +12,7 @@ from box3d_cuda.joint_reference import (
     REVOLUTE,
     JointConfig,
     JointTopology,
+    _tangent_basis,
     assert_valid_joint_result,
     collision_filter_pairs,
     step_joint_reference,
@@ -60,6 +61,11 @@ def static_root_layout(child_state):
 
 
 class JointContractTests(unittest.TestCase):
+    def test_tangent_cache_basis_is_stable_near_cardinal_axis(self):
+        first, _ = _tangent_basis((1.0e-8, -1.0, 2.0e-8))
+        perturbed, _ = _tangent_basis((2.0e-8, -1.0, 1.0e-8))
+        self.assertGreater(sum(a * b for a, b in zip(first, perturbed)), 0.999999)
+
     def test_contract_types_and_collision_filter_are_stable(self):
         topology = JointTopology(
             ((0, 1), (1, 2), (2, 3)),

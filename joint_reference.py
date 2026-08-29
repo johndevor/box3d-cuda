@@ -288,8 +288,11 @@ def _angular_effective_mass(parent: RigidBox, child: RigidBox, direction: Sequen
 
 
 def _tangent_basis(axis: Sequence[float]) -> Tuple[Vec3, Vec3]:
-    cardinal = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
-    seed = min(cardinal, key=lambda candidate: (abs(_dot(axis, candidate)), cardinal.index(candidate)))
+    # A two-way branch with a wide margin keeps the cache basis stable when a
+    # nearly-cardinal axis differs by FP32/FP64 roundoff. Selecting the exact
+    # smallest component can swap x/z for perturbations near zero, changing
+    # cache coordinates even though the physical impulse is unchanged.
+    seed = (1.0, 0.0, 0.0) if abs(axis[0]) < 0.9 else (0.0, 1.0, 0.0)
     first = _normalize(_cross(seed, axis))
     return first, _normalize(_cross(axis, first))
 
