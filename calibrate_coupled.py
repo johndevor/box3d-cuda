@@ -19,6 +19,11 @@ def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("reference", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--iterations-only",
+        action="store_true",
+        help="sweep only velocity iterations to test maximal-coordinate convergence",
+    )
     return parser.parse_args()
 
 
@@ -133,41 +138,66 @@ def main() -> int:
     device = torch.device("cuda")
     reference = _reference_tensors(torch, report, device)
     base = _config()
-    rows = []
-    for warm_start_factor in (0.0, 0.2, 0.5, 0.8, 1.0):
-        for position_correction in (0.2, 0.4, 0.6, 0.8, 1.0):
-            for angular_damping in (0.0, 0.02, 0.1):
-                config = replace(
+    candidates = []
+    if args.iterations_only:
+        for solver_iterations in (4, 8, 12, 16, 24, 32, 48, 64):
+            candidates.append((
+                replace(
                     base,
                     joints=replace(
-                        base.joints,
-                        warm_start_factor=warm_start_factor,
-                        position_correction=position_correction,
+                        base.joints, solver_iterations=solver_iterations
                     ),
                     contacts=replace(
-                        base.contacts,
-                        position_correction=position_correction,
-                        angular_damping=angular_damping,
+                        base.contacts, solver_iterations=solver_iterations
                     ),
-                )
-                bundle = make_workload(64, device)
-                _, diagnostics = _run(
-                    bundle, config, diagnostics=True, capture_parity=True
-                )
-                metrics = _metrics(torch, reference, diagnostics["parity_trace"])
-                rows.append({
-                    "parameters": {
-                        "warm_start_factor": warm_start_factor,
-                        "position_correction": position_correction,
-                        "angular_damping": angular_damping,
-                    },
-                    "physical_gates": {
-                        "maximum_penetration_m": float(diagnostics["max_penetration"].item()),
-                        "maximum_joint_anchor_error_m": float(diagnostics["max_anchor"].item()),
-                    },
-                    "parity": metrics,
-                })
-                print(json.dumps({"completed": len(rows), "parameters": rows[-1]["parameters"], "score": metrics["maximum_threshold_ratio"]}), flush=True)
+                ),
+                {"solver_iterations": solver_iterations},
+            ))
+    else:
+        for warm_start_factor in (0.0, 0.2, 0.5, 0.8, 1.0):
+            for position_correction in (0.2, 0.4, 0.6, 0.8, 1.0):
+                for angular_damping in (0.0, 0.02, 0.1):
+                    candidates.append((
+                        replace(
+                            base,
+                            joints=replace(
+                                base.joints,
+                                warm_start_factor=warm_start_factor,
+                                position_correction=position_correction,
+                            ),
+                            contacts=replace(
+                                base.contacts,
+                                position_correction=position_correction,
+                                angular_damping=angular_damping,
+                            ),
+                        ),
+                        {
+                            "warm_start_factor": warm_start_factor,
+                            "position_correction": position_correction,
+                            "angular_damping": angular_damping,
+                        },
+                    ))
+
+    rows = []
+    for config, parameters in candidates:
+        bundle = make_workload(64, device)
+        _, diagnostics = _run(
+            bundle, config, diagnostics=True, capture_parity=True
+        )
+        metrics = _metrics(torch, reference, diagnostics["parity_trace"])
+        rows.append({
+            "parameters": parameters,
+            "physical_gates": {
+                "maximum_penetration_m": float(diagnostics["max_penetration"].item()),
+                "maximum_joint_anchor_error_m": float(diagnostics["max_anchor"].item()),
+            },
+            "parity": metrics,
+        })
+        print(json.dumps({
+            "completed": len(rows),
+            "parameters": parameters,
+            "score": metrics["maximum_threshold_ratio"],
+        }), flush=True)
     rows.sort(key=lambda row: (
         row["parity"]["maximum_threshold_ratio"],
         row["parity"]["root_mean_square_threshold_ratio"],
@@ -177,6 +207,7 @@ def main() -> int:
         "recorded_at": datetime.now(timezone.utc).isoformat(),
         "device": torch.cuda.get_device_name(device),
         "candidate_count": len(rows),
+        "sweep": "solver_iterations" if args.iterations_only else "stabilization",
         "reference_backend": report["backend"],
         "reference_contract_id": report["contract_id"],
         "best": rows[0],
