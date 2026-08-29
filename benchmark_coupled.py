@@ -26,6 +26,7 @@ from factory_os.coupling.contract import (
     WORLDS,
     validate_coupling_report,
 )
+from factory_os.coupling.impact import IMPACT_STEPS
 
 from .coupled_reference import CoupledConfig
 from .extension import coupled_step, load_extension
@@ -221,7 +222,7 @@ def _run(bundle, config, *, diagnostics: bool, capture_trace: bool = False, capt
     energy0 = _mechanical_energy(bundle); cumulative_work = torch.zeros_like(energy0)
     max_energy_residual = torch.zeros((), dtype=torch.float32, device=bundle["state"].device)
     previous_q = bundle["initial_q"].clone()
-    sampled_trace = []; parity_trace = []
+    sampled_trace = []; parity_trace = []; impact_trace = []
     parity_steps = set(range(0, BENCHMARK_STEPS, 12)) | {BENCHMARK_STEPS - 1}
     last = None
     for step in range(BENCHMARK_STEPS):
@@ -270,6 +271,23 @@ def _run(bundle, config, *, diagnostics: bool, capture_trace: bool = False, capt
                     "pair_contact":(_pair_signed_separations(bundle)[:64] <= SPEC.contact_slop_m).detach().cpu().tolist(),
                     "pair_contact_impulse_magnitude_ns":last[13][:64].detach().cpu().tolist(),
                 })
+            if capture_parity and step in IMPACT_STEPS:
+                parents=torch.tensor(SPEC.joint_parent_body_indices,dtype=torch.int64,device=bundle["state"].device)
+                children=torch.tensor(SPEC.joint_child_body_indices,dtype=torch.int64,device=bundle["state"].device)
+                joint_velocity=bundle["state"][:64,children,12]-bundle["state"][:64,parents,12]
+                pair_index=SPEC.contact_pair_roles.index("link2_payload")
+                impact_trace.append({
+                    "control_step":step,
+                    "joint_positions_rad":last[1][:64].detach().cpu().tolist(),
+                    "joint_velocities_rad_s":joint_velocity.detach().cpu().tolist(),
+                    "drive_efforts_nm":(last[5][:64]*CONTROL_HZ).detach().cpu().tolist(),
+                    "payload_position_m":bundle["state"][:64,4,:3].detach().cpu().tolist(),
+                    "payload_linear_velocity_mps":bundle["state"][:64,4,7:10].detach().cpu().tolist(),
+                    "link2_position_m":bundle["state"][:64,3,:3].detach().cpu().tolist(),
+                    "link2_linear_velocity_mps":bundle["state"][:64,3,7:10].detach().cpu().tolist(),
+                    "link2_payload_contact":(_pair_signed_separations(bundle)[:64,pair_index] <= SPEC.contact_slop_m).detach().cpu().tolist(),
+                    "link2_payload_impulse_magnitude_ns":last[13][:64,pair_index].detach().cpu().tolist(),
+                })
     assert last is not None
     return last, {
         "contact_frames": contact_frames, "max_penetration": max_penetration,
@@ -277,7 +295,7 @@ def _run(bundle, config, *, diagnostics: bool, capture_trace: bool = False, capt
         "max_anchor": max_anchor, "max_limit": max_limit, "max_quat": max_quat,
         "max_effort_ratio": max_effort_ratio, "real_impulse": real_impulse,
         "tail_speed": tail_speed, "max_energy_residual": max_energy_residual,"sampled_trace":sampled_trace,
-        "parity_trace":parity_trace,
+        "parity_trace":parity_trace,"impact_trace":impact_trace,
     }
 
 
@@ -340,6 +358,7 @@ def benchmark(output_path: Path) -> dict:
                                 "friction_zero":True},
             "sampled_trace":{"world_index":0,"stride_control_steps":6,"frames":diagnostics["sampled_trace"]},
             "parity_trace":{"sampled_worlds":64,"sampled_world_indices":list(range(64)),"sampled_steps":list(range(0,BENCHMARK_STEPS,12))+[BENCHMARK_STEPS-1],"samples":diagnostics["parity_trace"]},
+            "impact_trace":{"sampled_worlds":64,"sampled_world_indices":list(range(64)),"sampled_steps":list(IMPACT_STEPS),"pair_role":"link2_payload","samples":diagnostics["impact_trace"]},
             "correctness":correctness}
     if correctness["passed"]: validate_coupling_report(result,backend=CUDA_BACKEND)
     output_path.parent.mkdir(parents=True,exist_ok=True);output_path.write_text(json.dumps(result,indent=2,sort_keys=True)+"\n",encoding="utf-8")
