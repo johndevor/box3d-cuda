@@ -220,10 +220,10 @@ typedef struct box3d_cuda_scene_step_desc_v2 {
  * are asynchronous with the same enqueue/error rule as step. The supplied
  * SHA-256 must equal scene_info.topology_sha256 or the call fails closed.
  * Material arrays use the registered binding: global [1], per-body [E,B], or
- * per-contact-pair [E,P]. environment_gravity_xyz is required exactly when
- * registration selected per-environment gravity, and NULL otherwise. Every
- * other non-empty array is required. Mutable episode state is intentionally
- * complete so capture/restore is a deterministic RL reset primitive. */
+ * per-contact-pair [E,P]. gravity_xyz is always required and uses the selected
+ * layout: global [3] or per-environment [E,3]. Every other non-empty array is
+ * required. Mutable episode state is intentionally complete so capture/restore
+ * is a deterministic RL reset primitive. */
 typedef struct box3d_cuda_scene_capture_desc_v2 {
   uint32_t struct_size;
   uint32_t abi_version;
@@ -233,7 +233,7 @@ typedef struct box3d_cuda_scene_capture_desc_v2 {
   float* inverse_mass;                         /* [E,B] */
   float* inverse_inertia;                      /* [E,B,3] */
   float* half_extents;                         /* [E,B,3] */
-  float* environment_gravity_xyz;              /* selected only: [E,3] */
+  float* gravity_xyz;                          /* global [3] or per-env [E,3] */
   float* material_friction;                    /* selected layout */
   float* material_restitution;                 /* selected layout */
   float* joint_cache;                          /* [E,J,8] */
@@ -251,7 +251,7 @@ typedef struct box3d_cuda_scene_restore_desc_v2 {
   const float* inverse_mass;                   /* [E,B] */
   const float* inverse_inertia;                /* [E,B,3] */
   const float* half_extents;                   /* [E,B,3] */
-  const float* environment_gravity_xyz;        /* selected only: [E,3] */
+  const float* gravity_xyz;                    /* global [3] or per-env [E,3] */
   const float* material_friction;              /* selected layout */
   const float* material_restitution;           /* selected layout */
   const float* joint_cache;                    /* [E,J,8] */

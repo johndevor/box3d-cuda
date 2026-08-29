@@ -42,15 +42,17 @@ The proposal fixes these semantics:
 
 Capture and restore have separate const-correct descriptors. They include all
 per-environment mutable physics values: state, inverse mass and inertia, half
-extents, selected per-environment gravity, the selected material layout, joint
+extents, gravity in its selected layout, the selected material layout, joint
 cache, contact feature IDs, and contact impulse cache. The immutable graph,
 motion kinds, dimensions, and layout choices remain handle topology.
 
 Material snapshot arrays use the registered binding: global `[1]`, per-body
 `[E,B]`, or explicitly authored per-contact-pair `[E,P]`. A global-only engine
 must reject heterogeneous registration and restore data. Box3D CUDA does not
-invent a per-body material combine rule. Per-environment gravity is present in
-snapshots only when its registration pointer selected that layout.
+invent a per-body material combine rule. Gravity is always present: `[3]` for
+global binding or `[E,3]` when registration selected per-environment gravity.
+This keeps gravity values out of topology identity without making deterministic
+reset depend on the destination handle's pre-restore gravity.
 
 Registration is CPU-source-only, synchronous, and copying. Snapshot, restore,
 step, and ray buffers are device pointers. A future device-source registration

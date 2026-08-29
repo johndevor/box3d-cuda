@@ -44,6 +44,8 @@ def test_v2_proposal_records_world_integration_semantics() -> None:
         "box3d_cuda_scene_restore_desc_v2",
         "const float* inverse_mass",
         "float* material_friction",
+        "float* gravity_xyz",
+        "const float* gravity_xyz",
     ):
         assert term in source
 
