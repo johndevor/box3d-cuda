@@ -528,6 +528,120 @@ int main() {
     std::fprintf(stderr, "revolute scene unregister failed\n");
     return 17;
   }
+
+  const uint32_t ray_body_ids[] = {300};
+  const uint32_t ray_body_motion[] = {BOX3D_CUDA_BODY_FIXED_V2};
+  std::vector<float> ray_state(environments * 13, 0.0f);
+  std::vector<float> ray_inverse_mass(environments, 0.0f);
+  std::vector<float> ray_inverse_inertia(environments * 3, 0.0f);
+  std::vector<float> ray_half_extents(environments * 3, 1.0f);
+  for (size_t environment = 0; environment < environments; ++environment) {
+    ray_state[environment * 13 + 2] = 5.0f;
+    ray_state[environment * 13 + 6] = 1.0f;
+  }
+  box3d_cuda_scene_register_desc_v2 ray_registration{};
+  ray_registration.struct_size = sizeof(ray_registration);
+  ray_registration.abi_version = BOX3D_CUDA_ABI_VERSION_V2;
+  ray_registration.device_ordinal = -1;
+  ray_registration.environments = environments;
+  ray_registration.bodies = 1;
+  ray_registration.substeps = 1;
+  ray_registration.solver_iterations = 1;
+  ray_registration.material_binding = BOX3D_CUDA_MATERIAL_GLOBAL_V2;
+  ray_registration.dt = 1.0f / 60.0f;
+  ray_registration.global_friction = 0.5f;
+  ray_registration.warm_start_factor = 0.8f;
+  ray_registration.contact_slop = 1.0e-4f;
+  ray_registration.position_correction = 0.8f;
+  ray_registration.angular_damping = 0.02f;
+  ray_registration.sat_epsilon = 1.0e-7f;
+  ray_registration.joint_position_slop = 1.0e-5f;
+  ray_registration.joint_angular_slop = 1.0e-5f;
+  ray_registration.maximum_linear_repair = 0.1f;
+  ray_registration.maximum_angular_repair = 0.2f;
+  ray_registration.body_caller_ids = ray_body_ids;
+  ray_registration.body_motion = ray_body_motion;
+  ray_registration.state = ray_state.data();
+  ray_registration.inverse_mass = ray_inverse_mass.data();
+  ray_registration.inverse_inertia = ray_inverse_inertia.data();
+  ray_registration.half_extents = ray_half_extents.data();
+  box3d_cuda_scene_handle_v2 ray_scene = 0;
+  if (box3d_cuda_scene_register_v2(&ray_registration, &ray_scene) !=
+      BOX3D_CUDA_STATUS_V2_SUCCESS) {
+    std::fprintf(stderr, "ray scene registration failed\n");
+    return 18;
+  }
+  constexpr uint32_t rays_per_environment = 2;
+  std::vector<float> ray_origins(environments * rays_per_environment * 3,
+                                 0.0f);
+  std::vector<float> ray_directions(environments * rays_per_environment * 3,
+                                    0.0f);
+  std::vector<float> ray_maximum(environments * rays_per_environment, 10.0f);
+  for (size_t environment = 0; environment < environments; ++environment) {
+    const size_t hit = (environment * rays_per_environment) * 3;
+    const size_t miss = hit + 3;
+    ray_directions[hit + 2] = 1.0f;
+    ray_directions[miss] = 1.0f;
+    ray_maximum[environment * rays_per_environment + 1] = 3.0f;
+  }
+  float* ray_origins_device = device_copy(ray_origins);
+  float* ray_directions_device = device_copy(ray_directions);
+  float* ray_maximum_device = device_copy(ray_maximum);
+  float* ray_distance_device =
+      device_allocate<float>(environments * rays_per_environment);
+  int32_t* ray_body_device =
+      device_allocate<int32_t>(environments * rays_per_environment);
+  float* ray_normal_device =
+      device_allocate<float>(environments * rays_per_environment * 3);
+  box3d_cuda_ray_query_desc_v2 ray_query{};
+  ray_query.struct_size = sizeof(ray_query);
+  ray_query.abi_version = BOX3D_CUDA_ABI_VERSION_V2;
+  ray_query.scene = ray_scene;
+  ray_query.rays_per_environment = rays_per_environment;
+  ray_query.origins = ray_origins_device;
+  ray_query.directions = ray_directions_device;
+  ray_query.maximum_distance = ray_maximum_device;
+  ray_query.hit_distance = ray_distance_device;
+  ray_query.hit_body_index = ray_body_device;
+  ray_query.hit_normal = ray_normal_device;
+  if (box3d_cuda_scene_raycast_v2(&ray_query) !=
+          BOX3D_CUDA_STATUS_V2_SUCCESS ||
+      cudaDeviceSynchronize() != cudaSuccess) {
+    std::fprintf(stderr, "resident OBB ray query failed\n");
+    return 19;
+  }
+  const auto ray_distance = host_copy(
+      ray_distance_device, environments * rays_per_environment);
+  const auto ray_body = host_copy(
+      ray_body_device, environments * rays_per_environment);
+  const auto ray_normal = host_copy(
+      ray_normal_device, environments * rays_per_environment * 3);
+  for (size_t environment = 0; environment < environments; ++environment) {
+    const size_t hit = environment * rays_per_environment;
+    const size_t miss = hit + 1;
+    if (!near(ray_distance[hit], 4.0f) || ray_body[hit] != 0 ||
+        !near(ray_normal[hit * 3 + 0], 0.0f) ||
+        !near(ray_normal[hit * 3 + 1], 0.0f) ||
+        !near(ray_normal[hit * 3 + 2], -1.0f) ||
+        !near(ray_distance[miss], 3.0f) || ray_body[miss] != -1 ||
+        !near(ray_normal[miss * 3 + 0], 0.0f) ||
+        !near(ray_normal[miss * 3 + 1], 0.0f) ||
+        !near(ray_normal[miss * 3 + 2], 0.0f)) {
+      std::fprintf(stderr, "resident OBB ray hit/miss contract failed\n");
+      return 20;
+    }
+  }
+  cudaFree(ray_origins_device);
+  cudaFree(ray_directions_device);
+  cudaFree(ray_maximum_device);
+  cudaFree(ray_distance_device);
+  cudaFree(ray_body_device);
+  cudaFree(ray_normal_device);
+  if (box3d_cuda_scene_unregister_v2(ray_scene) !=
+      BOX3D_CUDA_STATUS_V2_SUCCESS) {
+    std::fprintf(stderr, "ray scene unregister failed\n");
+    return 21;
+  }
   std::puts("Box3D CUDA ABI-v2 r3 resident lifecycle passed");
   return 0;
 }

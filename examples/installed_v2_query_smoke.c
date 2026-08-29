@@ -12,6 +12,7 @@ int main(void) {
                             BOX3D_CUDA_CAP_V2_PERSISTENT_CONTACTS |
                             BOX3D_CUDA_CAP_V2_RESIDENT_STATE |
                             BOX3D_CUDA_CAP_V2_DETERMINISTIC_SNAPSHOT |
+                            BOX3D_CUDA_CAP_V2_LINEAR_OBB_RAYS |
                             BOX3D_CUDA_CAP_V2_ASYNC_CALLER_STREAM |
                             BOX3D_CUDA_CAP_V2_GLOBAL_MATERIAL |
                             BOX3D_CUDA_CAP_V2_PARTIAL_ENVIRONMENT_RESTORE;

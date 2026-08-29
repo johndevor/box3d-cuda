@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Batched nearest-hit rays against fixed-small worlds of oriented boxes.
+#ifndef BOX3D_CUDA_NATIVE_RAY_ONLY
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
+#endif
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cfloat>
@@ -85,6 +87,7 @@ __device__ inline bool intersect_obb(
   return true;
 }
 
+template <typename Index>
 __global__ void ray_kernel(
     const float* state,
     const float* half_extents,
@@ -93,7 +96,7 @@ __global__ void ray_kernel(
     const float* ray_directions,
     const float* maximum_distance,
     float* distance,
-    int64_t* body_index,
+    Index* body_index,
     float* normal,
     int worlds,
     int bodies,
@@ -110,7 +113,7 @@ __global__ void ray_kernel(
   float best_normal[3] = {0.0f, 0.0f, 0.0f};
   for (int body = 0; body < bodies; ++body) {
     const int flat_body = world * bodies + body;
-    if (!body_enabled[flat_body]) continue;
+    if (body_enabled != nullptr && !body_enabled[flat_body]) continue;
     float candidate = max_t, candidate_normal[3];
     if (intersect_obb(
             state + flat_body * SW,
@@ -127,12 +130,13 @@ __global__ void ray_kernel(
     }
   }
   distance[flat_ray] = best;
-  body_index[flat_ray] = best_body;
+  body_index[flat_ray] = static_cast<Index>(best_body);
   for (int axis = 0; axis < 3; ++axis)
     normal[flat_ray * 3 + axis] = best_normal[axis];
 }
 }  // namespace
 
+#ifndef BOX3D_CUDA_NATIVE_RAY_ONLY
 std::vector<torch::Tensor> box3d_ray_cast_cuda(
     torch::Tensor state,
     torch::Tensor half_extents,
@@ -150,7 +154,7 @@ std::vector<torch::Tensor> box3d_ray_cast_cuda(
   auto normal = torch::empty({worlds, rays, 3}, state.options());
   constexpr int threads = 256;
   const int total = worlds * rays;
-  ray_kernel<<<(total + threads - 1) / threads, threads, 0,
+  ray_kernel<int64_t><<<(total + threads - 1) / threads, threads, 0,
                at::cuda::getDefaultCUDAStream()>>>(
       state.data_ptr<float>(), half_extents.data_ptr<float>(),
       body_enabled.data_ptr<uint8_t>(), ray_origins.data_ptr<float>(),
@@ -160,3 +164,4 @@ std::vector<torch::Tensor> box3d_ray_cast_cuda(
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return {distance, body_index, normal};
 }
+#endif

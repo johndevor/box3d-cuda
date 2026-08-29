@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -21,6 +22,8 @@
 
 #define BOX3D_CUDA_NATIVE_KERNELS_ONLY 1
 #include "coupled.cu"
+#define BOX3D_CUDA_NATIVE_RAY_ONLY 1
+#include "ray.cu"
 
 namespace {
 
@@ -33,6 +36,7 @@ constexpr uint64_t kLifecycleCapabilities =
     BOX3D_CUDA_CAP_V2_PERSISTENT_CONTACTS |
     BOX3D_CUDA_CAP_V2_RESIDENT_STATE |
     BOX3D_CUDA_CAP_V2_DETERMINISTIC_SNAPSHOT |
+    BOX3D_CUDA_CAP_V2_LINEAR_OBB_RAYS |
     BOX3D_CUDA_CAP_V2_ASYNC_CALLER_STREAM |
     BOX3D_CUDA_CAP_V2_GLOBAL_MATERIAL |
     BOX3D_CUDA_CAP_V2_PARTIAL_ENVIRONMENT_RESTORE;
@@ -992,9 +996,41 @@ extern "C" BOX3D_CUDA_API box3d_cuda_status_v2 box3d_cuda_scene_raycast_v2(
     return BOX3D_CUDA_STATUS_V2_INVALID_ARGUMENT;
   if (descriptor->abi_version != BOX3D_CUDA_ABI_VERSION_V2)
     return BOX3D_CUDA_STATUS_V2_ABI_MISMATCH;
-  return find_scene(descriptor->scene) == nullptr
-             ? BOX3D_CUDA_STATUS_V2_INVALID_HANDLE
-             : BOX3D_CUDA_STATUS_V2_UNSUPPORTED;
+  if (descriptor->reserved_u32 != 0 || descriptor->rays_per_environment == 0)
+    return BOX3D_CUDA_STATUS_V2_INVALID_ARGUMENT;
+  const auto scene = find_scene(descriptor->scene);
+  if (scene == nullptr) return BOX3D_CUDA_STATUS_V2_INVALID_HANDLE;
+  std::lock_guard<std::mutex> operation_lock(scene->operation_mutex);
+  if (scene->retired) return BOX3D_CUDA_STATUS_V2_INVALID_HANDLE;
+  if (cudaSetDevice(scene->device) != cudaSuccess)
+    return BOX3D_CUDA_STATUS_V2_CUDA_ERROR;
+  const size_t rays = static_cast<size_t>(scene->environments) *
+                      descriptor->rays_per_environment;
+  if (rays > static_cast<size_t>(INT_MAX))
+    return BOX3D_CUDA_STATUS_V2_LIMIT_EXCEEDED;
+  if (!required_device_pointer(descriptor->origins, rays * 3, scene->device) ||
+      !required_device_pointer(descriptor->directions, rays * 3,
+                               scene->device) ||
+      !required_device_pointer(descriptor->maximum_distance, rays,
+                               scene->device) ||
+      !required_device_pointer(descriptor->hit_distance, rays, scene->device) ||
+      !required_device_pointer(descriptor->hit_body_index, rays,
+                               scene->device) ||
+      !required_device_pointer(descriptor->hit_normal, rays * 3, scene->device))
+    return BOX3D_CUDA_STATUS_V2_INVALID_ARGUMENT;
+  constexpr int threads = 256;
+  const int total = static_cast<int>(rays);
+  cudaStream_t stream = reinterpret_cast<cudaStream_t>(descriptor->stream);
+  ray_kernel<int32_t><<<(total + threads - 1) / threads, threads, 0, stream>>>(
+      scene->state.data, scene->half_extents.data, nullptr,
+      descriptor->origins, descriptor->directions,
+      descriptor->maximum_distance, descriptor->hit_distance,
+      descriptor->hit_body_index, descriptor->hit_normal,
+      static_cast<int>(scene->environments), static_cast<int>(scene->bodies),
+      static_cast<int>(descriptor->rays_per_environment));
+  return cudaPeekAtLastError() == cudaSuccess
+             ? BOX3D_CUDA_STATUS_V2_SUCCESS
+             : BOX3D_CUDA_STATUS_V2_CUDA_ERROR;
 }
 
 extern "C" BOX3D_CUDA_API box3d_cuda_status_v2 box3d_cuda_scene_unregister_v2(
