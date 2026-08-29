@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from factory_os.benchmarks import BenchmarkResult, CapabilitySet, write_result
+from .benchmarking import BenchmarkResult, CapabilitySet, write_result
 
 from .extension import load_extension, obb_step
 from .obb_reference import (

@@ -8,7 +8,7 @@ import math
 from pathlib import Path
 import time
 
-from factory_os.benchmarks import BenchmarkResult, CapabilitySet, write_result
+from .benchmarking import BenchmarkResult, CapabilitySet, write_result
 
 from .extension import _validate_sat_pair_indices, load_extension, sat_step
 from .sat_reference import (

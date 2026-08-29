@@ -9,7 +9,7 @@ import json
 import math
 from pathlib import Path
 
-from factory_os.coupling.contract import PARITY_THRESHOLDS
+from .contracts.coupling import PARITY_THRESHOLDS
 
 from .benchmark_coupled import _config, _run, make_workload
 from .extension import load_extension

@@ -7,8 +7,8 @@ import math
 from pathlib import Path
 import time
 
-from factory_os.benchmarks import BenchmarkResult, CapabilitySet, write_result
-from factory_os.joints.contract import (
+from .benchmarking import BenchmarkResult, CapabilitySet, write_result
+from .contracts.joints import (
     BENCHMARK_STEPS, BODY_COUNT, CONTROL_HZ, CUDA_BACKEND, DEFAULT_SEED,
     GATE_THRESHOLDS, HOLD_STEPS, JOINT_COUNT, PHYSICS_SUBSTEPS, SPEC,
     TAIL_WINDOW_STEPS, target_positions_rad,

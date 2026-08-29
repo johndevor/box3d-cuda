@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Initial CUDA mapping from Box3D commit 30c67b5. This is a deliberately
 // bounded port slice: rigid integration, plane contacts and sphere contacts.
+#ifndef BOX3D_CUDA_NATIVE_KERNELS_ONLY
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
+#endif
 #include <cuda.h>
 #include <cuda_runtime.h>
 
@@ -121,6 +123,7 @@ __global__ void step_worlds(
 
 }  // namespace
 
+#ifndef BOX3D_CUDA_NATIVE_KERNELS_ONLY
 torch::Tensor box3d_step_cuda(
     torch::Tensor state,
     torch::Tensor inverse_mass,
@@ -144,3 +147,4 @@ torch::Tensor box3d_step_cuda(
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return output;
 }
+#endif

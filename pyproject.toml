@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "box3d-cuda"
+version = "0.1.0"
+description = "A bounded, correctness-gated CUDA port of selected Box3D physics for batched RL worlds"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Kinetic Factory OS contributors"}]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: C++",
+]
+
+[project.optional-dependencies]
+torch = ["torch>=2.4"]
+test = ["pytest>=8"]
+
+[tool.setuptools]
+package-dir = {box3d_cuda = "."}
+packages = ["box3d_cuda", "box3d_cuda.benchmarking", "box3d_cuda.contracts"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+box3d_cuda = ["csrc/*.cu", "csrc/*.cpp", "LICENSE.box3d", "UPSTREAM.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

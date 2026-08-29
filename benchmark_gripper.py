@@ -5,7 +5,7 @@ from dataclasses import replace
 import json
 from pathlib import Path
 
-from factory_os.benchmarks import BenchmarkResult, CapabilitySet, write_result
+from .benchmarking import BenchmarkResult, CapabilitySet, write_result
 
 from .extension import gripper_step, load_extension
 from .gripper_reference import (

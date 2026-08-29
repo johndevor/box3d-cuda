@@ -15,9 +15,6 @@ from typing import Tuple
 from urllib.parse import unquote, urlparse
 from xml.etree import ElementTree as ET
 
-from factory_os.environments.asset_resolver import resolve_local_kr240_physics_assets
-
-
 Vec3 = Tuple[float, float, float]
 
 
@@ -75,13 +72,21 @@ def _positive(value: str | None, label: str) -> float:
     return parsed
 
 
-def load_kr240_joint_model(asset_root: Path | None = None) -> IndustrialJointModel:
-    """Load the six-axis engineering approximation after hash verification."""
+def load_industrial_joint_model(
+    urdf_path: Path,
+    *,
+    asset_id: str,
+    source_urdf_sha256: str,
+    calibration_class: str = "bounded_engineering_approximation",
+) -> IndustrialJointModel:
+    """Parse the bounded seven-link/six-revolute URDF contract.
 
-    bindings = resolve_local_kr240_physics_assets(asset_root)
-    binding = bindings["robot.floor"]
-    parsed_uri = urlparse(binding.uri)
-    urdf_path = Path(unquote(parsed_uri.path))
+    Hash verification and asset resolution belong to the caller. This keeps
+    the engine package independent of Factory OS while preserving the exact
+    parser and dynamics behavior used by the original integration.
+    """
+
+    urdf_path = Path(urdf_path)
     root = ET.parse(urdf_path).getroot()
     link_nodes = root.findall("link")
     links = []
@@ -143,11 +148,38 @@ def load_kr240_joint_model(asset_root: Path | None = None) -> IndustrialJointMod
     # pair remains available to the collision pipeline.
     filtered = tuple(tuple(sorted((joint.parent_index, joint.child_index))) for joint in joints)
     return IndustrialJointModel(
-        asset_id="generated.kr240r2900.physics-approx-v1",
-        calibration_class="bounded_engineering_approximation",
+        asset_id=asset_id,
+        calibration_class=calibration_class,
         coordinate_system="URDF_Z_UP_RIGHT_HANDED",
         links=tuple(links),
         joints=tuple(joints),
         collision_filter_pairs=filtered,
+        source_urdf_sha256=source_urdf_sha256,
+    )
+
+
+def load_kr240_joint_model(asset_root: Path | None = None) -> IndustrialJointModel:
+    """Compatibility adapter for a Factory OS verified KR240 asset.
+
+    Standalone consumers should resolve and verify their own URDF, then call
+    :func:`load_industrial_joint_model`. Factory OS remains an optional,
+    lazily imported adapter rather than an engine dependency.
+    """
+
+    try:
+        from factory_os.environments.asset_resolver import (
+            resolve_local_kr240_physics_assets,
+        )
+    except ImportError as error:
+        raise RuntimeError(
+            "Factory OS is not installed; use load_industrial_joint_model "
+            "with an independently verified URDF"
+        ) from error
+    bindings = resolve_local_kr240_physics_assets(asset_root)
+    binding = bindings["robot.floor"]
+    parsed_uri = urlparse(binding.uri)
+    return load_industrial_joint_model(
+        Path(unquote(parsed_uri.path)),
+        asset_id="generated.kr240r2900.physics-approx-v1",
         source_urdf_sha256=binding.sha256,
     )

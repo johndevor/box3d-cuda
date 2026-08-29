@@ -7,8 +7,8 @@ import json
 import math
 from pathlib import Path
 
-from factory_os.benchmarks import BenchmarkResult, CapabilitySet
-from factory_os.rays.contract import (
+from .benchmarking import BenchmarkResult, CapabilitySet
+from .contracts.rays import (
     BENCHMARK_STEPS,
     CORRECTNESS_STEPS,
     CUDA_BACKEND,

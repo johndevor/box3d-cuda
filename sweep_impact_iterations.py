@@ -16,14 +16,14 @@ import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from factory_os.coupling.contract import (
+from .contracts.coupling import (
     CUDA_BACKEND,
     PARITY_THRESHOLDS,
     PHYSICS_SUBSTEPS,
     PHYSX_BACKEND,
     SPEC,
 )
-from factory_os.coupling.impact import (
+from .contracts.impact import (
     IMPACT_SAMPLED_WORLDS,
     IMPACT_STEPS,
     diagnose_impact_reports,

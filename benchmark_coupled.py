@@ -8,7 +8,7 @@ import math
 from pathlib import Path
 import time
 
-from factory_os.coupling.contract import (
+from .contracts.coupling import (
     BENCHMARK_STEPS,
     BODY_COUNT,
     CONTRACT_ID,
@@ -26,7 +26,7 @@ from factory_os.coupling.contract import (
     WORLDS,
     validate_coupling_report,
 )
-from factory_os.coupling.impact import IMPACT_STEPS
+from .contracts.impact import IMPACT_STEPS
 
 from .coupled_reference import CoupledConfig
 from .extension import coupled_step, load_extension

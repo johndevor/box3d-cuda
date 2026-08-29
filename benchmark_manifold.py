@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse, json, math, time
 from pathlib import Path
-from factory_os.benchmarks import BenchmarkResult, CapabilitySet, write_result
+from .benchmarking import BenchmarkResult, CapabilitySet, write_result
 from .extension import _validate_sat_pair_indices, load_extension, manifold_step
 from .manifold_reference import (
     BENCHMARK_STEPS, CONTRACT_ID, DEFAULT_SEED, INITIAL_SLIDER_SPEED_MPS,

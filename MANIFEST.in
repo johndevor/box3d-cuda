@@ -1,0 +1,5 @@
+include LICENSE LICENSE.box3d UPSTREAM.json CMakeLists.txt
+recursive-include csrc *.cu *.cpp
+recursive-include include *.h
+recursive-include examples *.cu
+recursive-include docs *.md

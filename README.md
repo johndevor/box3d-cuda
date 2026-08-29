@@ -1,8 +1,13 @@
-# Box3D CUDA port
+# Box3D CUDA
 
-This directory is an early, measured port of selected Box3D ideas to CUDA for
+This standalone repository is an early, measured port of selected Box3D ideas to CUDA for
 thousands of small independent reinforcement-learning worlds. It is not a
 drop-in replacement for Box3D yet.
+
+The Python package preserves the original `box3d_cuda` API and lazily builds
+its PyTorch extension. A separate versioned native C ABI has no PyTorch
+dependency; ABI v1 intentionally exposes only the accepted Stage-0 sphere
+step. See [docs/native-c-abi.md](docs/native-c-abi.md).
 
 The upstream source is pinned in `UPSTREAM.json`. Stage 0 maps Box3D's
 quaternion integration to CUDA and implements physical plane and sphere-pair
@@ -41,6 +46,11 @@ per fixed-small world. It returns range, stable body ID, and an outward unit
 normal with deterministic miss and tie semantics. A broader scalar CPU oracle
 also covers planes, hit positions, calibrated pinhole cameras, multi-camera
 rigs, range images, and optical-axis depth.
+
+Stage 7 couples articulated joint rows and persistent contact rows in one
+fixed-small-world solver. Its CPU/CUDA physical correctness gate is accepted.
+Strict instantaneous output parity against the matched ManiSkill/PhysX impact
+trace is still rejected, so no Stage-7 speedup claim is accepted.
 
 ## Measured stages
 
@@ -128,14 +138,42 @@ SHA-256 to the measured CUDA result. It visualizes both camera bodies, sampled
 rays, hit points, normals, and range previews; it is not live CUDA, RGB, or
 training evidence.
 
+Stage 7 currently establishes:
+
+- A fixed-base two-link arm physically pushes a free payload on a floor using
+  motor drives and contact impulses only
+- No attachment state, pose copying, teleportation, or direct payload force
+- Deterministic replay, world isolation, real contact, release, friction
+  negative controls, finite state, normalized quaternions, and bounded caches
+- CPU/CUDA correctness for the bounded solver implementation
+- The strict PhysX parity gate remains failed at the first impact; iteration
+  sweeps from 4 through 32 did not resolve the structural response mismatch
+- No throughput comparison is accepted until that parity gate passes
+
 Not implemented: a broad phase, general convex collision, the complete Box3D
-Soft Step constraint set, joint/contact coupling, CCD, sleep/islands, meshes,
-or GPU rendering. Stage 6 rays currently test OBBs with a linear per-world body
-scan; there is no acceleration structure or pixel renderer.
+Soft Step constraint set, reduced-coordinate articulation, CCD, sleep/islands,
+meshes, or GPU rendering. Stage 6 rays currently test OBBs with a linear
+per-world body scan; there is no acceleration structure or pixel renderer.
+Stage 7 is a bounded maximal-coordinate joint/contact workload, not general
+robot dynamics or validated sim-to-real physics.
+
+## Repository boundaries
+
+- `csrc/`: CUDA kernels and the PyTorch and native-C entry points
+- `include/box3d_cuda/`: the versioned public C ABI
+- `*_reference.py`: dependency-free CPU oracles
+- `contracts/`: exact correctness and cross-backend parity contracts
+- `benchmarking/` and `benchmark_*.py`: fail-closed evidence and workloads
+- `tests/`: standalone CPU, source-contract, and optional CUDA gates
+- `UPSTREAM.json` and `LICENSE.box3d`: pinned Box3D provenance
+
+Factory OS scene orchestration, assets, GPU-provider lifecycle, ManiSkill
+adapters, dashboards, and browser presentation intentionally remain in
+`box3d-arm-lab`, which consumes this repository at an exact Git commit.
 
 ## Port order
 
-1. Couple persistent contacts and joint rows in one world step.
+1. Resolve Stage-7 impact response parity without loosening the accepted gate.
 2. Constraint graph coloring and parallel contact/joint rows.
 3. Add a broad phase for larger per-world scenes, then profile CCD and sleep.
 4. Feed calibrated multi-rig depth packets into the staged RL observation API.
