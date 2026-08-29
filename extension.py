@@ -21,7 +21,7 @@ def load_extension():
         raise RuntimeError("Box3D CUDA requires a visible CUDA device")
     root = Path(__file__).resolve().parent
     return load(
-        name="factory_box3d_cuda_v11",
+        name="factory_box3d_cuda_v12",
         sources=[
             str(root / "csrc" / "bindings.cpp"),
             str(root / "csrc" / "step.cu"),
@@ -585,6 +585,7 @@ def coupled_step(
     motor_target_position=None,
     stiffness=None,
     joint_warm_start_cache=None,
+    articulation_projection=False,
 ):
     """Solve articulated rows and persistent contact rows in one CUDA loop.
 
@@ -592,9 +593,16 @@ def coupled_step(
     diagnostics, motor impulse, limit activity, the joint cache, contact-ever,
     penetration, feature IDs, contact impulse cache, contact count, and summed
     normal impulse. No attachment or pose-copy state exists in this interface.
+
+    ``articulation_projection`` is an experimental, fail-closed contact path
+    for exactly one fixed-root, two-revolute serial chain. It is opt-in so the
+    accepted general maximal-coordinate solver remains unchanged.
     """
 
     import torch
+
+    if not isinstance(articulation_projection, bool):
+        raise TypeError("articulation_projection must be bool")
 
     joint_config = config.joints
     contact_config = config.contacts
@@ -676,7 +684,8 @@ def coupled_step(
         raise ValueError("contact_impulses must have shape [worlds,pairs,4,3]")
     _validate_sat_pair_indices(joint_indices, bodies)
     _validate_sat_pair_indices(contact_pairs, bodies)
-    joint_rows = {tuple(sorted(map(int, row))) for row in joint_indices.detach().cpu().tolist()}
+    directed_joint_rows = [tuple(map(int, row)) for row in joint_indices.detach().cpu().tolist()]
+    joint_rows = {tuple(sorted(row)) for row in directed_joint_rows}
     contact_rows = {tuple(sorted(map(int, row))) for row in contact_pairs.detach().cpu().tolist()}
     if joint_rows & contact_rows:
         raise ValueError("contact_pairs cannot include collision-filtered connected links")
@@ -702,6 +711,32 @@ def coupled_step(
         raise ValueError("coupled body quaternions must be unit length within 1e-4")
     if not bool(torch.all(lower_limit <= upper_limit).item()):
         raise ValueError("coupled lower limits must not exceed upper limits")
+    if articulation_projection:
+        if joints != 2 or not bool(torch.all(joint_types == 1).item()):
+            raise ValueError(
+                "articulation_projection requires exactly two revolute joints"
+            )
+        chains = [
+            (first[0], first[1], second[1])
+            for first_index, first in enumerate(directed_joint_rows)
+            for second_index, second in enumerate(directed_joint_rows)
+            if first_index != second_index and first[1] == second[0]
+        ]
+        if len(chains) != 1 or len(set(chains[0])) != 3:
+            raise ValueError(
+                "articulation_projection requires one root->link1->link2 chain"
+            )
+        root, link1, link2 = chains[0]
+        if not bool(torch.all(inverse_mass[:, root] == 0.0).item()) or not bool(
+            torch.all(inverse_inertia[:, root] == 0.0).item()
+        ):
+            raise ValueError("articulation_projection requires a fixed root body")
+        if not bool(torch.all(inverse_mass[:, (link1, link2)] > 0.0).item()) or not bool(
+            torch.all(inverse_inertia[:, (link1, link2)] > 0.0).item()
+        ):
+            raise ValueError(
+                "articulation_projection requires positive link mass and inertia"
+            )
     return load_extension().coupled_step(
         state, inverse_mass, half_extents, inverse_inertia, joint_indices,
         joint_types, parent_anchor_local, child_anchor_local, axis_parent,
@@ -717,4 +752,5 @@ def coupled_step(
         float(contact_config.sat_epsilon), float(joint_config.position_slop),
         float(joint_config.angular_slop), float(joint_config.maximum_linear_repair_m),
         float(joint_config.maximum_angular_repair_rad),
+        articulation_projection,
     )

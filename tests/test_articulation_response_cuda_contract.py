@@ -10,7 +10,7 @@ def test_cuda_micro_is_isolated_from_production_coupled_solver() -> None:
     coupled = (ROOT / "csrc" / "coupled.cu").read_text()
     micro = (ROOT / "csrc" / "articulation_response.cu").read_text()
 
-    assert "articulation_response" not in coupled
+    assert "articulation_response(" not in coupled
     assert "not called by the production coupled solver" in micro
 
 

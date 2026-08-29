@@ -179,7 +179,7 @@ def _targets(initial_q, step: int):
     return initial_q * (1.0 - smooth)
 
 
-def _step(bundle, target, config):
+def _step(bundle, target, config, *, articulation_projection: bool = False):
     import torch
 
     worlds = bundle["state"].shape[0]
@@ -191,6 +191,7 @@ def _step(bundle, target, config):
         bundle["motor_enabled"], torch.zeros_like(target), effort, bundle["pairs"], bundle["contact_feature_ids"],
         bundle["contact_impulse_cache"], config, motor_target_position=target, stiffness=bundle["stiffness"],
         joint_warm_start_cache=bundle["joint_cache"],
+        articulation_projection=articulation_projection,
     )
     bundle["state"], bundle["joint_cache"], bundle["contact_feature_ids"], bundle["contact_impulse_cache"] = result[0], result[7], result[10], result[11]
     return result
@@ -208,7 +209,15 @@ def _mechanical_energy(bundle):
     return torch.sum(torch.where(dynamic, translational + rotational + potential, 0.0), dim=1)
 
 
-def _run(bundle, config, *, diagnostics: bool, capture_trace: bool = False, capture_parity: bool = False):
+def _run(
+    bundle,
+    config,
+    *,
+    diagnostics: bool,
+    capture_trace: bool = False,
+    capture_parity: bool = False,
+    articulation_projection: bool = False,
+):
     import torch
 
     contact_frames = torch.zeros((bundle["state"].shape[0], PAIR_COUNT), dtype=torch.int32, device=bundle["state"].device)
@@ -226,7 +235,12 @@ def _run(bundle, config, *, diagnostics: bool, capture_trace: bool = False, capt
     parity_steps = set(range(0, BENCHMARK_STEPS, 12)) | {BENCHMARK_STEPS - 1}
     last = None
     for step in range(BENCHMARK_STEPS):
-        last = _step(bundle, _targets(bundle["initial_q"], step), config)
+        last = _step(
+            bundle,
+            _targets(bundle["initial_q"], step),
+            config,
+            articulation_projection=articulation_projection,
+        )
         if diagnostics:
             contact_frames += last[8].to(torch.int32)
             max_penetration = torch.maximum(max_penetration, last[9].max())
@@ -299,20 +313,20 @@ def _run(bundle, config, *, diagnostics: bool, capture_trace: bool = False, capt
     }
 
 
-def benchmark(output_path: Path) -> dict:
+def benchmark(output_path: Path, *, articulation_projection: bool = False) -> dict:
     import torch
 
     if not torch.cuda.is_available(): raise RuntimeError("Stage-7 benchmark requires CUDA")
     load_extension(); device=torch.device("cuda"); config=_config()
-    warm=make_workload(1,device); _step(warm,_targets(warm["initial_q"],0),config); torch.cuda.synchronize()
+    warm=make_workload(1,device); _step(warm,_targets(warm["initial_q"],0),config,articulation_projection=articulation_projection); torch.cuda.synchronize()
     timed=make_workload(WORLDS,device); start=torch.cuda.Event(enable_timing=True); end=torch.cuda.Event(enable_timing=True)
-    start.record(); timed_last,_=_run(timed,config,diagnostics=False); end.record(); torch.cuda.synchronize()
+    start.record(); timed_last,_=_run(timed,config,diagnostics=False,articulation_projection=articulation_projection); end.record(); torch.cuda.synchronize()
     duration=start.elapsed_time(end)/1000.0
-    checked=make_workload(WORLDS,device); checked_last,diagnostics=_run(checked,config,diagnostics=True,capture_trace=True,capture_parity=True); torch.cuda.synchronize()
+    checked=make_workload(WORLDS,device); checked_last,diagnostics=_run(checked,config,diagnostics=True,capture_trace=True,capture_parity=True,articulation_projection=articulation_projection); torch.cuda.synchronize()
     deterministic = all(torch.equal(a,b) for a,b in zip(timed_last,checked_last))
-    isolated=make_workload(1,device); isolated_last,_=_run(isolated,config,diagnostics=False); torch.cuda.synchronize()
+    isolated=make_workload(1,device); isolated_last,_=_run(isolated,config,diagnostics=False,articulation_projection=articulation_projection); torch.cuda.synchronize()
     world_isolation=all(torch.equal(batch[0],solo[0]) for batch,solo in zip(checked_last,isolated_last) if batch.ndim>0 and batch.shape[0]==WORLDS and solo.shape[0]==1)
-    friction_zero=make_workload(64,device); _,zero_diag=_run(friction_zero,_config(0.0),diagnostics=True); torch.cuda.synchronize()
+    friction_zero=make_workload(64,device); _,zero_diag=_run(friction_zero,_config(0.0),diagnostics=True,articulation_projection=articulation_projection); torch.cuda.synchronize()
     tail_delta=float((zero_diag["tail_speed"]-diagnostics["tail_speed"][:64]).mean().item())
     initial_payload=checked["initial_state"][:,4,0]; displacement=checked["state"][:,4,0]-initial_payload
     correctness={
@@ -351,7 +365,8 @@ def benchmark(output_path: Path) -> dict:
     result={"backend":CUDA_BACKEND,"contract_id":CONTRACT_ID,"worlds":WORLDS,"bodies_per_world":BODY_COUNT,
             "steps":BENCHMARK_STEPS,"duration_seconds":duration,"world_steps_per_second":WORLDS*BENCHMARK_STEPS/duration,
             "device":torch.cuda.get_device_name(device),"peak_memory_bytes":torch.cuda.max_memory_allocated(device),
-            "capabilities":{"articulated_joints":True,"rigid_body_contacts":True},
+            "capabilities":{"articulated_joints":True,"rigid_body_contacts":True,
+                            "two_revolute_articulation_projection":articulation_projection},
             "anti_fake_audit":{"pose_copy_count":0,"attachment_state_count":0,"hidden_payload_force_count":0},
             "diagnostic_scope":{"passive_energy":"measured as positive mechanical-energy residual after integrated drive work",
                                 "momentum":"not a closed-system gate for this driven floor-contact workload",
@@ -366,8 +381,10 @@ def benchmark(output_path: Path) -> dict:
 
 
 def main() -> int:
-    parser=argparse.ArgumentParser();parser.add_argument("--output",type=Path,required=True);args=parser.parse_args()
-    result=benchmark(args.output)
+    parser=argparse.ArgumentParser();parser.add_argument("--output",type=Path,required=True)
+    parser.add_argument("--articulation-projection",action="store_true")
+    args=parser.parse_args()
+    result=benchmark(args.output,articulation_projection=args.articulation_projection)
     print(json.dumps({"backend":result["backend"],"device":result["device"],"world_steps_per_second":result["world_steps_per_second"],"correctness":result["correctness"]},sort_keys=True))
     return 0 if result["correctness"]["passed"] else 2
 

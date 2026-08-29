@@ -18,3 +18,17 @@ def test_articulation_shock_rule_matches_cuda_source() -> None:
 
     assert "left_articulated&&right_inverse_mass>0.0f" in source
     assert "right_articulated&&left_inverse_mass>0.0f" in source
+
+
+def test_articulation_projection_is_explicit_and_opt_in() -> None:
+    extension = (ROOT / "extension.py").read_text()
+    benchmark = (ROOT / "benchmark_coupled.py").read_text()
+    bindings = (ROOT / "csrc" / "bindings.cpp").read_text()
+    cuda = (ROOT / "csrc" / "coupled.cu").read_text()
+
+    assert "articulation_projection=False" in extension
+    assert "requires exactly two revolute joints" in extension
+    assert 'parser.add_argument("--articulation-projection",action="store_true")' in benchmark
+    assert "bool articulation_projection" in bindings
+    assert "build_two_revolute_articulation" in cuda
+    assert "if(articulation_projection)solve_projected_normal" in cuda

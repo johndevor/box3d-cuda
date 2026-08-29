@@ -130,7 +130,8 @@ std::vector<torch::Tensor> box3d_coupled_step_cuda(
     double gravity_y, double restitution, double friction, double contact_slop,
     double position_correction, double angular_damping, int64_t solver_iterations,
     double sat_epsilon, double joint_position_slop, double angular_slop,
-    double maximum_linear_repair, double maximum_angular_repair);
+    double maximum_linear_repair, double maximum_angular_repair,
+    bool articulation_projection);
 
 std::vector<torch::Tensor> box3d_ray_cast_cuda(
     torch::Tensor state,
@@ -545,7 +546,8 @@ std::vector<torch::Tensor> box3d_coupled_step(
     double gravity_y, double restitution, double friction, double contact_slop,
     double position_correction, double angular_damping, int64_t solver_iterations,
     double sat_epsilon, double joint_position_slop, double angular_slop,
-    double maximum_linear_repair, double maximum_angular_repair) {
+    double maximum_linear_repair, double maximum_angular_repair,
+    bool articulation_projection) {
   const auto device = state.device();
   const std::vector<torch::Tensor> tensors = {
       state,inverse_mass,half_extents,inverse_inertia,joint_indices,joint_types,
@@ -611,7 +613,8 @@ std::vector<torch::Tensor> box3d_coupled_step(
       stiffness.contiguous(),maximum_effort.contiguous(),joint_cache.contiguous(),contact_pairs.contiguous(),
       contact_feature_ids.contiguous(),contact_impulse_cache.contiguous(),warm_start_factor,dt,substeps,gravity_y,
       restitution,friction,contact_slop,position_correction,angular_damping,solver_iterations,sat_epsilon,
-      joint_position_slop,angular_slop,maximum_linear_repair,maximum_angular_repair);
+      joint_position_slop,angular_slop,maximum_linear_repair,maximum_angular_repair,
+      articulation_projection);
 }
 
 std::vector<torch::Tensor> box3d_ray_cast(
