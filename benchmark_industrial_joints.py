@@ -7,6 +7,7 @@ multi-turn ranges beyond the solver's principal-angle branch.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import hashlib
 import json
 import math
@@ -30,6 +31,10 @@ DEFAULT_SEED = 67
 AMPLITUDES = (0.20, 0.12, 0.18, 0.22, 0.16, 0.25)
 FREQUENCIES = (0.05, 0.06, 0.07, 0.08, 0.09, 0.10)
 STIFFNESS = (30000.0, 45000.0, 22500.0, 7500.0, 5000.0, 3000.0)
+# The pinned URDF's 70 N*m*s/rad A2 damping is insufficient for the tuned
+# gravity-loaded position controller. This benchmark adds an explicit A2
+# derivative term; the imported value and override are both reported.
+CONTROLLER_DAMPING = (70.0, 3000.0, 55.0, 25.0, 18.0, 12.0)
 PARITY_WORLD_IDS = (0, 1, 17, 63)
 PARITY_STEPS = 120
 TRACE_STEPS = tuple(range(0, PARITY_STEPS, 12)) + (PARITY_STEPS - 1,)
@@ -83,8 +88,15 @@ def _cpu_inputs(compiled, worlds):
     )
 
 
+def _with_runtime_controller(compiled):
+    return replace(
+        compiled,
+        topology=replace(compiled.topology, damping=CONTROLLER_DAMPING),
+    )
+
+
 def run_cpu_correctness(model, *, seed: int = DEFAULT_SEED, steps: int = STEPS) -> dict[str, object]:
-    compiled = compile_industrial_joint_world(model)
+    compiled = _with_runtime_controller(compile_industrial_joint_world(model))
     state, inverse_mass, inverse_inertia = _cpu_inputs(compiled, 1)
     config = JointConfig(gravity_y=-9.81, substeps=SUBSTEPS, solver_iterations=12)
     cache = None
@@ -396,6 +408,7 @@ def _limit_probe(torch, compiled, config):
     evidence = {
         "passed": bool(observed and ever_pattern_match and recovered and observation_mismatches == 0 and max_cpu_excess <= 2.0e-3 and max_gpu_excess <= 2.0e-3),
         "probed_joint_names": ["joint_a2", "joint_a3", "joint_a5"],
+        "controller_damping_profile": "imported_urdf",
         "lower_and_upper_limit_activation_observed": bool(observed), "inward_recovery_observed": bool(recovered),
         "cpu_cuda_limit_ever_pattern_match": bool(ever_pattern_match),
         "cpu_cuda_limit_active_transition_mismatch_count": active_mismatches,
@@ -430,7 +443,9 @@ def main() -> int:
     actual_srdf_hash = hashlib.sha256(args.srdf.read_bytes()).hexdigest()
     if actual_srdf_hash != args.srdf_sha256: raise RuntimeError("industrial SRDF SHA-256 mismatch")
     model = load_industrial_joint_model(args.urdf, asset_id=args.asset_id, source_urdf_sha256=actual_hash)
-    compiled = compile_industrial_joint_world(model); cpu = run_cpu_correctness(model, seed=args.seed)
+    imported_compiled = compile_industrial_joint_world(model)
+    compiled = _with_runtime_controller(imported_compiled)
+    cpu = run_cpu_correctness(model, seed=args.seed)
     try:
         import torch
     except ImportError as error:
@@ -438,7 +453,7 @@ def main() -> int:
     if not torch.cuda.is_available(): raise RuntimeError("industrial CPU gate passed; visible CUDA device is required")
     load_extension(); config = JointConfig(gravity_y=-9.81, substeps=SUBSTEPS, solver_iterations=12)
     parity, parity_trace = _cpu_cuda_parity(torch, compiled, config, args.seed)
-    limit_probe = _limit_probe(torch, compiled, config)
+    limit_probe = _limit_probe(torch, imported_compiled, config)
     _, correctness_result, cuda_metrics, measured_trace = _gpu_correctness(torch, compiled, config, args.worlds, args.seed)
     _, replay_result, _, _ = _gpu_correctness(torch, compiled, config, args.worlds, args.seed)
     replay_error = max(float((correctness_result[0] - replay_result[0]).abs().max().item()), float((correctness_result[7] - replay_result[7]).abs().max().item()))
@@ -465,6 +480,9 @@ def main() -> int:
         "collision_geometry_applied": False, "self_collision_applied": False,
         "full_urdf_limit_range_validated": False, "unvalidated_full_range_joint_names": list(UNVALIDATED_FULL_RANGE_JOINTS),
         "motor_stiffness_nm_per_rad": list(STIFFNESS),
+        "imported_joint_damping_nms_per_rad": [joint.damping for joint in model.joints],
+        "runtime_controller_damping_nms_per_rad": list(CONTROLLER_DAMPING),
+        "controller_damping_override_joint_names": ["joint_a2"],
         "target_amplitude_rad": list(AMPLITUDES), "target_frequency_hz": list(FREQUENCIES),
         "cpu_cuda_trace_world_ids": list(PARITY_WORLD_IDS), "cpu_cuda_trace_sample_steps": list(TRACE_STEPS),
         "cpu_cuda_state_maximum_absolute_error": parity["state"],

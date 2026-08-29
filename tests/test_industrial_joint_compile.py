@@ -7,8 +7,10 @@ from box3d_cuda.industrial_joint_import import (
     compile_industrial_joint_world,
 )
 from box3d_cuda.benchmark_industrial_joints import (
+    CONTROLLER_DAMPING,
     DEFAULT_SEED,
     _limit_targets,
+    _with_runtime_controller,
     target_positions,
 )
 from box3d_cuda.joint_reference import JointConfig, step_joint_reference
@@ -88,3 +90,10 @@ def test_representable_limit_probe_approaches_smoothly_then_recovers() -> None:
     assert _limit_targets(179, world)[1][1] > world.topology.upper_limit[1]
     assert _limit_targets(180, world)[0][1] > world.topology.lower_limit[1]
     assert _limit_targets(180, world)[1][1] < world.topology.upper_limit[1]
+
+
+def test_runtime_controller_override_is_explicit_and_does_not_mutate_import() -> None:
+    imported = compile_industrial_joint_world(_model())
+    runtime = _with_runtime_controller(imported)
+    assert imported.topology.damping == (20.0,) * 6
+    assert runtime.topology.damping == CONTROLLER_DAMPING
