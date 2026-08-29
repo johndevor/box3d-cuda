@@ -181,3 +181,6 @@ adapters, dashboards, and browser presentation intentionally remain in
 
 The benchmark intentionally refuses a speedup claim when two result files do
 not share a `contract_id`.
+
+See [docs/verification.md](docs/verification.md) for the extraction regression
+record and exact GPU run IDs.
