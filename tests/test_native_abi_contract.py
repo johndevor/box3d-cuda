@@ -25,6 +25,11 @@ def test_native_entry_point_reuses_exact_stage0_kernel():
     assert len(re.findall(r"__global__ void step_worlds", STEP)) == 1
 
 
+def test_native_translation_unit_compile_checks_coupled_kernel_without_torch():
+    assert "#define BOX3D_CUDA_NATIVE_KERNELS_ONLY 1" in NATIVE
+    assert '#include "coupled.cu"' in NATIVE
+
+
 def test_native_descriptor_is_device_pointer_and_stream_based():
     for field in ("float* state", "const float* inverse_mass", "const float* radius", "void* stream"):
         assert field in HEADER
