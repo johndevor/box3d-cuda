@@ -2,9 +2,11 @@
 // Stage 7: maximal-coordinate joints and persistent OBB contacts solved in
 // one ordered iteration loop. One CUDA lane owns one world. There is no
 // attachment state, pose copying, teleportation, or hidden payload force.
+#ifndef BOX3D_CUDA_NATIVE_KERNELS_ONLY
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
+#endif
 #include <cuda.h>
 #include <cuda_runtime.h>
 
@@ -674,6 +676,7 @@ __global__ void coupled_kernel(
 }
 }
 
+#ifndef BOX3D_CUDA_NATIVE_KERNELS_ONLY
 std::vector<torch::Tensor> box3d_coupled_step_cuda(
     torch::Tensor state,torch::Tensor inverse_mass,torch::Tensor half_extents,torch::Tensor inverse_inertia,
     torch::Tensor joint_indices,torch::Tensor joint_types,torch::Tensor parent_anchor,torch::Tensor child_anchor,
@@ -686,3 +689,4 @@ std::vector<torch::Tensor> box3d_coupled_step_cuda(
     double maximum_linear_repair,double maximum_angular_repair,bool articulation_projection){
   const c10::cuda::CUDAGuard guard(state.device());auto output=state.clone();auto updated_joint_cache=joint_cache.clone();auto updated_feature_ids=contact_feature_ids.clone();auto updated_contact_cache=contact_impulse_cache.clone();int worlds=state.size(0),bodies=state.size(1),joints=joint_indices.size(0),pairs=contact_pairs.size(0);auto joint_scalar=torch::zeros({worlds,joints},state.options());auto coordinate=joint_scalar.clone(),anchor_error=joint_scalar.clone(),angular_error=joint_scalar.clone(),limit_error=joint_scalar.clone(),motor_impulse=joint_scalar.clone();auto limit_active=torch::zeros({worlds,joints},state.options().dtype(torch::kUInt8));auto contact_scalar=torch::zeros({worlds,pairs},state.options());auto penetration=contact_scalar.clone(),normal_impulse=contact_scalar.clone();auto contact_ever=torch::zeros({worlds,pairs},state.options().dtype(torch::kUInt8));auto contact_count=torch::zeros({worlds,pairs},state.options().dtype(torch::kInt32));constexpr int threads=64;coupled_kernel<<<(worlds+threads-1)/threads,threads,0,at::cuda::getDefaultCUDAStream()>>>(output.data_ptr<float>(),inverse_mass.data_ptr<float>(),half_extents.data_ptr<float>(),inverse_inertia.data_ptr<float>(),joint_indices.data_ptr<int64_t>(),joint_types.data_ptr<int64_t>(),parent_anchor.data_ptr<float>(),child_anchor.data_ptr<float>(),axis_parent.data_ptr<float>(),reference_quaternion.data_ptr<float>(),lower_limit.data_ptr<float>(),upper_limit.data_ptr<float>(),damping.data_ptr<float>(),motor_enabled.data_ptr<uint8_t>(),target_velocity.data_ptr<float>(),target_position.data_ptr<float>(),stiffness.data_ptr<float>(),maximum_effort.data_ptr<float>(),updated_joint_cache.data_ptr<float>(),contact_pairs.data_ptr<int64_t>(),updated_feature_ids.data_ptr<int64_t>(),updated_contact_cache.data_ptr<float>(),float(warm_start_factor),coordinate.data_ptr<float>(),anchor_error.data_ptr<float>(),angular_error.data_ptr<float>(),limit_error.data_ptr<float>(),motor_impulse.data_ptr<float>(),limit_active.data_ptr<uint8_t>(),contact_ever.data_ptr<uint8_t>(),penetration.data_ptr<float>(),contact_count.data_ptr<int32_t>(),normal_impulse.data_ptr<float>(),worlds,bodies,joints,pairs,float(dt),int(substeps),float(gravity_y),float(restitution),float(friction),float(contact_slop),float(position_correction),float(angular_damping),int(solver_iterations),float(sat_epsilon),float(joint_position_slop),float(angular_slop),float(maximum_linear_repair),float(maximum_angular_repair),articulation_projection);C10_CUDA_KERNEL_LAUNCH_CHECK();return {output,coordinate,anchor_error,angular_error,limit_error,motor_impulse,limit_active,updated_joint_cache,contact_ever,penetration,updated_feature_ids,updated_contact_cache,contact_count,normal_impulse};
 }
+#endif
