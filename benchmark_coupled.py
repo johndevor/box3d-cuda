@@ -55,6 +55,56 @@ def _rotate_z(angle, vector):
                         torch.zeros_like(angle)), dim=-1)
 
 
+def _quaternion_xyzw_to_matrix(quaternion):
+    import torch
+
+    x, y, z, w = quaternion.unbind(dim=-1)
+    return torch.stack((
+        1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w),
+        2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+        2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y),
+    ), dim=-1).reshape(quaternion.shape[:-1] + (3, 3))
+
+
+def _pair_signed_separations(bundle):
+    """Independent batched SAT diagnostic; it never resolves contact."""
+
+    import torch
+
+    state = bundle["state"]
+    rotation = _quaternion_xyzw_to_matrix(state[..., 3:7])
+    values = []
+    for first, second in SPEC.contact_pair_indices:
+        first_rotation = rotation[:, first]
+        second_rotation = rotation[:, second]
+        first_axes = first_rotation.transpose(-1, -2)
+        second_axes = second_rotation.transpose(-1, -2)
+        cross_axes = torch.cross(
+            first_axes[:, :, None, :].expand(-1, 3, 3, -1),
+            second_axes[:, None, :, :].expand(-1, 3, 3, -1), dim=-1,
+        ).reshape(state.shape[0], 9, 3)
+        candidate_axes = torch.cat((first_axes, second_axes, cross_axes), dim=1)
+        norms = torch.linalg.vector_norm(candidate_axes, dim=-1)
+        valid = norms > 1.0e-7
+        axes = candidate_axes / norms.unsqueeze(-1).clamp_min(1.0e-12)
+        delta = state[:, second, :3] - state[:, first, :3]
+        center_distance = torch.abs(torch.sum(delta[:, None, :] * axes, dim=-1))
+        first_radius = torch.sum(
+            torch.abs(torch.einsum("bai,bij->baj", axes, first_rotation))
+            * bundle["half"][:, first, None, :], dim=-1,
+        )
+        second_radius = torch.sum(
+            torch.abs(torch.einsum("bai,bij->baj", axes, second_rotation))
+            * bundle["half"][:, second, None, :], dim=-1,
+        )
+        separation = center_distance - first_radius - second_radius
+        separation = torch.where(
+            valid, separation, torch.full_like(separation, -torch.inf)
+        )
+        values.append(separation.max(dim=1).values)
+    return torch.stack(values, dim=1)
+
+
 def _config(friction: float = SPEC.friction) -> CoupledConfig:
     return CoupledConfig(
         joints=JointConfig(
@@ -157,7 +207,7 @@ def _mechanical_energy(bundle):
     return torch.sum(torch.where(dynamic, translational + rotational + potential, 0.0), dim=1)
 
 
-def _run(bundle, config, *, diagnostics: bool, capture_trace: bool = False):
+def _run(bundle, config, *, diagnostics: bool, capture_trace: bool = False, capture_parity: bool = False):
     import torch
 
     contact_frames = torch.zeros((bundle["state"].shape[0], PAIR_COUNT), dtype=torch.int32, device=bundle["state"].device)
@@ -171,7 +221,8 @@ def _run(bundle, config, *, diagnostics: bool, capture_trace: bool = False):
     energy0 = _mechanical_energy(bundle); cumulative_work = torch.zeros_like(energy0)
     max_energy_residual = torch.zeros((), dtype=torch.float32, device=bundle["state"].device)
     previous_q = bundle["initial_q"].clone()
-    sampled_trace = []
+    sampled_trace = []; parity_trace = []
+    parity_steps = set(range(0, BENCHMARK_STEPS, 12)) | {BENCHMARK_STEPS - 1}
     last = None
     for step in range(BENCHMARK_STEPS):
         last = _step(bundle, _targets(bundle["initial_q"], step), config)
@@ -204,6 +255,21 @@ def _run(bundle, config, *, diagnostics: bool, capture_trace: bool = False):
                     "pair_contact_count":last[12][0].detach().cpu().tolist(),"pair_normal_impulse_ns":last[13][0].detach().cpu().tolist(),
                     "joint_target_rad":_targets(bundle["initial_q"],step)[0].detach().cpu().tolist(),
                 })
+            if capture_parity and step in parity_steps:
+                parents=torch.tensor(SPEC.joint_parent_body_indices,dtype=torch.int64,device=bundle["state"].device)
+                children=torch.tensor(SPEC.joint_child_body_indices,dtype=torch.int64,device=bundle["state"].device)
+                joint_velocity=bundle["state"][:64,children,12]-bundle["state"][:64,parents,12]
+                parity_trace.append({
+                    "control_step":step,
+                    "joint_positions_rad":last[1][:64].detach().cpu().tolist(),
+                    "joint_velocities_rad_s":joint_velocity.detach().cpu().tolist(),
+                    "drive_efforts_nm":(last[5][:64]*CONTROL_HZ).detach().cpu().tolist(),
+                    "body_positions_m":bundle["state"][:64,:,:3].detach().cpu().tolist(),
+                    "body_quaternions_xyzw":bundle["state"][:64,:,3:7].detach().cpu().tolist(),
+                    "body_linear_velocities_mps":bundle["state"][:64,:,7:10].detach().cpu().tolist(),
+                    "pair_contact":(_pair_signed_separations(bundle)[:64] <= SPEC.contact_slop_m).detach().cpu().tolist(),
+                    "pair_contact_impulse_magnitude_ns":last[13][:64].detach().cpu().tolist(),
+                })
     assert last is not None
     return last, {
         "contact_frames": contact_frames, "max_penetration": max_penetration,
@@ -211,6 +277,7 @@ def _run(bundle, config, *, diagnostics: bool, capture_trace: bool = False):
         "max_anchor": max_anchor, "max_limit": max_limit, "max_quat": max_quat,
         "max_effort_ratio": max_effort_ratio, "real_impulse": real_impulse,
         "tail_speed": tail_speed, "max_energy_residual": max_energy_residual,"sampled_trace":sampled_trace,
+        "parity_trace":parity_trace,
     }
 
 
@@ -223,7 +290,7 @@ def benchmark(output_path: Path) -> dict:
     timed=make_workload(WORLDS,device); start=torch.cuda.Event(enable_timing=True); end=torch.cuda.Event(enable_timing=True)
     start.record(); timed_last,_=_run(timed,config,diagnostics=False); end.record(); torch.cuda.synchronize()
     duration=start.elapsed_time(end)/1000.0
-    checked=make_workload(WORLDS,device); checked_last,diagnostics=_run(checked,config,diagnostics=True,capture_trace=True); torch.cuda.synchronize()
+    checked=make_workload(WORLDS,device); checked_last,diagnostics=_run(checked,config,diagnostics=True,capture_trace=True,capture_parity=True); torch.cuda.synchronize()
     deterministic = all(torch.equal(a,b) for a,b in zip(timed_last,checked_last))
     isolated=make_workload(1,device); isolated_last,_=_run(isolated,config,diagnostics=False); torch.cuda.synchronize()
     world_isolation=all(torch.equal(batch[0],solo[0]) for batch,solo in zip(checked_last,isolated_last) if batch.ndim>0 and batch.shape[0]==WORLDS and solo.shape[0]==1)
@@ -272,6 +339,7 @@ def benchmark(output_path: Path) -> dict:
                                 "momentum":"not a closed-system gate for this driven floor-contact workload",
                                 "friction_zero":True},
             "sampled_trace":{"world_index":0,"stride_control_steps":6,"frames":diagnostics["sampled_trace"]},
+            "parity_trace":{"sampled_worlds":64,"sampled_world_indices":list(range(64)),"sampled_steps":list(range(0,BENCHMARK_STEPS,12))+[BENCHMARK_STEPS-1],"samples":diagnostics["parity_trace"]},
             "correctness":correctness}
     if correctness["passed"]: validate_coupling_report(result,backend=CUDA_BACKEND)
     output_path.parent.mkdir(parents=True,exist_ok=True);output_path.write_text(json.dumps(result,indent=2,sort_keys=True)+"\n",encoding="utf-8")

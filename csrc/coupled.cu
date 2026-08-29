@@ -235,6 +235,7 @@ __global__ void coupled_kernel(
     float maximum_linear_repair,float maximum_angular_repair){
   int world=blockIdx.x*blockDim.x+threadIdx.x;if(world>=worlds)return;
   float h=dt/substeps,damping_factor=fmaxf(0.0f,1.0f-angular_damping*h);
+  float control_pair_impulse[MAX_CONTACT_PAIRS][3]={};
   for(int substep=0;substep<substeps;++substep){
     for(int body=0;body<bodies;++body){int flat=world*bodies+body;if(inverse_mass[flat]==0)continue;float *value=state+flat*STATE_WIDTH;value[8]+=gravity_y*h;for(int k=0;k<3;k++){value[k]+=value[7+k]*h;value[10+k]*=damping_factor;}coupled_contact::integrate_q(value,h);}
     coupled_contact::MF manifolds[MAX_CONTACT_PAIRS];bool contact_active[MAX_CONTACT_PAIRS]={};
@@ -246,6 +247,19 @@ __global__ void coupled_kernel(
       solve_joint_rows(state,inverse_mass,inverse_inertia,joint_indices,joint_types,parent_anchor,child_anchor,axis_parent,reference_quaternion,lower_limit,upper_limit,damping,motor_enabled,target_velocity,target_position,stiffness,maximum_effort,joint_lambda,joint_limit_active,world,bodies,joints,h);
       solve_contact_rows(state,inverse_mass,inverse_inertia,contact_pairs,manifolds,contact_active,world,bodies,pairs,restitution,friction,sat_epsilon);
     }
+    // Accumulate the complete contact-impulse vector over the full control
+    // step. PhysX reports the magnitude of normal plus both friction axes;
+    // returning only the final substep's normal component was not comparable.
+    for(int pair=0;pair<pairs;++pair)if(contact_active[pair]){
+      for(int point=0;point<manifolds[pair].count;++point){
+        coupled_contact::MP &contact=manifolds[pair].points[point];
+        for(int k=0;k<3;++k)
+          control_pair_impulse[pair][k]+=
+              manifolds[pair].n[k]*contact.jn+
+              manifolds[pair].t1[k]*contact.jt1+
+              manifolds[pair].t2[k]*contact.jt2;
+      }
+    }
     for(int pair=0;pair<pairs;++pair){int offset=(world*pairs+pair)*4;if(contact_active[pair])coupled_contact::write_cache(&manifolds[pair],contact_feature_ids+offset,contact_impulse_cache+offset*3);else coupled_contact::write_cache(nullptr,contact_feature_ids+offset,contact_impulse_cache+offset*3);}
     // Split position constraints are coupled too. Rebuilding contact geometry
     // between bounded passes avoids repeatedly applying a stale penetration.
@@ -255,8 +269,10 @@ __global__ void coupled_kernel(
     }
     for(int joint=0;joint<joints;++joint){float *lambda=joint_lambda+joint*8;motor_impulse[world*joints+joint]+=lambda[6];for(int row=0;row<8;++row)joint_cache[(world*joints+joint)*8+row]=lambda[row];}
   }
+  for(int pair=0;pair<pairs;++pair)
+    normal_impulse[world*pairs+pair]=coupled_joint::norm3(control_pair_impulse[pair]);
   for(int joint=0;joint<joints;++joint){int parent=int(joint_indices[joint*2]),child=int(joint_indices[joint*2+1]);coupled_joint::G geometry=coupled_joint::geometry(state+(world*bodies+parent)*STATE_WIDTH,state+(world*bodies+child)*STATE_WIDTH,parent_anchor+joint*3,child_anchor+joint*3,axis_parent+joint*3,reference_quaternion+joint*4,int(joint_types[joint]));joint_coordinate[world*joints+joint]=geometry.coord;joint_anchor_error[world*joints+joint]=coupled_joint::norm3(geometry.lin);joint_angular_error[world*joints+joint]=coupled_joint::norm3(geometry.ang);joint_limit_error[world*joints+joint]=fmaxf(0.0f,fmaxf(lower_limit[joint]-geometry.coord,geometry.coord-upper_limit[joint]));}
-  for(int pair=0;pair<pairs;++pair){int left=int(contact_pairs[pair*2]),right=int(contact_pairs[pair*2+1]),offset=(world*pairs+pair)*4;coupled_contact::MF manifold;bool active=coupled_contact::manifold(state+(world*bodies+left)*STATE_WIDTH,half_extents+(world*bodies+left)*3,state+(world*bodies+right)*STATE_WIDTH,half_extents+(world*bodies+right)*3,pair,sat_epsilon,&manifold);if(!active){coupled_contact::write_cache(nullptr,contact_feature_ids+offset,contact_impulse_cache+offset*3);continue;}coupled_contact::seed(&manifold,contact_feature_ids+offset,contact_impulse_cache+offset*3);coupled_contact::write_cache(&manifold,contact_feature_ids+offset,contact_impulse_cache+offset*3);contact_count[world*pairs+pair]=manifold.count;float maximum_depth=0,total_normal=0;for(int point=0;point<manifold.count;++point){maximum_depth=fmaxf(maximum_depth,manifold.points[point].depth);total_normal+=manifold.points[point].jn;}penetration[world*pairs+pair]=maximum_depth;normal_impulse[world*pairs+pair]=total_normal;}
+  for(int pair=0;pair<pairs;++pair){int left=int(contact_pairs[pair*2]),right=int(contact_pairs[pair*2+1]),offset=(world*pairs+pair)*4;coupled_contact::MF manifold;bool active=coupled_contact::manifold(state+(world*bodies+left)*STATE_WIDTH,half_extents+(world*bodies+left)*3,state+(world*bodies+right)*STATE_WIDTH,half_extents+(world*bodies+right)*3,pair,sat_epsilon,&manifold);if(!active){coupled_contact::write_cache(nullptr,contact_feature_ids+offset,contact_impulse_cache+offset*3);continue;}coupled_contact::seed(&manifold,contact_feature_ids+offset,contact_impulse_cache+offset*3);coupled_contact::write_cache(&manifold,contact_feature_ids+offset,contact_impulse_cache+offset*3);contact_count[world*pairs+pair]=manifold.count;float maximum_depth=0;for(int point=0;point<manifold.count;++point)maximum_depth=fmaxf(maximum_depth,manifold.points[point].depth);penetration[world*pairs+pair]=maximum_depth;}
 }
 }
 
