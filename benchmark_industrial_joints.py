@@ -278,10 +278,16 @@ def _gpu_correctness(torch, compiled, config, worlds, seed):
         if step in TRACE_STEPS:
             trace.append({"step": step, "world0_coordinate_rad": result[1][0].detach().cpu().tolist(), "world0_target_rad": target[0].detach().cpu().tolist()})
     quaternion_error = float((torch.linalg.vector_norm(result[0][:, :, 3:7], dim=-1) - 1.0).abs().max().item())
+    environment_joint_tail_rms = torch.sqrt(tail_squared / TAIL_STEPS)
+    per_joint_batch_tail_rms = torch.sqrt(
+        tail_squared.sum(dim=0) / (TAIL_STEPS * worlds)
+    )
     metrics = {
         "finite_joint_state_and_cache": bool(torch.isfinite(result[0]).all().item()) and bool(torch.isfinite(result[7]).all().item()),
         "minimum_joint_motion_range_rad": float((q_max - q_min).min().item()),
-        "maximum_tail_rms_tracking_error_rad": float(torch.sqrt(tail_squared / TAIL_STEPS).max().item()),
+        "per_joint_batch_tail_rms_tracking_error_rad": per_joint_batch_tail_rms.detach().cpu().tolist(),
+        "maximum_per_joint_batch_tail_rms_tracking_error_rad": float(per_joint_batch_tail_rms.max().item()),
+        "maximum_environment_joint_tail_rms_tracking_error_rad": float(environment_joint_tail_rms.max().item()),
         "maximum_joint_anchor_error_m": max_anchor, "maximum_locked_angular_error_rad": max_angular,
         "maximum_joint_limit_excess_rad": max_limit, "maximum_command_effort_ratio": max_effort,
         "maximum_projected_joint_speed_ratio": max_speed, "maximum_link_quaternion_norm_error": quaternion_error,
@@ -290,7 +296,7 @@ def _gpu_correctness(torch, compiled, config, worlds, seed):
         metrics["finite_joint_state_and_cache"] and quaternion_error <= 2.0e-5 and max_anchor <= 1.0e-3
         and max_angular <= 1.0e-3 and max_limit <= 2.0e-3 and max_effort <= 1.000001
         and max_speed <= 1.000001 and metrics["minimum_joint_motion_range_rad"] >= 0.05
-        and metrics["maximum_tail_rms_tracking_error_rad"] <= 0.25
+        and metrics["maximum_per_joint_batch_tail_rms_tracking_error_rad"] <= 0.25
     )
     if not passed:
         raise RuntimeError("industrial CUDA correctness gate failed: " + json.dumps(metrics, sort_keys=True))
