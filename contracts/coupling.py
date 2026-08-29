@@ -114,7 +114,7 @@ class JointContactPusherSpec:
     restitution: float = 0.0
     # PhysX defines this per shape; two authored shapes therefore generate a
     # pair candidate at twice this distance.
-    contact_generation_offset_m: float = 0.001
+    contact_generation_offset_m: float = 0.0015
     contact_rest_offset_m: float = 0.0
     contact_slop_m: float = 0.001
     solver_iterations: int = 8
