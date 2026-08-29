@@ -86,6 +86,13 @@ def _positive(value: str | None, label: str) -> float:
     return parsed
 
 
+def _nonnegative(value: str | None, label: str) -> float:
+    parsed = float("0" if value is None else value)
+    if not math.isfinite(parsed) or parsed < 0.0:
+        raise ValueError(f"{label} must be non-negative and finite")
+    return parsed
+
+
 def _qmul(a, b):
     return (
         a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
@@ -221,7 +228,19 @@ def load_industrial_joint_model(
         if mass_node is None or inertia is None:
             raise ValueError(f"link {node.attrib['name']} has incomplete dynamics")
         diagonal = tuple(_positive(inertia.attrib.get(key), f"{node.attrib['name']} {key}") for key in ("ixx", "iyy", "izz"))
+        products = tuple(
+            float(inertia.attrib.get(key, "0")) for key in ("ixy", "ixz", "iyz")
+        )
+        if not all(math.isfinite(value) and abs(value) <= 1.0e-12 for value in products):
+            raise ValueError(
+                f"link {node.attrib['name']} has unsupported off-diagonal inertia"
+            )
         inertial_origin = inertial.find("origin")
+        inertial_rpy = _vec(None if inertial_origin is None else inertial_origin.attrib.get("rpy"))
+        if any(abs(value) > 1.0e-12 for value in inertial_rpy):
+            raise ValueError(
+                f"link {node.attrib['name']} has unsupported inertial-frame rotation"
+            )
         links.append(LinkDynamics(
             name=node.attrib["name"],
             mass_kg=_positive(mass_node.attrib.get("value"), f"{node.attrib['name']} mass"),
@@ -258,8 +277,8 @@ def load_industrial_joint_model(
             upper=float(limit.attrib["upper"]),  # type: ignore[union-attr]
             effort=_positive(limit.attrib.get("effort"), "joint effort"),  # type: ignore[union-attr]
             velocity=_positive(limit.attrib.get("velocity"), "joint velocity"),  # type: ignore[union-attr]
-            damping=max(0.0, float("0" if dynamics is None else dynamics.attrib.get("damping", "0"))),
-            friction=max(0.0, float("0" if dynamics is None else dynamics.attrib.get("friction", "0"))),
+            damping=_nonnegative(None if dynamics is None else dynamics.attrib.get("damping"), "joint damping"),
+            friction=_nonnegative(None if dynamics is None else dynamics.attrib.get("friction"), "joint friction"),
         ))
     if len(links) != 7 or len(joints) != 6:
         raise ValueError("KR240 CUDA import requires seven inertial links and six revolute joints")

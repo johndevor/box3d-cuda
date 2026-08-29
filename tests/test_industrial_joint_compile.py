@@ -6,6 +6,10 @@ from box3d_cuda.industrial_joint_import import (
     LinkDynamics,
     compile_industrial_joint_world,
 )
+from box3d_cuda.benchmark_industrial_joints import (
+    DEFAULT_SEED,
+    target_positions,
+)
 from box3d_cuda.joint_reference import JointConfig, step_joint_reference
 
 
@@ -63,3 +67,14 @@ def test_compiler_fixes_only_base_and_preserves_engineering_limits() -> None:
     assert world.maximum_effort_nm == (1000.0,) * 6
     assert world.maximum_velocity_rad_s == (2.0,) * 6
     assert len(world.state_y_up) == 7
+
+
+def test_industrial_control_schedule_is_held_then_seeded_per_world() -> None:
+    assert target_positions(0, 0) == [0.0] * 6
+    assert target_positions(59, 63) == [0.0] * 6
+    assert target_positions(120, 0, DEFAULT_SEED) != target_positions(
+        120, 63, DEFAULT_SEED
+    )
+    assert target_positions(120, 17, DEFAULT_SEED) == target_positions(
+        120, 17, DEFAULT_SEED
+    )
