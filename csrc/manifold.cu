@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Fixed-topology persistent OBB manifolds: deterministic face clipping,
 // topology feature IDs, warm starting, accumulated 2-D friction and repair.
+#ifndef BOX3D_DEVICE_HELPERS_ONLY
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
+#endif
 #include <cuda.h>
 #include <cuda_runtime.h>
 

@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Fixed-small articulated worlds. One CUDA lane owns one world, which keeps
 // shared-body joint updates ordered and eliminates cross-world atomics.
+#ifndef BOX3D_DEVICE_HELPERS_ONLY
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
+#endif
 #include <cuda.h>
 #include <cuda_runtime.h>
 

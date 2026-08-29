@@ -37,6 +37,10 @@ def test_articulation_projection_is_explicit_and_opt_in() -> None:
 
 def test_coupled_kernel_has_a_torch_independent_native_boundary() -> None:
     source = (ROOT / "csrc" / "coupled.cu").read_text()
+    manifold = (ROOT / "csrc" / "manifold.cu").read_text()
+    joint = (ROOT / "csrc" / "joint.cu").read_text()
 
     assert source.count("#ifndef BOX3D_CUDA_NATIVE_KERNELS_ONLY") == 2
     assert "__global__ void coupled_kernel" in source
+    assert manifold.index("#ifndef BOX3D_DEVICE_HELPERS_ONLY") < manifold.index("#include <torch/extension.h>")
+    assert joint.index("#ifndef BOX3D_DEVICE_HELPERS_ONLY") < joint.index("#include <torch/extension.h>")
