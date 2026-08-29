@@ -147,7 +147,7 @@ typedef struct box3d_cuda_scene_register_desc_v2 {
   const float* joint_upper_limit;              /* [J], rad or m */
   const float* joint_damping;                  /* [J] */
   const float* joint_stiffness;                /* [J] */
-  const uint32_t* joint_control_mode;          /* [J] */
+  const uint32_t* joint_control_mode;          /* [J]; fixed joints require DISABLED */
   const uint32_t* contact_pair_caller_ids;     /* [P] */
   const uint32_t* contact_body_indices;        /* [P,2] dense body indices */
   const float* state;                          /* [E,B,13] */

@@ -14,6 +14,8 @@ The proposal fixes these semantics:
   velocity xyz, angular velocity xyz order;
 - joint kinds fixed=0, revolute=1, prismatic=2; local anchors, normalized
   parent-local axes, and `conjugate(parent) * child` reference quaternions;
+- fixed joints reject position or velocity control at registration. Their
+  control mode must be disabled because they expose no scalar coordinate;
 - signed 64-bit contact feature IDs with `-1` as the empty sentinel;
 - distinct joint, feature-ID, and contact-impulse caches;
 - explicit material binding and capability discovery. The first implementation

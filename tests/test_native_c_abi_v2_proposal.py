@@ -40,6 +40,7 @@ def test_v2_proposal_records_world_integration_semantics() -> None:
         "uint8_t topology_sha256[BOX3D_CUDA_TOPOLOGY_HASH_BYTES_V2]",
         "uint8_t* contact_ever",
         "uint32_t* contact_count",
+        "fixed joints require DISABLED",
         "box3d_cuda_scene_capture_desc_v2",
         "box3d_cuda_scene_restore_desc_v2",
         "const float* inverse_mass",
