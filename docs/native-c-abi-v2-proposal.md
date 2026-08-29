@@ -1,6 +1,6 @@
 # Native C ABI v2 proposal
 
-`proposals/box3d_cuda_v2.h` is draft revision 2 of the resident rigid-scene
+`proposals/box3d_cuda_v2.h` is draft revision 3 of the resident rigid-scene
 boundary. It is compile-checked and concrete enough for foreign-function review,
 but it is deliberately outside the installed `include/` tree. ABI v1 remains
 the only implemented and stable native ABI.
@@ -56,6 +56,18 @@ global binding or `[E,3]` when registration selected per-environment gravity.
 This keeps gravity values out of topology identity without making deterministic
 reset depend on the destination handle's pre-restore gravity.
 
+Restore supports ordinary asynchronous vectorized-RL episode reset. Its
+optional `environment_mask` is a tightly packed CUDA-device `uint8_t[E]` array:
+`NULL` selects every environment and any nonzero byte selects one environment.
+A non-NULL mask requires the advertised
+`PARTIAL_ENVIRONMENT_RESTORE` capability or the call fails with `UNSUPPORTED`
+before enqueue. The caller retains the mask and every restore input until the
+provided stream completes. State, mass, inertia, extents, per-environment
+gravity/material values, and caches update only for selected environments.
+Global-layout gravity and material values are shared, so they are validated and
+copied exactly once per restore call regardless of mask contents, including an
+all-zero mask. Capture remains full-batch in this draft.
+
 Registration is CPU-source-only, synchronous, and copying. Snapshot, restore,
 step, and ray buffers are device pointers. A future device-source registration
 path or trajectory rollout call requires a separate capability and function.
@@ -90,6 +102,8 @@ two-body World vector, draft revision 1 hashes to
 `06ab2f776dbf99c4dbf1a72220e6e56947fd24c1baeaa2d8068e837decaae0c4`.
 Changing only the included draft-revision scalar to revision 2 correctly gives
 `d664dfee5af110dc61e9ab8c3cf8568fdca1c23d501260e2c47d96f15271b34c`.
+Revision 3, which adds capability-gated partial environment restore, gives
+`a972d5b13f43183306b9fe4f5b27d22f4e3c9ee518d4edd998f36d8109e7dca4`.
 This deliberate change prevents cross-revision snapshot restore.
 
 No proposed symbol is compiled into the shared library yet.

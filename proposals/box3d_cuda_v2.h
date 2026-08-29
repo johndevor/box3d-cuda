@@ -1,7 +1,7 @@
 #ifndef BOX3D_CUDA_V2_PROPOSAL_H_
 #define BOX3D_CUDA_V2_PROPOSAL_H_
 
-/* ABI-v2 design proposal, draft revision 2. This header is compile-checked but
+/* ABI-v2 design proposal, draft revision 3. This header is compile-checked but
  * is not installed, exported, or implemented. ABI v1 remains the only stable
  * native interface. */
 
@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-#define BOX3D_CUDA_ABI_V2_DRAFT_REVISION 2u
+#define BOX3D_CUDA_ABI_V2_DRAFT_REVISION 3u
 #define BOX3D_CUDA_ABI_VERSION_V2 ((2u << 16u) | 0u)
 #define BOX3D_CUDA_STATE_WIDTH_V2 13u
 #define BOX3D_CUDA_JOINT_CACHE_WIDTH_V2 8u
@@ -59,7 +59,8 @@ typedef enum box3d_cuda_capability_v2 {
   BOX3D_CUDA_CAP_V2_KINEMATIC_BODIES = UINT64_C(1) << 13,
   BOX3D_CUDA_CAP_V2_PER_ENVIRONMENT_GRAVITY = UINT64_C(1) << 14,
   BOX3D_CUDA_CAP_V2_ACTUATOR_SPEED_LIMIT = UINT64_C(1) << 15,
-  BOX3D_CUDA_CAP_V2_ACTUATOR_ACCELERATION_LIMIT = UINT64_C(1) << 16
+  BOX3D_CUDA_CAP_V2_ACTUATOR_ACCELERATION_LIMIT = UINT64_C(1) << 16,
+  BOX3D_CUDA_CAP_V2_PARTIAL_ENVIRONMENT_RESTORE = UINT64_C(1) << 17
 } box3d_cuda_capability_v2;
 
 typedef enum box3d_cuda_body_motion_v2 {
@@ -223,7 +224,13 @@ typedef struct box3d_cuda_scene_step_desc_v2 {
  * per-contact-pair [E,P]. gravity_xyz is always required and uses the selected
  * layout: global [3] or per-environment [E,3]. Every other non-empty array is
  * required. Mutable episode state is intentionally complete so capture/restore
- * is a deterministic RL reset primitive. */
+ * is a deterministic RL reset primitive. Restore's optional environment_mask
+ * is a tightly packed [E] CUDA-device uint8 array; NULL selects all
+ * environments and any nonzero byte selects that environment. A non-NULL mask
+ * requires PARTIAL_ENVIRONMENT_RESTORE. The caller owns every input through
+ * stream completion. Per-environment arrays and caches update only for selected
+ * environments. Global-layout gravity/material values are validated and copied
+ * exactly once per call regardless of the mask, including an all-zero mask. */
 typedef struct box3d_cuda_scene_capture_desc_v2 {
   uint32_t struct_size;
   uint32_t abi_version;
@@ -257,6 +264,7 @@ typedef struct box3d_cuda_scene_restore_desc_v2 {
   const float* joint_cache;                    /* [E,J,8] */
   const int64_t* contact_feature_ids;          /* [E,P,4] */
   const float* contact_impulse_cache;          /* [E,P,4,3] */
+  const uint8_t* environment_mask;             /* optional device [E], NULL=all */
   void* stream;
 } box3d_cuda_scene_restore_desc_v2;
 

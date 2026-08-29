@@ -36,7 +36,8 @@ def test_v2_proposal_records_world_integration_semantics() -> None:
         "BOX3D_CUDA_CAP_V2_KINEMATIC_BODIES",
         "BOX3D_CUDA_CAP_V2_PER_PAIR_MATERIAL",
         "BOX3D_CUDA_CAP_V2_LINEAR_OBB_RAYS",
-        "BOX3D_CUDA_ABI_V2_DRAFT_REVISION 2u",
+        "BOX3D_CUDA_ABI_V2_DRAFT_REVISION 3u",
+        "BOX3D_CUDA_CAP_V2_PARTIAL_ENVIRONMENT_RESTORE",
         "uint8_t topology_sha256[BOX3D_CUDA_TOPOLOGY_HASH_BYTES_V2]",
         "uint8_t* contact_ever",
         "uint32_t* contact_count",
@@ -47,6 +48,7 @@ def test_v2_proposal_records_world_integration_semantics() -> None:
         "float* material_friction",
         "float* gravity_xyz",
         "const float* gravity_xyz",
+        "const uint8_t* environment_mask",
     ):
         assert term in source
 
@@ -100,6 +102,9 @@ def test_canonical_topology_sha256_matches_world_cross_repo_golden() -> None:
     )
     assert _world_two_body_digest(2).hex() == (
         "d664dfee5af110dc61e9ab8c3cf8568fdca1c23d501260e2c47d96f15271b34c"
+    )
+    assert _world_two_body_digest(3).hex() == (
+        "a972d5b13f43183306b9fe4f5b27d22f4e3c9ee518d4edd998f36d8109e7dca4"
     )
 
 
@@ -161,13 +166,17 @@ def test_v2_proposal_compiles_as_c11(tmp_path: Path) -> None:
         "_Static_assert(sizeof(box3d_cuda_scene_step_desc_v2) == 160u, \"step layout\");\n"
         "_Static_assert(sizeof(box3d_cuda_scene_capture_desc_v2) == 136u, "
         '"capture layout");\n'
-        "_Static_assert(sizeof(box3d_cuda_scene_restore_desc_v2) == 136u, "
+        "_Static_assert(sizeof(box3d_cuda_scene_restore_desc_v2) == 144u, "
         '"restore layout");\n'
         "_Static_assert(sizeof(box3d_cuda_ray_query_desc_v2) == 80u, \"ray layout\");\n"
         "_Static_assert(offsetof(box3d_cuda_scene_step_desc_v2, contact_ever) "
         '== 120u, "contact ever offset");\n'
         "_Static_assert(offsetof(box3d_cuda_scene_capture_desc_v2, stream) "
         '== 128u, "capture stream offset");\n'
+        "_Static_assert(offsetof(box3d_cuda_scene_restore_desc_v2, environment_mask) "
+        '== 128u, "restore mask offset");\n'
+        "_Static_assert(offsetof(box3d_cuda_scene_restore_desc_v2, stream) "
+        '== 136u, "restore stream offset");\n'
         "int main(void) { return BOX3D_CUDA_JOINT_PRISMATIC_V2 != 2; }\n",
         encoding="utf-8",
     )
