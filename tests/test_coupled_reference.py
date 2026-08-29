@@ -24,7 +24,16 @@ from box3d_cuda.joint_reference import JointConfig
 from box3d_cuda.sat_reference import SATConfig
 
 
-def _step(bundle, target, effort, steps, *, warm_start=True, config=None):
+def _step(
+    bundle,
+    target,
+    effort,
+    steps,
+    *,
+    warm_start=True,
+    config=None,
+    constraint_first_integration=False,
+):
     state, inverse_mass, half, inertia, topology, pairs, joint_cache, ids, impulses = bundle
     result = step_coupled_reference(
         state,
@@ -41,6 +50,7 @@ def _step(bundle, target, effort, steps, *, warm_start=True, config=None):
         CoupledConfig() if config is None else config,
         steps=steps,
         warm_start=warm_start,
+        constraint_first_integration=constraint_first_integration,
     )
     next_bundle = (
         result.state,
@@ -105,6 +115,32 @@ def test_zero_effort_counterfactual_cannot_move_payload():
     assert result.pair_contact_substeps == [[0]]
     assert result.state[0][PAYLOAD_BODY_INDEX] == initial
     assert result.motor_impulse == [[0.0]]
+
+
+def test_constraint_first_integration_applies_solved_velocity_without_phase_lag():
+    config = CoupledConfig(
+        joints=JointConfig(gravity_y=0.0, substeps=1, solver_iterations=12),
+        contacts=SATConfig(gravity_y=0.0, substeps=1, solver_iterations=12),
+    )
+    legacy_bundle = make_coupled_push_state(1)
+    projected_bundle = make_coupled_push_state(1)
+    initial_x = legacy_bundle[0][0][PUSHER_BODY_INDEX][0]
+
+    legacy, _ = _step(
+        legacy_bundle, [[1.0]], [[100.0]], 1, config=config
+    )
+    projected, _ = _step(
+        projected_bundle,
+        [[1.0]],
+        [[100.0]],
+        1,
+        config=config,
+        constraint_first_integration=True,
+    )
+
+    assert legacy.state[0][PUSHER_BODY_INDEX][0] == pytest.approx(initial_x)
+    assert projected.state[0][PUSHER_BODY_INDEX][0] > initial_x
+    assert projected.state[0][PUSHER_BODY_INDEX][7] > 0.0
 
 
 def test_speculative_row_limits_closing_without_claiming_true_contact():

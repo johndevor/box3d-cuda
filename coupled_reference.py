@@ -320,11 +320,14 @@ def step_coupled_reference(
     *,
     steps: int = 1,
     warm_start: bool = True,
+    constraint_first_integration: bool = False,
 ) -> CoupledStepResult:
     """Advance joints and contacts together without attachment or pose copying."""
 
     if isinstance(steps, bool) or not isinstance(steps, int) or steps <= 0:
         raise ValueError("steps must be a positive integer")
+    if not isinstance(constraint_first_integration, bool):
+        raise TypeError("constraint_first_integration must be bool")
     _validate_layout(
         state,
         inverse_mass,
@@ -375,7 +378,11 @@ def step_coupled_reference(
         for _ in range(config.joints.substeps):
             for world in worlds:
                 for body in world:
-                    _integrate_joint_body(body, h, config.joints.gravity_y)
+                    if constraint_first_integration:
+                        if body.inverse_mass != 0.0:
+                            body.linear_velocity[1] += config.joints.gravity_y * h
+                    else:
+                        _integrate_joint_body(body, h, config.joints.gravity_y)
             manifolds = []
             for world_index, world in enumerate(worlds):
                 world_manifolds = []
@@ -528,6 +535,10 @@ def step_coupled_reference(
                                 peak_normal_impulse[world_index][pair_index],
                                 sum(point.normal_impulse for point in manifold.points),
                             )
+            if constraint_first_integration:
+                for world in worlds:
+                    for body in world:
+                        _integrate_joint_body(body, h, 0.0)
             for world_index in range(len(worlds)):
                 for joint in range(len(topology.joint_indices)):
                     motor_total[world_index][joint] += row_lambda[world_index][joint][6]

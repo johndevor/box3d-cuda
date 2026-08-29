@@ -637,7 +637,19 @@ __global__ void coupled_kernel(
   float h=dt/substeps,damping_factor=fmaxf(0.0f,1.0f-angular_damping*h);
   float control_pair_impulse[MAX_CONTACT_PAIRS][3]={};
   for(int substep=0;substep<substeps;++substep){
-    for(int body=0;body<bodies;++body){int flat=world*bodies+body;if(inverse_mass[flat]==0)continue;float *value=state+flat*STATE_WIDTH;value[7]+=gravity_x*h;value[8]+=gravity_y*h;value[9]+=gravity_z*h;for(int k=0;k<3;k++){value[k]+=value[7+k]*h;value[10+k]*=damping_factor;}coupled_contact::integrate_q(value,h);}
+    for(int body=0;body<bodies;++body){
+      int flat=world*bodies+body;if(inverse_mass[flat]==0)continue;
+      float *value=state+flat*STATE_WIDTH;
+      value[7]+=gravity_x*h;value[8]+=gravity_y*h;value[9]+=gravity_z*h;
+      for(int k=0;k<3;k++)value[10+k]*=damping_factor;
+      // The reduced projection matches PhysX's force/constraint/pose phase:
+      // solve velocity rows before integrating the pose.  The generic/native
+      // path retains its accepted legacy ordering when projection is off.
+      if(!articulation_projection){
+        for(int k=0;k<3;k++)value[k]+=value[7+k]*h;
+        coupled_contact::integrate_q(value,h);
+      }
+    }
     coupled_contact::MF manifolds[MAX_CONTACT_PAIRS];bool contact_active[MAX_CONTACT_PAIRS]={},contact_actual[MAX_CONTACT_PAIRS]={};
     for(int pair=0;pair<pairs;++pair){int left=int(contact_pairs[pair*2]),right=int(contact_pairs[pair*2+1]);int left_flat=world*bodies+left,right_flat=world*bodies+right,offset=(world*pairs+pair)*4;contact_active[pair]=coupled_contact::speculative_manifold(state+left_flat*STATE_WIDTH,half_extents+left_flat*3,state+right_flat*STATE_WIDTH,half_extents+right_flat*3,pair,contact_generation_distance,sat_epsilon,&manifolds[pair],&contact_actual[pair]);if(contact_active[pair]){if(contact_actual[pair])contact_ever[world*pairs+pair]=1;coupled_contact::seed(&manifolds[pair],contact_feature_ids+offset,contact_impulse_cache+offset*3);}}
     float joint_lambda[MAX_JOINTS*8]={};
@@ -666,6 +678,12 @@ __global__ void coupled_kernel(
               manifolds[pair].t1[k]*contact.jt1+
               manifolds[pair].t2[k]*contact.jt2;
       }
+    }
+    if(articulation_projection)for(int body=0;body<bodies;++body){
+      int flat=world*bodies+body;if(inverse_mass[flat]==0)continue;
+      float *value=state+flat*STATE_WIDTH;
+      for(int k=0;k<3;k++)value[k]+=value[7+k]*h;
+      coupled_contact::integrate_q(value,h);
     }
     for(int pair=0;pair<pairs;++pair){int offset=(world*pairs+pair)*4;if(contact_active[pair])coupled_contact::write_cache(&manifolds[pair],contact_feature_ids+offset,contact_impulse_cache+offset*3);else coupled_contact::write_cache(nullptr,contact_feature_ids+offset,contact_impulse_cache+offset*3);}
     // Split position constraints are coupled too. Rebuilding contact geometry

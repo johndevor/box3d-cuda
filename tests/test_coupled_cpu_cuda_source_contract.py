@@ -44,6 +44,17 @@ def test_impact_iteration_sweep_uses_production_observables_and_projection() -> 
     assert '"contact_generation_distance_m"' in source
 
 
+def test_projected_path_solves_velocity_before_pose_integration() -> None:
+    source = (ROOT / "csrc" / "coupled.cu").read_text()
+
+    gravity = source.index("value[7]+=gravity_x*h")
+    solve = source.index("solve_joint_rows(", gravity)
+    projected_pose = source.index("if(articulation_projection)for(int body", solve)
+    repair = source.index("for(int repair_iteration=0", projected_pose)
+    assert gravity < solve < projected_pose < repair
+    assert "if(!articulation_projection)" in source[gravity:solve]
+
+
 def test_speculative_generation_is_global_but_native_v2_remains_frozen() -> None:
     cuda = (ROOT / "csrc" / "coupled.cu").read_text()
     native = (ROOT / "csrc" / "native_scene_v2.cu").read_text()
