@@ -37,7 +37,7 @@ REPRESENTABLE_LIMIT_JOINTS = (1, 2, 4)
 UNVALIDATED_FULL_RANGE_JOINTS = ("joint_a1", "joint_a4", "joint_a6")
 STATE_TOLERANCE = 2.0e-2
 DIAGNOSTIC_TOLERANCE = 3.0e-3
-CACHE_TOLERANCE = 3.0e-3
+CACHE_RELATIVE_TOLERANCE = 3.0e-3
 MOTOR_IMPULSE_TOLERANCE = 1.0e-2
 QUATERNION_ANGLE_TOLERANCE = 1.0e-2
 
@@ -189,7 +189,14 @@ def _cpu_cuda_parity(torch, compiled, config, seed):
     cpu_cache = None
     gpu = _inputs(torch, compiled, len(world_ids))
     tensor_ids = torch.tensor(world_ids, dtype=torch.int64, device="cuda")
-    maxima = {"state": 0.0, "diagnostic": 0.0, "cache": 0.0, "motor": 0.0, "quaternion_angle": 0.0}
+    maxima = {
+        "state": 0.0,
+        "diagnostic": 0.0,
+        "cache_absolute": 0.0,
+        "cache_relative": 0.0,
+        "motor": 0.0,
+        "quaternion_angle": 0.0,
+    }
     trace = []
     for step in range(PARITY_STEPS):
         target_values = [target_positions(step, world, seed) for world in world_ids]
@@ -206,14 +213,31 @@ def _cpu_cuda_parity(torch, compiled, config, seed):
             maxima["quaternion_angle"] = max(maxima["quaternion_angle"], _quaternion_angle_error(torch, gpu_result[0][:, :, 3:7], expected_state[:, :, 3:7]))
             for index, values in ((1, cpu.coordinate), (2, cpu.linear_error_m), (3, cpu.angular_error_rad), (4, cpu.limit_error)):
                 maxima["diagnostic"] = max(maxima["diagnostic"], float((gpu_result[index] - torch.tensor(values, dtype=torch.float32, device="cuda")).abs().max().item()))
-            maxima["cache"] = max(maxima["cache"], float((gpu_result[7] - torch.tensor(cpu.warm_start_cache, dtype=torch.float32, device="cuda")).abs().max().item()))
+            expected_cache = torch.tensor(
+                cpu.warm_start_cache, dtype=torch.float32, device="cuda"
+            )
+            cache_error = (gpu_result[7] - expected_cache).abs()
+            # Cache rows are impulses, so their magnitudes scale with this
+            # 1,120 kg arm. Preserve the raw error, but gate the dimensionless
+            # symmetric relative error instead of a scale-dependent N*s bound.
+            cache_scale = torch.maximum(
+                gpu_result[7].abs(), expected_cache.abs()
+            ).clamp_min(1.0)
+            maxima["cache_absolute"] = max(
+                maxima["cache_absolute"], float(cache_error.max().item())
+            )
+            maxima["cache_relative"] = max(
+                maxima["cache_relative"],
+                float((cache_error / cache_scale).max().item()),
+            )
             motor_error = (gpu_result[5] - torch.tensor(cpu.motor_impulse, dtype=torch.float32, device="cuda")).abs()
             normalizer = torch.tensor(compiled.maximum_effort_nm, dtype=torch.float32, device="cuda")[None, :] * config.dt
             maxima["motor"] = max(maxima["motor"], float((motor_error / normalizer).max().item()))
             trace.append({"step": step, "world_ids": world_ids, "cpu_coordinate_rad": cpu.coordinate, "cuda_coordinate_rad": gpu_result[1].detach().cpu().tolist()})
     passed = (
         maxima["state"] <= STATE_TOLERANCE and maxima["diagnostic"] <= DIAGNOSTIC_TOLERANCE
-        and maxima["cache"] <= CACHE_TOLERANCE and maxima["motor"] <= MOTOR_IMPULSE_TOLERANCE
+        and maxima["cache_relative"] <= CACHE_RELATIVE_TOLERANCE
+        and maxima["motor"] <= MOTOR_IMPULSE_TOLERANCE
         and maxima["quaternion_angle"] <= QUATERNION_ANGLE_TOLERANCE
     )
     if not passed:
@@ -386,7 +410,8 @@ def main() -> int:
         "cpu_cuda_trace_world_ids": list(PARITY_WORLD_IDS), "cpu_cuda_trace_sample_steps": list(TRACE_STEPS),
         "cpu_cuda_state_maximum_absolute_error": parity["state"],
         "cpu_cuda_diagnostic_maximum_absolute_error": parity["diagnostic"],
-        "cpu_cuda_warm_start_cache_maximum_absolute_error": parity["cache"],
+        "cpu_cuda_warm_start_cache_maximum_absolute_error": parity["cache_absolute"],
+        "cpu_cuda_warm_start_cache_maximum_relative_error": parity["cache_relative"],
         "cpu_cuda_normalized_motor_impulse_error": parity["motor"],
         "cpu_cuda_quaternion_angle_error_rad": parity["quaternion_angle"],
         "cuda_physical_gates": cuda_metrics, "representable_limit_probe": limit_probe,
