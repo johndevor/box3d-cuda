@@ -34,6 +34,18 @@ normals, and deterministic replay all passed. Maximum depth error was
 `4.7684e-7 m`; maximum range error was `9.5367e-7 m`. The capped ephemeral
 sandbox was deleted and absence verified after both result files downloaded.
 
+`daytona-stage6-depth-camera-benchmark-20260829-r61` then measured the complete
+analytic camera path at 1,024 worlds × two 16×16 cameras × 240 frames. The
+125,829,120 output pixels completed in `0.007688352 s`, or 16.366 billion depth
+pixels/s and 63.930 million camera frames/s. The timed interval includes CUDA
+camera pose/ray compilation, linear OBB ray casting, and optical-axis depth
+conversion. Timed outputs were finite and bounded, misses were exact zero,
+directions were normalized within `1.7881e-7`, replay was bit-exact, and the
+hit/miss population was nontrivial. Peak Torch allocation was 116,944,896
+bytes. The original ray smoke and 62.9-million-ray Stage-6 benchmark also
+passed in the same clean RTX run; all four downloaded artifacts and sandbox
+deletion were verified.
+
 This proves analytic OBB depth cameras, not rasterization, RGB, materials,
 textures, lens distortion, rolling shutter, noise, or matched PhysX throughput.
 

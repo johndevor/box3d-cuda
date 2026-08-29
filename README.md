@@ -136,6 +136,10 @@ Stage 6 additionally measures:
   across two isolated worlds passed CPU/CUDA origin, direction, hit-ID, range,
   optical-depth, body-attachment, miss-zero, normal, and deterministic-replay
   checks; maximum depth error was 4.77e-7 m and range error 9.54e-7 m
+- End-to-end RTX 5090 analytic camera result: 1,024 worlds, two 16×16 cameras,
+  eight OBB slots, and 240 frames completed in 0.007688 s: 16.366B depth
+  pixels/s or 63.930M camera frames/s. The timed interval includes CUDA camera
+  pose/ray compilation, linear nearest-hit queries, and optical-depth conversion
 - No PhysX speedup is claimed: PhysX 5's documented batch-query extension wraps
   scene raycasts and ManiSkill exposes no comparable native CUDA tensor batch
 
