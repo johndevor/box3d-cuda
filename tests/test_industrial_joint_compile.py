@@ -8,6 +8,7 @@ from box3d_cuda.industrial_joint_import import (
 )
 from box3d_cuda.benchmark_industrial_joints import (
     DEFAULT_SEED,
+    _limit_targets,
     target_positions,
 )
 from box3d_cuda.joint_reference import JointConfig, step_joint_reference
@@ -78,3 +79,12 @@ def test_industrial_control_schedule_is_held_then_seeded_per_world() -> None:
     assert target_positions(120, 17, DEFAULT_SEED) == target_positions(
         120, 17, DEFAULT_SEED
     )
+
+
+def test_representable_limit_probe_approaches_smoothly_then_recovers() -> None:
+    world = compile_industrial_joint_world(_model())
+    assert _limit_targets(0, world)[0][1] == 0.0
+    assert _limit_targets(120, world)[0][1] < world.topology.lower_limit[1]
+    assert _limit_targets(179, world)[1][1] > world.topology.upper_limit[1]
+    assert _limit_targets(180, world)[0][1] > world.topology.lower_limit[1]
+    assert _limit_targets(180, world)[1][1] < world.topology.upper_limit[1]
