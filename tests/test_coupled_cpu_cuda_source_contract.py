@@ -32,3 +32,4 @@ def test_articulation_projection_is_explicit_and_opt_in() -> None:
     assert "bool articulation_projection" in bindings
     assert "build_two_revolute_articulation" in cuda
     assert "if(articulation_projection)solve_projected_normal" in cuda
+    assert "if(articulation_projection)solve_projected_motors" in cuda

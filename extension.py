@@ -21,7 +21,7 @@ def load_extension():
         raise RuntimeError("Box3D CUDA requires a visible CUDA device")
     root = Path(__file__).resolve().parent
     return load(
-        name="factory_box3d_cuda_v12",
+        name="factory_box3d_cuda_v13",
         sources=[
             str(root / "csrc" / "bindings.cpp"),
             str(root / "csrc" / "step.cu"),

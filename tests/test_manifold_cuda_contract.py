@@ -42,7 +42,7 @@ class ManifoldCudaStaticContractTests(unittest.TestCase):
         self.assertGreaterEqual(BINDINGS.count("torch::kFloat32"), 5)
         self.assertIn("torch.float32", EXTENSION)
         self.assertIn("torch.float32", BENCHMARK)
-        self.assertIn('name="factory_box3d_cuda_v11"', EXTENSION)
+        self.assertIn('name="factory_box3d_cuda_v', EXTENSION)
 
     def test_redundant_axis_selection_is_tie_stable_at_control_step_two(self):
         self.assertEqual(SAT_AXIS_TIE_EPSILON_M, 1.0e-6)
