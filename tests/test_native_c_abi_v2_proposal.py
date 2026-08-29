@@ -14,13 +14,21 @@ ROOT = Path(__file__).resolve().parents[1]
 HEADER = ROOT / "proposals" / "box3d_cuda_v2.h"
 
 
-def test_v2_proposal_is_not_an_installed_or_implemented_abi() -> None:
+def test_v2_r3_header_and_resident_lifecycle_are_built_and_installed() -> None:
     cmake = (ROOT / "CMakeLists.txt").read_text()
-    native = (ROOT / "csrc" / "native_api.cu").read_text()
+    native = (ROOT / "csrc" / "native_scene_v2.cu").read_text()
 
     assert HEADER.is_file()
-    assert "proposals" not in cmake
-    assert "box3d_cuda_scene_register_v2" not in native
+    assert "csrc/native_scene_v2.cu" in cmake
+    assert "install(FILES proposals/box3d_cuda_v2.h" in cmake
+    for symbol in (
+        "box3d_cuda_query_api_v2",
+        "box3d_cuda_scene_register_v2",
+        "box3d_cuda_scene_capture_v2",
+        "box3d_cuda_scene_restore_v2",
+        "box3d_cuda_scene_unregister_v2",
+    ):
+        assert symbol in native
 
 
 def test_v2_proposal_records_world_integration_semantics() -> None:

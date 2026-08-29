@@ -21,6 +21,8 @@ install(TARGETS box3d_cuda_cabi
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES proposals/box3d_cuda_v2.h
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/box3d_cuda)
 
 add_executable(box3d_cuda_native_smoke examples/native_smoke.cu)
 target_link_libraries(box3d_cuda_native_smoke PRIVATE box3d_cuda_cabi)

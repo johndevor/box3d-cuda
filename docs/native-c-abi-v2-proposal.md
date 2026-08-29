@@ -1,9 +1,10 @@
 # Native C ABI v2 proposal
 
-`proposals/box3d_cuda_v2.h` is draft revision 3 of the resident rigid-scene
-boundary. It is compile-checked and concrete enough for foreign-function review,
-but it is deliberately outside the installed `include/` tree. ABI v1 remains
-the only implemented and stable native ABI.
+`proposals/box3d_cuda_v2.h` is the frozen draft revision 3 resident rigid-scene
+boundary jointly checked with World. CMake installs it as
+`box3d_cuda/box3d_cuda_v2.h`. ABI v1 remains stable; v2 exposes a verified
+resident lifecycle while physics stepping and rays remain fail-closed until
+their production kernels are connected.
 
 The proposal fixes these semantics:
 
@@ -108,4 +109,28 @@ Revision 3, which adds capability-gated partial environment restore, gives
 `a972d5b13f43183306b9fe4f5b27d22f4e3c9ee518d4edd998f36d8109e7dca4`.
 This deliberate change prevents cross-revision snapshot restore.
 
-No proposed symbol is compiled into the shared library yet.
+## Implemented lifecycle subset
+
+The shared library exports every r3 symbol so clients can perform version and
+capability discovery without optional symbol probing. The current capability
+mask is `0x206c0`: resident state, deterministic snapshot, asynchronous caller
+streams, global material, and partial environment restore. Registration,
+scene-info, full capture, exact masked restore, and synchronous unregister are
+implemented. Registration accepts fixed and dynamic OBB topology with global
+materials, but OBB/joint/contact capabilities are deliberately not advertised
+until `scene_step_v2` is wired; step and raycast currently return
+`UNSUPPORTED`. Kinematics, per-environment gravity, non-global materials, and
+actuator speed/acceleration enforcement also fail closed.
+
+The CUDA lifecycle smoke command is:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j2
+./build/box3d_cuda_topology_digest_smoke
+./build/box3d_cuda_native_smoke
+./build/box3d_cuda_native_scene_v2_smoke
+```
+
+`cmake --install build --prefix <prefix>` installs the shared library beneath
+`<prefix>/lib` and both C headers beneath `<prefix>/include/box3d_cuda`.

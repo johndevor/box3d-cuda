@@ -1,15 +1,25 @@
 #ifndef BOX3D_CUDA_V2_PROPOSAL_H_
 #define BOX3D_CUDA_V2_PROPOSAL_H_
 
-/* ABI-v2 design proposal, draft revision 3. This header is compile-checked but
- * is not installed, exported, or implemented. ABI v1 remains the only stable
- * native interface. */
+/* ABI-v2 draft revision 3. Descriptor layouts and semantics are frozen with
+ * the World consumer. The resident lifecycle is implemented; step and raycast
+ * remain capability-gated and return UNSUPPORTED. ABI v1 remains stable. */
 
 #include <stddef.h>
 #include <stdint.h>
 
 #if UINTPTR_MAX != UINT64_MAX
 #  error "The Box3D CUDA ABI-v2 proposal requires a 64-bit process"
+#endif
+
+#if defined(_WIN32)
+#  if defined(BOX3D_CUDA_BUILD_SHARED)
+#    define BOX3D_CUDA_V2_API __declspec(dllexport)
+#  else
+#    define BOX3D_CUDA_V2_API __declspec(dllimport)
+#  endif
+#else
+#  define BOX3D_CUDA_V2_API __attribute__((visibility("default")))
 #endif
 
 #ifdef __cplusplus
@@ -285,24 +295,26 @@ typedef struct box3d_cuda_ray_query_desc_v2 {
   void* stream;
 } box3d_cuda_ray_query_desc_v2;
 
-/* Proposed symbols. None are implemented until this draft is jointly accepted. */
-uint32_t box3d_cuda_get_abi_version_v2(void);
-box3d_cuda_status_v2 box3d_cuda_query_api_v2(box3d_cuda_api_info_v2* info);
-const char* box3d_cuda_status_string_v2(box3d_cuda_status_v2 status);
-box3d_cuda_status_v2 box3d_cuda_scene_register_v2(
+/* Exported r3 symbols. Unsupported operations remain present and fail closed. */
+BOX3D_CUDA_V2_API uint32_t box3d_cuda_get_abi_version_v2(void);
+BOX3D_CUDA_V2_API box3d_cuda_status_v2 box3d_cuda_query_api_v2(
+    box3d_cuda_api_info_v2* info);
+BOX3D_CUDA_V2_API const char* box3d_cuda_status_string_v2(
+    box3d_cuda_status_v2 status);
+BOX3D_CUDA_V2_API box3d_cuda_status_v2 box3d_cuda_scene_register_v2(
     const box3d_cuda_scene_register_desc_v2* descriptor,
     box3d_cuda_scene_handle_v2* scene);
-box3d_cuda_status_v2 box3d_cuda_scene_get_info_v2(
+BOX3D_CUDA_V2_API box3d_cuda_status_v2 box3d_cuda_scene_get_info_v2(
     box3d_cuda_scene_handle_v2 scene, box3d_cuda_scene_info_v2* info);
-box3d_cuda_status_v2 box3d_cuda_scene_step_v2(
+BOX3D_CUDA_V2_API box3d_cuda_status_v2 box3d_cuda_scene_step_v2(
     const box3d_cuda_scene_step_desc_v2* descriptor);
-box3d_cuda_status_v2 box3d_cuda_scene_capture_v2(
+BOX3D_CUDA_V2_API box3d_cuda_status_v2 box3d_cuda_scene_capture_v2(
     const box3d_cuda_scene_capture_desc_v2* descriptor);
-box3d_cuda_status_v2 box3d_cuda_scene_restore_v2(
+BOX3D_CUDA_V2_API box3d_cuda_status_v2 box3d_cuda_scene_restore_v2(
     const box3d_cuda_scene_restore_desc_v2* descriptor);
-box3d_cuda_status_v2 box3d_cuda_scene_raycast_v2(
+BOX3D_CUDA_V2_API box3d_cuda_status_v2 box3d_cuda_scene_raycast_v2(
     const box3d_cuda_ray_query_desc_v2* descriptor);
-box3d_cuda_status_v2 box3d_cuda_scene_unregister_v2(
+BOX3D_CUDA_V2_API box3d_cuda_status_v2 box3d_cuda_scene_unregister_v2(
     box3d_cuda_scene_handle_v2 scene);
 
 #ifdef __cplusplus
