@@ -3,8 +3,8 @@
 `proposals/box3d_cuda_v2.h` is the frozen draft revision 3 resident rigid-scene
 boundary jointly checked with World. CMake installs it as
 `box3d_cuda/box3d_cuda_v2.h`. ABI v1 remains stable; v2 exposes a verified
-resident lifecycle while physics stepping and rays remain fail-closed until
-their production kernels are connected.
+resident lifecycle and coupled OBB/joint/contact stepping. Rays remain
+fail-closed until their production kernel is connected.
 
 The proposal fixes these semantics:
 
@@ -113,14 +113,17 @@ This deliberate change prevents cross-revision snapshot restore.
 
 The shared library exports every r3 symbol so clients can perform version and
 capability discovery without optional symbol probing. The current capability
-mask is `0x206c0`: resident state, deterministic snapshot, asynchronous caller
-streams, global material, and partial environment restore. Registration,
-scene-info, full capture, exact masked restore, and synchronous unregister are
-implemented. Registration accepts fixed and dynamic OBB topology with global
-materials, but OBB/joint/contact capabilities are deliberately not advertised
-until `scene_step_v2` is wired; step and raycast currently return
-`UNSUPPORTED`. Kinematics, per-environment gravity, non-global materials, and
-actuator speed/acceleration enforcement also fail closed.
+mask is `0x206ff`: oriented boxes, explicit pairs, fixed/revolute/prismatic
+joints, persistent contacts, resident state, deterministic snapshot,
+asynchronous caller streams, global material, and partial environment restore.
+Registration, scene-info, coupled step, full capture, exact masked restore, and
+synchronous unregister are implemented. Step keeps state and caches resident,
+holds one `[E,J]` action frame over the requested control steps, reports final
+joint/contact geometry, and accumulates motor/contact impulses plus
+`contact_ever`. Runtime gravity and global material remain device-resident, so
+restore→step ordering stays asynchronous on the caller stream. Raycast,
+kinematics, per-environment gravity, non-global materials, and actuator
+speed/acceleration enforcement remain unadvertised and fail closed.
 
 The CUDA lifecycle smoke command is:
 
