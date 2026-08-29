@@ -312,11 +312,9 @@ def _limit_targets(step, compiled):
                 )
                 rows[row][joint] = smooth * boundary_target
             else:
-                rows[row][joint] = (
-                    compiled.topology.lower_limit[joint] + 0.25
-                    if side == 0
-                    else compiled.topology.upper_limit[joint] - 0.25
-                )
+                # Zero is strictly inside A2/A3/A5 and gives both sides the
+                # same unambiguous inward recovery command under gravity.
+                rows[row][joint] = 0.0
     return rows
 
 
