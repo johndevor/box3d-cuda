@@ -9,6 +9,7 @@ from box3d_cuda.coupled_reference import (
     CONTRACT_ID,
     JOINT_CACHE_WIDTH,
     MAXIMUM_CONTACT_PENETRATION_M,
+    POSITION_REPAIR_ITERATIONS,
     MINIMUM_PUSH_DISPLACEMENT_M,
     MINIMUM_RETRACTED_SEPARATION_M,
     PAYLOAD_BODY_INDEX,
@@ -55,6 +56,7 @@ def _step(bundle, target, effort, steps, *, warm_start=True):
 
 
 def test_contract_layout_and_initial_separation():
+    assert POSITION_REPAIR_ITERATIONS == 8
     bundle = make_coupled_push_state(2)
     state, _, _, _, topology, pairs, joint_cache, ids, impulses = bundle
     assert CONTRACT_ID == "box3d.coupled-articulation-contact/v1"

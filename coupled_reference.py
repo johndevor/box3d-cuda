@@ -69,6 +69,7 @@ MINIMUM_RETRACTED_SEPARATION_M = 0.05
 MAXIMUM_JOINT_LINEAR_ERROR_M = 0.002
 MAXIMUM_JOINT_ANGULAR_ERROR_RAD = 0.01
 MAXIMUM_CONTACT_PENETRATION_M = 0.005
+POSITION_REPAIR_ITERATIONS = 8
 
 
 @dataclass(frozen=True)
@@ -285,8 +286,13 @@ def _repair_contact_with_articulation_shock(
 ) -> None:
     """Position-only shock propagation; velocity impulses remain mass-correct."""
 
-    left_weight = 0.0 if left_index in articulated_bodies else left.inverse_mass
-    right_weight = 0.0 if right_index in articulated_bodies else right.inverse_mass
+    left_articulated = left_index in articulated_bodies
+    right_articulated = right_index in articulated_bodies
+    # Match the CUDA shock-propagation rule: an articulated body remains
+    # movable against fixed geometry, but is held while separating two dynamic
+    # bodies so position repair cannot bypass the joint solver.
+    left_weight = 0.0 if left_articulated and right.inverse_mass > 0.0 else left.inverse_mass
+    right_weight = 0.0 if right_articulated and left.inverse_mass > 0.0 else right.inverse_mass
     total = left_weight + right_weight
     if total <= 0.0:
         return
@@ -522,7 +528,7 @@ def step_coupled_reference(
                     ids[world_index][pair_index], impulses[world_index][pair_index] = _write_cache(
                         manifold
                     )
-                for _repair_iteration in range(8):
+                for _repair_iteration in range(POSITION_REPAIR_ITERATIONS):
                     for pair_index in range(len(contact_pairs) - 1, -1, -1):
                         a, b = contact_pairs[pair_index]
                         repair_manifold = build_manifold(
@@ -639,6 +645,7 @@ __all__ = [
     "MAXIMUM_JOINT_LINEAR_ERROR_M",
     "MAXIMUM_JOINT_ANGULAR_ERROR_RAD",
     "MAXIMUM_CONTACT_PENETRATION_M",
+    "POSITION_REPAIR_ITERATIONS",
     "CoupledConfig",
     "CoupledStepResult",
     "make_coupled_push_state",
