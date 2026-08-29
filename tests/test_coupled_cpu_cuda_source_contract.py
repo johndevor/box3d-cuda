@@ -35,6 +35,15 @@ def test_articulation_projection_is_explicit_and_opt_in() -> None:
     assert "if(articulation_projection)solve_projected_motors" in cuda
 
 
+def test_impact_iteration_sweep_uses_production_observables_and_projection() -> None:
+    source = (ROOT / "sweep_impact_iterations.py").read_text()
+
+    assert "articulation_projection=True" in source
+    assert "_drive_effort_proxy(bundle, result[1], target)" in source
+    assert '"drive_efforts_nm": effort_proxy' in source
+    assert '"contact_generation_distance_m"' in source
+
+
 def test_speculative_generation_is_global_but_native_v2_remains_frozen() -> None:
     cuda = (ROOT / "csrc" / "coupled.cu").read_text()
     native = (ROOT / "csrc" / "native_scene_v2.cu").read_text()

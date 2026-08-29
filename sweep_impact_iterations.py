@@ -30,7 +30,14 @@ from .contracts.impact import (
     validated_impact_trace,
 )
 
-from .benchmark_coupled import _config, _pair_signed_separations, _step, _targets, make_workload
+from .benchmark_coupled import (
+    _config,
+    _drive_effort_proxy,
+    _pair_signed_separations,
+    _step,
+    _targets,
+    make_workload,
+)
 from .extension import load_extension
 
 
@@ -102,22 +109,26 @@ def _capture_candidate(torch, device, solver_iterations: int) -> tuple[dict[str,
     )
     bundle = make_workload(IMPACT_SAMPLED_WORLDS, device)
     pair_index = SPEC.contact_pair_roles.index("link2_payload")
-    parents = torch.tensor(SPEC.joint_parent_body_indices, dtype=torch.int64, device=device)
-    children = torch.tensor(SPEC.joint_child_body_indices, dtype=torch.int64, device=device)
     maximum_anchor = 0.0
     maximum_penetration = 0.0
     samples: list[dict[str, Any]] = []
     with torch.no_grad():
         for step in IMPACT_STEPS:
-            result = _step(bundle, _targets(bundle["initial_q"], step), config)
+            target = _targets(bundle["initial_q"], step)
+            result = _step(
+                bundle,
+                target,
+                config,
+                articulation_projection=True,
+            )
             maximum_anchor = max(maximum_anchor, float(result[2].max().item()))
             maximum_penetration = max(maximum_penetration, float(result[9].max().item()))
-            joint_velocity = bundle["state"][:, children, 12] - bundle["state"][:, parents, 12]
+            effort_proxy, joint_velocity = _drive_effort_proxy(bundle, result[1], target)
             samples.append({
                 "control_step": step,
                 "joint_positions_rad": result[1].detach().cpu().tolist(),
                 "joint_velocities_rad_s": joint_velocity.detach().cpu().tolist(),
-                "drive_efforts_nm": (result[5] * 120).detach().cpu().tolist(),
+                "drive_efforts_nm": effort_proxy.detach().cpu().tolist(),
                 "payload_position_m": bundle["state"][:, 4, :3].detach().cpu().tolist(),
                 "payload_linear_velocity_mps": bundle["state"][:, 4, 7:10].detach().cpu().tolist(),
                 "link2_position_m": bundle["state"][:, 3, :3].detach().cpu().tolist(),
@@ -186,6 +197,8 @@ def main() -> int:
             "physics_substeps": PHYSICS_SUBSTEPS,
             "warm_start_factor": _config().joints.warm_start_factor,
             "position_correction": _config().contacts.position_correction,
+            "articulation_projection": True,
+            "contact_generation_distance_m": _config().contacts.contact_generation_distance,
         },
         "strict_thresholds": dict(PARITY_THRESHOLDS),
         "iteration_candidates": list(ITERATION_CANDIDATES),
