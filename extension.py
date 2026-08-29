@@ -21,7 +21,7 @@ def load_extension():
         raise RuntimeError("Box3D CUDA requires a visible CUDA device")
     root = Path(__file__).resolve().parent
     return load(
-        name="factory_box3d_cuda_v10",
+        name="factory_box3d_cuda_v11",
         sources=[
             str(root / "csrc" / "bindings.cpp"),
             str(root / "csrc" / "step.cu"),
@@ -31,6 +31,7 @@ def load_extension():
             str(root / "csrc" / "manifold.cu"),
             str(root / "csrc" / "joint.cu"),
             str(root / "csrc" / "ray.cu"),
+            str(root / "csrc" / "coupled.cu"),
         ],
         extra_cflags=["-O3"],
         extra_cuda_cflags=["-O3", "--use_fast_math", "-lineinfo"],
@@ -500,4 +501,164 @@ def joint_step(
         float(config.position_slop), float(config.angular_slop),
         float(config.maximum_linear_repair_m),
         float(config.maximum_angular_repair_rad),
+    )
+
+
+def coupled_step(
+    state,
+    inverse_mass,
+    half_extents,
+    inverse_inertia,
+    joint_indices,
+    joint_types,
+    parent_anchor_local,
+    child_anchor_local,
+    axis_parent,
+    reference_quaternion_parent_to_child,
+    lower_limit,
+    upper_limit,
+    damping,
+    motor_enabled,
+    motor_target_velocity,
+    maximum_effort,
+    contact_pairs,
+    contact_feature_ids,
+    contact_impulses,
+    config,
+    *,
+    motor_target_position=None,
+    stiffness=None,
+    joint_warm_start_cache=None,
+):
+    """Solve articulated rows and persistent contact rows in one CUDA loop.
+
+    The returned tensors are state, joint coordinate/anchor/angular/limit
+    diagnostics, motor impulse, limit activity, the joint cache, contact-ever,
+    penetration, feature IDs, contact impulse cache, contact count, and summed
+    normal impulse. No attachment or pose-copy state exists in this interface.
+    """
+
+    import torch
+
+    joint_config = config.joints
+    contact_config = config.contacts
+    _validate_joint_config(joint_config)
+    _validate_sat_config(contact_config)
+    shared = (
+        (joint_config.dt, contact_config.dt, "dt"),
+        (joint_config.substeps, contact_config.substeps, "substeps"),
+        (joint_config.gravity_y, contact_config.gravity_y, "gravity_y"),
+        (joint_config.solver_iterations, contact_config.solver_iterations, "solver_iterations"),
+        (joint_config.position_correction, contact_config.position_correction, "position_correction"),
+    )
+    for joint_value, contact_value, name in shared:
+        if joint_value != contact_value:
+            raise ValueError(f"coupled joint/contact {name} must match")
+    if motor_target_position is None:
+        motor_target_position = torch.zeros_like(motor_target_velocity)
+    if stiffness is None:
+        stiffness = torch.zeros_like(lower_limit)
+    if joint_warm_start_cache is None:
+        joint_warm_start_cache = torch.zeros(
+            (state.shape[0], joint_indices.shape[0], 8),
+            dtype=torch.float32,
+            device=state.device,
+        )
+    tensors = (
+        state, inverse_mass, half_extents, inverse_inertia, joint_indices,
+        joint_types, parent_anchor_local, child_anchor_local, axis_parent,
+        reference_quaternion_parent_to_child, lower_limit, upper_limit, damping,
+        motor_enabled, motor_target_velocity, motor_target_position, stiffness,
+        maximum_effort, joint_warm_start_cache, contact_pairs,
+        contact_feature_ids, contact_impulses,
+    )
+    if not all(isinstance(item, torch.Tensor) for item in tensors):
+        raise TypeError("coupled inputs must all be torch tensors")
+    if not all(item.is_cuda for item in tensors) or len({item.device for item in tensors}) != 1:
+        raise ValueError("coupled inputs must share one CUDA device")
+    float_tensors = (
+        state, inverse_mass, half_extents, inverse_inertia, parent_anchor_local,
+        child_anchor_local, axis_parent, reference_quaternion_parent_to_child,
+        lower_limit, upper_limit, damping, motor_target_velocity,
+        motor_target_position, stiffness, maximum_effort,
+        joint_warm_start_cache, contact_impulses,
+    )
+    if any(item.dtype != torch.float32 for item in float_tensors):
+        raise ValueError("coupled floating tensors must be float32")
+    if any(item.dtype != torch.int64 for item in (joint_indices, joint_types, contact_pairs, contact_feature_ids)):
+        raise ValueError("coupled indices and feature IDs must be int64")
+    if motor_enabled.dtype != torch.uint8:
+        raise ValueError("motor_enabled must be uint8")
+    if state.ndim != 3 or state.shape[2] != 13:
+        raise ValueError("coupled state must have shape [worlds,bodies,13]")
+    worlds, bodies = state.shape[:2]
+    if worlds <= 0 or not 3 <= bodies <= 32:
+        raise ValueError("coupled worlds require 3..32 bodies")
+    if tuple(inverse_mass.shape) != (worlds, bodies):
+        raise ValueError("coupled inverse_mass shape mismatch")
+    if tuple(half_extents.shape) != (worlds, bodies, 3) or tuple(inverse_inertia.shape) != (worlds, bodies, 3):
+        raise ValueError("coupled box and inertia tensors must have shape [worlds,bodies,3]")
+    if joint_indices.ndim != 2 or joint_indices.shape[1] != 2 or not 1 <= joint_indices.shape[0] <= 16:
+        raise ValueError("joint_indices must have shape [1..16,2]")
+    joints = joint_indices.shape[0]
+    if any(tuple(item.shape) != (joints, 3) for item in (parent_anchor_local, child_anchor_local, axis_parent)):
+        raise ValueError("coupled joint vectors must have shape [joints,3]")
+    if tuple(reference_quaternion_parent_to_child.shape) != (joints, 4):
+        raise ValueError("coupled reference quaternions must have shape [joints,4]")
+    if any(tuple(item.shape) != (joints,) for item in (joint_types, lower_limit, upper_limit, damping, motor_enabled, stiffness)):
+        raise ValueError("coupled joint scalar topology must have shape [joints]")
+    if any(tuple(item.shape) != (worlds, joints) for item in (motor_target_velocity, motor_target_position, maximum_effort)):
+        raise ValueError("coupled controls must have shape [worlds,joints]")
+    if tuple(joint_warm_start_cache.shape) != (worlds, joints, 8):
+        raise ValueError("joint_warm_start_cache must have shape [worlds,joints,8]")
+    if contact_pairs.ndim != 2 or contact_pairs.shape[1] != 2 or not 1 <= contact_pairs.shape[0] <= 16:
+        raise ValueError("contact_pairs must have shape [1..16,2]")
+    pairs = contact_pairs.shape[0]
+    if tuple(contact_feature_ids.shape) != (worlds, pairs, 4):
+        raise ValueError("contact_feature_ids must have shape [worlds,pairs,4]")
+    if tuple(contact_impulses.shape) != (worlds, pairs, 4, 3):
+        raise ValueError("contact_impulses must have shape [worlds,pairs,4,3]")
+    _validate_sat_pair_indices(joint_indices, bodies)
+    _validate_sat_pair_indices(contact_pairs, bodies)
+    joint_rows = {tuple(sorted(map(int, row))) for row in joint_indices.detach().cpu().tolist()}
+    contact_rows = {tuple(sorted(map(int, row))) for row in contact_pairs.detach().cpu().tolist()}
+    if joint_rows & contact_rows:
+        raise ValueError("contact_pairs cannot include collision-filtered connected links")
+    finite_inputs = (
+        state, inverse_mass, half_extents, inverse_inertia, parent_anchor_local,
+        child_anchor_local, axis_parent, reference_quaternion_parent_to_child,
+        lower_limit, upper_limit, damping, motor_target_velocity,
+        motor_target_position, stiffness, maximum_effort,
+        joint_warm_start_cache, contact_impulses,
+    )
+    if not all(bool(torch.isfinite(item).all().item()) for item in finite_inputs):
+        raise ValueError("coupled floating inputs must be finite")
+    if not bool(torch.all(half_extents > 0).item()) or not bool(torch.all(inverse_mass >= 0).item()):
+        raise ValueError("coupled extents must be positive and inverse mass non-negative")
+    axis_length = torch.linalg.vector_norm(axis_parent, dim=-1)
+    reference_length = torch.linalg.vector_norm(reference_quaternion_parent_to_child, dim=-1)
+    body_quaternion_length = torch.linalg.vector_norm(state[..., 3:7], dim=-1)
+    if not bool(torch.all(torch.abs(axis_length - 1.0) <= 1.0e-4).item()):
+        raise ValueError("coupled joint axes must be unit length within 1e-4")
+    if not bool(torch.all(torch.abs(reference_length - 1.0) <= 1.0e-4).item()):
+        raise ValueError("coupled reference quaternions must be unit length within 1e-4")
+    if not bool(torch.all(torch.abs(body_quaternion_length - 1.0) <= 1.0e-4).item()):
+        raise ValueError("coupled body quaternions must be unit length within 1e-4")
+    if not bool(torch.all(lower_limit <= upper_limit).item()):
+        raise ValueError("coupled lower limits must not exceed upper limits")
+    return load_extension().coupled_step(
+        state, inverse_mass, half_extents, inverse_inertia, joint_indices,
+        joint_types, parent_anchor_local, child_anchor_local, axis_parent,
+        reference_quaternion_parent_to_child, lower_limit, upper_limit, damping,
+        motor_enabled, motor_target_velocity, motor_target_position, stiffness,
+        maximum_effort, joint_warm_start_cache, contact_pairs,
+        contact_feature_ids, contact_impulses,
+        float(joint_config.warm_start_factor), float(joint_config.dt),
+        int(joint_config.substeps), float(joint_config.gravity_y),
+        float(contact_config.restitution), float(contact_config.friction),
+        float(contact_config.position_slop), float(joint_config.position_correction),
+        float(contact_config.angular_damping), int(joint_config.solver_iterations),
+        float(contact_config.sat_epsilon), float(joint_config.position_slop),
+        float(joint_config.angular_slop), float(joint_config.maximum_linear_repair_m),
+        float(joint_config.maximum_angular_repair_rad),
     )

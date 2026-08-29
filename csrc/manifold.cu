@@ -49,6 +49,7 @@ __device__ inline void solve_friction(float*a,float ima,const float*ia,float*b,f
 __device__ inline void repair(float*a,float ima,float*b,float imb,const MF&m,float slop,float pc){float sum=ima+imb;if(sum<=0)return;float dep=0;for(int p=0;p<m.count;p++)dep=fmaxf(dep,m.points[p].depth);float r=fminf(.2f,fmaxf(0,dep-slop)*pc)/sum;for(int k=0;k<3;k++){a[k]-=m.n[k]*r*ima;b[k]+=m.n[k]*r*imb;}}
 __device__ inline void write_cache(const MF*m,int64_t*ids,float*js){for(int s=0;s<4;s++){ids[s]=0;js[s*3]=js[s*3+1]=js[s*3+2]=0;}if(!m)return;for(int s=0;s<m->count;s++){ids[s]=m->points[s].id;js[s*3]=m->points[s].jn;js[s*3+1]=m->points[s].jt1;js[s*3+2]=m->points[s].jt2;}}
 
+#ifndef BOX3D_DEVICE_HELPERS_ONLY
 __global__ void kernel(float*state,const float*im,const float*half,const float*ii,
     const int64_t*pairs,int64_t*ids,float*cache,uint8_t*contacts,float*pen,
     int32_t*counts,int W,int B,int P,float dt,int sub,float gy,float rest,
@@ -116,6 +117,9 @@ __global__ void kernel(float*state,const float*im,const float*half,const float*i
     pen[w*P+p]=d;
   }
 }
+#endif
 }
 
+#ifndef BOX3D_DEVICE_HELPERS_ONLY
 std::vector<torch::Tensor> box3d_manifold_step_cuda(torch::Tensor state,torch::Tensor inverse_mass,torch::Tensor half_extents,torch::Tensor inverse_inertia,torch::Tensor pair_indices,torch::Tensor cache_feature_ids,torch::Tensor cache_impulses,double dt,int64_t substeps,double gravity_y,double restitution,double friction,double slop,double position_correction,double angular_damping,int64_t solver_iterations,double sat_epsilon){const c10::cuda::CUDAGuard guard(state.device());auto output=state.clone(),ids=cache_feature_ids.clone(),impulses=cache_impulses.clone();auto contacts=torch::zeros({state.size(0),pair_indices.size(0)},state.options().dtype(torch::kUInt8));auto penetration=torch::zeros({state.size(0),pair_indices.size(0)},state.options());auto counts=torch::zeros({state.size(0),pair_indices.size(0)},state.options().dtype(torch::kInt32));int W=state.size(0),B=state.size(1),P=pair_indices.size(0);constexpr int T=64;int blocks=(W+T-1)/T;kernel<<<blocks,T,0,at::cuda::getDefaultCUDAStream()>>>(output.data_ptr<float>(),inverse_mass.data_ptr<float>(),half_extents.data_ptr<float>(),inverse_inertia.data_ptr<float>(),pair_indices.data_ptr<int64_t>(),ids.data_ptr<int64_t>(),impulses.data_ptr<float>(),contacts.data_ptr<uint8_t>(),penetration.data_ptr<float>(),counts.data_ptr<int32_t>(),W,B,P,float(dt),int(substeps),float(gravity_y),float(restitution),float(friction),float(slop),float(position_correction),float(angular_damping),int(solver_iterations),float(sat_epsilon));C10_CUDA_KERNEL_LAUNCH_CHECK();return {output,contacts,penetration,ids,impulses,counts};}
+#endif
