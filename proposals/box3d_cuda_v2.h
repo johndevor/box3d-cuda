@@ -1,7 +1,7 @@
 #ifndef BOX3D_CUDA_V2_PROPOSAL_H_
 #define BOX3D_CUDA_V2_PROPOSAL_H_
 
-/* ABI-v2 design proposal, draft revision 1. This header is compile-checked but
+/* ABI-v2 design proposal, draft revision 2. This header is compile-checked but
  * is not installed, exported, or implemented. ABI v1 remains the only stable
  * native interface. */
 
@@ -16,13 +16,13 @@
 extern "C" {
 #endif
 
-#define BOX3D_CUDA_ABI_V2_DRAFT_REVISION 1u
+#define BOX3D_CUDA_ABI_V2_DRAFT_REVISION 2u
 #define BOX3D_CUDA_ABI_VERSION_V2 ((2u << 16u) | 0u)
 #define BOX3D_CUDA_STATE_WIDTH_V2 13u
 #define BOX3D_CUDA_JOINT_CACHE_WIDTH_V2 8u
 #define BOX3D_CUDA_MANIFOLD_POINTS_V2 4u
 #define BOX3D_CUDA_CONTACT_IMPULSE_WIDTH_V2 3u
-#define BOX3D_CUDA_TOPOLOGY_HASH_WORDS_V2 4u
+#define BOX3D_CUDA_TOPOLOGY_HASH_BYTES_V2 32u
 #define BOX3D_CUDA_MAX_BODIES_V2 32u
 #define BOX3D_CUDA_MAX_JOINTS_V2 16u
 #define BOX3D_CUDA_MAX_CONTACT_PAIRS_V2 16u
@@ -112,7 +112,7 @@ typedef struct box3d_cuda_scene_register_desc_v2 {
   uint32_t struct_size;
   uint32_t abi_version;
   int32_t device_ordinal;
-  uint32_t flags;
+  uint32_t flags;                              /* must be zero */
   uint32_t environments;
   uint32_t bodies;
   uint32_t joints;
@@ -120,7 +120,7 @@ typedef struct box3d_cuda_scene_register_desc_v2 {
   uint32_t substeps;
   uint32_t solver_iterations;
   uint32_t material_binding;
-  uint32_t reserved_u32;
+  uint32_t reserved_u32;                       /* must be zero */
   float dt;
   float global_gravity_xyz[3];
   float global_friction;
@@ -164,6 +164,11 @@ typedef struct box3d_cuda_scene_register_desc_v2 {
   const float* contact_impulse_cache;          /* optional [E,P,4,3], zero if NULL */
 } box3d_cuda_scene_register_desc_v2;
 
+/* topology_sha256 is computed by the engine after validation. The canonical
+ * stream and its golden vectors are specified in
+ * docs/native-c-abi-v2-proposal.md and topology_digest.py. Mutable episode
+ * values are excluded; immutable topology, layout, and solver semantics are
+ * included. The representation is 32 digest bytes, never host-endian words. */
 typedef struct box3d_cuda_scene_info_v2 {
   uint32_t struct_size;
   uint32_t abi_version;
@@ -171,24 +176,32 @@ typedef struct box3d_cuda_scene_info_v2 {
   uint32_t bodies;
   uint32_t joints;
   uint32_t contact_pairs;
-  uint64_t topology_hash[BOX3D_CUDA_TOPOLOGY_HASH_WORDS_V2];
-  uint64_t reserved_u64[4];
+  uint8_t topology_sha256[BOX3D_CUDA_TOPOLOGY_HASH_BYTES_V2];
+  uint64_t reserved_u64[4];                    /* zero on output */
 } box3d_cuda_scene_info_v2;
 
 /* Step input/output pointers are CUDA device pointers. NULL diagnostic output
- * pointers mean "not requested". Targets/limits are constant across `steps`.
- * Output arrays contain final state diagnostics except motor/contact impulses,
- * which are summed over all requested control steps. The call is asynchronous
- * on `stream` (cudaStream_t represented as void*). */
+ * pointers mean "not requested". The [E,J] target and limit frame is held for
+ * every requested control `steps`; registered `substeps` are internal
+ * integration subdivisions. A joint has at most one actuator. Disabled joints
+ * ignore targets and limits. Output arrays contain final state diagnostics
+ * except motor/contact impulses, which are summed over all requested control
+ * steps. `contact_active` is the final control-step state; `contact_ever` is
+ * true if the pair was active during any requested step. The call is
+ * asynchronous on `stream` (cudaStream_t represented as void*). SUCCESS means
+ * argument validation and enqueue succeeded; execution errors may surface only
+ * when the caller synchronizes that stream. */
 typedef struct box3d_cuda_scene_step_desc_v2 {
   uint32_t struct_size;
   uint32_t abi_version;
   box3d_cuda_scene_handle_v2 scene;
   uint32_t steps;
-  uint32_t reserved_u32;
+  uint32_t reserved_u32;                       /* must be zero */
   const float* target_position;                /* [E,J] */
   const float* target_velocity;                /* [E,J] */
   const float* maximum_effort;                 /* [E,J] */
+  const float* maximum_speed;                  /* [E,J] */
+  const float* maximum_acceleration;           /* [E,J] */
   float* joint_coordinate;                     /* optional [E,J] */
   float* joint_anchor_error;                   /* optional [E,J] */
   float* joint_angular_error;                  /* optional [E,J] */
@@ -196,26 +209,56 @@ typedef struct box3d_cuda_scene_step_desc_v2 {
   float* joint_motor_impulse;                  /* optional [E,J] */
   uint8_t* joint_limit_active;                 /* optional [E,J] */
   uint8_t* contact_active;                     /* optional [E,P] */
-  int32_t* contact_count;                      /* optional [E,P] */
+  uint8_t* contact_ever;                       /* optional [E,P] */
+  uint32_t* contact_count;                     /* optional [E,P], final */
   float* contact_penetration;                  /* optional [E,P] */
   float* contact_normal_impulse;               /* optional [E,P] */
   void* stream;
 } box3d_cuda_scene_step_desc_v2;
 
-/* Snapshot buffers are caller-owned CUDA device pointers in the same packed
- * layouts as registration. Capture and restore are asynchronous. The supplied
- * topology hash must equal scene_info.topology_hash or the call fails closed. */
-typedef struct box3d_cuda_scene_snapshot_desc_v2 {
+/* Snapshot buffers are caller-owned CUDA device pointers. Capture and restore
+ * are asynchronous with the same enqueue/error rule as step. The supplied
+ * SHA-256 must equal scene_info.topology_sha256 or the call fails closed.
+ * Material arrays use the registered binding: global [1], per-body [E,B], or
+ * per-contact-pair [E,P]. environment_gravity_xyz is required exactly when
+ * registration selected per-environment gravity, and NULL otherwise. Every
+ * other non-empty array is required. Mutable episode state is intentionally
+ * complete so capture/restore is a deterministic RL reset primitive. */
+typedef struct box3d_cuda_scene_capture_desc_v2 {
   uint32_t struct_size;
   uint32_t abi_version;
   box3d_cuda_scene_handle_v2 scene;
-  uint64_t topology_hash[BOX3D_CUDA_TOPOLOGY_HASH_WORDS_V2];
+  uint8_t topology_sha256[BOX3D_CUDA_TOPOLOGY_HASH_BYTES_V2];
   float* state;                                /* [E,B,13] */
+  float* inverse_mass;                         /* [E,B] */
+  float* inverse_inertia;                      /* [E,B,3] */
+  float* half_extents;                         /* [E,B,3] */
+  float* environment_gravity_xyz;              /* selected only: [E,3] */
+  float* material_friction;                    /* selected layout */
+  float* material_restitution;                 /* selected layout */
   float* joint_cache;                          /* [E,J,8] */
   int64_t* contact_feature_ids;                /* [E,P,4] */
   float* contact_impulse_cache;                /* [E,P,4,3] */
   void* stream;
-} box3d_cuda_scene_snapshot_desc_v2;
+} box3d_cuda_scene_capture_desc_v2;
+
+typedef struct box3d_cuda_scene_restore_desc_v2 {
+  uint32_t struct_size;
+  uint32_t abi_version;
+  box3d_cuda_scene_handle_v2 scene;
+  uint8_t topology_sha256[BOX3D_CUDA_TOPOLOGY_HASH_BYTES_V2];
+  const float* state;                          /* [E,B,13] */
+  const float* inverse_mass;                   /* [E,B] */
+  const float* inverse_inertia;                /* [E,B,3] */
+  const float* half_extents;                   /* [E,B,3] */
+  const float* environment_gravity_xyz;        /* selected only: [E,3] */
+  const float* material_friction;              /* selected layout */
+  const float* material_restitution;           /* selected layout */
+  const float* joint_cache;                    /* [E,J,8] */
+  const int64_t* contact_feature_ids;          /* [E,P,4] */
+  const float* contact_impulse_cache;          /* [E,P,4,3] */
+  void* stream;
+} box3d_cuda_scene_restore_desc_v2;
 
 /* Linear-scan OBB rays. All query/output pointers are CUDA device pointers.
  * body_index is -1 on miss and otherwise a dense registered body index. */
@@ -224,7 +267,7 @@ typedef struct box3d_cuda_ray_query_desc_v2 {
   uint32_t abi_version;
   box3d_cuda_scene_handle_v2 scene;
   uint32_t rays_per_environment;
-  uint32_t reserved_u32;
+  uint32_t reserved_u32;                       /* must be zero */
   const float* origins;                        /* [E,R,3] */
   const float* directions;                     /* [E,R,3], normalized */
   const float* maximum_distance;               /* [E,R] */
@@ -246,9 +289,9 @@ box3d_cuda_status_v2 box3d_cuda_scene_get_info_v2(
 box3d_cuda_status_v2 box3d_cuda_scene_step_v2(
     const box3d_cuda_scene_step_desc_v2* descriptor);
 box3d_cuda_status_v2 box3d_cuda_scene_capture_v2(
-    const box3d_cuda_scene_snapshot_desc_v2* descriptor);
+    const box3d_cuda_scene_capture_desc_v2* descriptor);
 box3d_cuda_status_v2 box3d_cuda_scene_restore_v2(
-    const box3d_cuda_scene_snapshot_desc_v2* descriptor);
+    const box3d_cuda_scene_restore_desc_v2* descriptor);
 box3d_cuda_status_v2 box3d_cuda_scene_raycast_v2(
     const box3d_cuda_ray_query_desc_v2* descriptor);
 box3d_cuda_status_v2 box3d_cuda_scene_unregister_v2(
