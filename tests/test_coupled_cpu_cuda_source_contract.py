@@ -33,3 +33,5 @@ def test_articulation_projection_is_explicit_and_opt_in() -> None:
     assert "build_two_revolute_articulation" in cuda
     assert "if(articulation_projection)solve_projected_normal" in cuda
     assert "if(articulation_projection)solve_projected_motors" in cuda
+    assert "build_projected_velocity_manifold" in cuda
+    assert "allowed_closing=contact.depth<0.0f?contact.depth/h:0.0f" in cuda
