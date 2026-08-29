@@ -35,10 +35,12 @@ SAMPLED_WORLD_INDICES = tuple(range(SAMPLED_WORLDS))
 TRACE_FIELDS = (
     "joint_positions_rad",
     "joint_velocities_rad_s",
+    "joint_targets_rad",
     "drive_efforts_nm",
     "body_positions_m",
     "body_quaternions_xyzw",
     "body_linear_velocities_mps",
+    "body_angular_velocities_rad_s",
     "pair_contact",
     "pair_contact_impulse_magnitude_ns",
 )
@@ -116,6 +118,10 @@ def _validated_trace(report: Mapping[str, Any]) -> list[dict[str, Any]]:
                 sample["joint_velocities_rad_s"], SAMPLED_WORLDS, JOINT_COUNT,
                 f"samples[{sample_index}].joint_velocities_rad_s",
             ),
+            "joint_targets_rad": _numeric_matrix(
+                sample["joint_targets_rad"], SAMPLED_WORLDS, JOINT_COUNT,
+                f"samples[{sample_index}].joint_targets_rad",
+            ),
             "drive_efforts_nm": _numeric_matrix(
                 sample["drive_efforts_nm"], SAMPLED_WORLDS, JOINT_COUNT,
                 f"samples[{sample_index}].drive_efforts_nm",
@@ -131,6 +137,10 @@ def _validated_trace(report: Mapping[str, Any]) -> list[dict[str, Any]]:
             "body_linear_velocities_mps": _numeric_tensor3(
                 sample["body_linear_velocities_mps"], SAMPLED_WORLDS, BODY_COUNT, 3,
                 f"samples[{sample_index}].body_linear_velocities_mps",
+            ),
+            "body_angular_velocities_rad_s": _numeric_tensor3(
+                sample["body_angular_velocities_rad_s"], SAMPLED_WORLDS, BODY_COUNT, 3,
+                f"samples[{sample_index}].body_angular_velocities_rad_s",
             ),
             "pair_contact": _bool_matrix(
                 sample["pair_contact"], SAMPLED_WORLDS, PAIR_COUNT,
@@ -183,10 +193,12 @@ def compare_coupling_reports(
 
     maximum_joint_position_error = 0.0
     maximum_joint_velocity_error = 0.0
+    maximum_joint_target_error = 0.0
     maximum_drive_effort_error = 0.0
     maximum_body_position_error = 0.0
     maximum_body_orientation_error = 0.0
     maximum_body_velocity_error = 0.0
+    maximum_body_angular_velocity_error = 0.0
     maximum_pair_impulse_error = 0.0
     matching_contacts = 0
     contact_samples = 0
@@ -204,6 +216,13 @@ def compare_coupling_reports(
                 _maximum_absolute(
                     physx_sample["joint_velocities_rad_s"][world],
                     cuda_sample["joint_velocities_rad_s"][world],
+                ),
+            )
+            maximum_joint_target_error = max(
+                maximum_joint_target_error,
+                _maximum_absolute(
+                    physx_sample["joint_targets_rad"][world],
+                    cuda_sample["joint_targets_rad"][world],
                 ),
             )
             maximum_drive_effort_error = max(
@@ -233,6 +252,13 @@ def compare_coupling_reports(
                     _vector_error(
                         physx_sample["body_linear_velocities_mps"][world][body],
                         cuda_sample["body_linear_velocities_mps"][world][body],
+                    ),
+                )
+                maximum_body_angular_velocity_error = max(
+                    maximum_body_angular_velocity_error,
+                    _vector_error(
+                        physx_sample["body_angular_velocities_rad_s"][world][body],
+                        cuda_sample["body_angular_velocities_rad_s"][world][body],
                     ),
                 )
             for pair in range(PAIR_COUNT):
@@ -267,9 +293,11 @@ def compare_coupling_reports(
         "contact_state_agreement_ratio": matching_contacts / contact_samples,
         "maximum_joint_position_error_rad": maximum_joint_position_error,
         "maximum_joint_velocity_error_rad_s": maximum_joint_velocity_error,
+        "maximum_joint_target_error_rad": maximum_joint_target_error,
         "maximum_body_position_error_m": maximum_body_position_error,
         "maximum_body_orientation_error_rad": maximum_body_orientation_error,
         "maximum_body_velocity_error_mps": maximum_body_velocity_error,
+        "maximum_body_angular_velocity_error_rad_s": maximum_body_angular_velocity_error,
         "maximum_drive_effort_error_nm": maximum_drive_effort_error,
         "maximum_pair_contact_impulse_magnitude_error_ns": maximum_pair_impulse_error,
         "maximum_payload_displacement_error_m": maximum_payload_displacement_error,

@@ -27,6 +27,9 @@ HOLD_STEPS = 60
 RAMP_STEPS = 240
 TAIL_WINDOW_STEPS = 120
 TARGET_SCHEDULE_ID = "seeded-smoothstep-extension/v1"
+CUDA_ANGULAR_DAMPING = 0.02
+CONTROL_STEP_IMPULSE_DEFINITION = "norm of vector-summed native pair impulses across both physics substeps"
+DRIVE_EFFORT_TRACE_DEFINITION = "final-state clamped PD effort from the shared target, stiffness, damping, and limits"
 
 MAX_JOINT_LIMIT_EXCESS_RAD = 0.002
 MAX_DRIVE_EFFORT_RATIO = 1.0 + 1.0e-6
@@ -45,7 +48,9 @@ MAX_JOINT_VELOCITY_ERROR_RAD_S = 0.15
 MAX_BODY_POSITION_ERROR_M = 0.008
 MAX_BODY_ORIENTATION_ERROR_RAD = 0.02
 MAX_BODY_VELOCITY_ERROR_MPS = 0.10
+MAX_BODY_ANGULAR_VELOCITY_ERROR_RAD_S = 0.15
 MAX_DRIVE_EFFORT_ERROR_NM = 0.20
+MAX_JOINT_TARGET_ERROR_RAD = 1.0e-7
 MAX_PAIR_CONTACT_IMPULSE_MAGNITUDE_ERROR_NS = 0.08
 MAX_PAYLOAD_DISPLACEMENT_ERROR_M = 0.01
 
@@ -107,6 +112,8 @@ class JointContactPusherSpec:
     gravity_xyz_mps2: tuple[float, float, float] = (0.0, -9.81, 0.0)
     friction: float = 0.60
     restitution: float = 0.0
+    contact_generation_offset_m: float = 0.0
+    contact_rest_offset_m: float = 0.0
     contact_slop_m: float = 0.001
     solver_iterations: int = 8
 
@@ -163,6 +170,8 @@ class JointContactPusherSpec:
             "gravity_xyz_mps2_canonical_y_up": list(self.gravity_xyz_mps2),
             "friction": self.friction,
             "restitution": self.restitution,
+            "contact_generation_offset_m": self.contact_generation_offset_m,
+            "contact_rest_offset_m": self.contact_rest_offset_m,
             "contact_slop_m": self.contact_slop_m,
             "solver_iterations": self.solver_iterations,
             "solver_warm_start": True,
@@ -180,6 +189,8 @@ class JointContactPusherSpec:
             "post_reset_pose_writes": False,
             "direct_payload_force": False,
             "pair_contact_definition": "SAT signed separation <= contact_slop_m at the end of the control step",
+            "pair_contact_impulse_definition": CONTROL_STEP_IMPULSE_DEFINITION,
+            "drive_effort_trace_definition": DRIVE_EFFORT_TRACE_DEFINITION,
             "output_layouts": {
                 "joint_positions_rad": ["world", "joint"],
                 "joint_velocities_rad_s": ["world", "joint"],
@@ -225,9 +236,35 @@ PARITY_THRESHOLDS = {
     "maximum_body_position_error_m": MAX_BODY_POSITION_ERROR_M,
     "maximum_body_orientation_error_rad": MAX_BODY_ORIENTATION_ERROR_RAD,
     "maximum_body_velocity_error_mps": MAX_BODY_VELOCITY_ERROR_MPS,
+    "maximum_body_angular_velocity_error_rad_s": MAX_BODY_ANGULAR_VELOCITY_ERROR_RAD_S,
     "maximum_drive_effort_error_nm": MAX_DRIVE_EFFORT_ERROR_NM,
+    "maximum_joint_target_error_rad": MAX_JOINT_TARGET_ERROR_RAD,
     "maximum_pair_contact_impulse_magnitude_error_ns": MAX_PAIR_CONTACT_IMPULSE_MAGNITUDE_ERROR_NS,
     "maximum_payload_displacement_error_m": MAX_PAYLOAD_DISPLACEMENT_ERROR_M,
+}
+
+CUDA_SOLVER_CONFIGURATION = {
+    "type": "box3d_projected_pgs",
+    "unified_velocity_iterations": SPEC.solver_iterations,
+    "warm_start_factor": 0.8,
+    "split_position_repair_iterations": 8,
+    "two_revolute_articulation_projection": True,
+    "angular_damping": CUDA_ANGULAR_DAMPING,
+    "sleep_enabled": False,
+    "contact_generation_offset_m": SPEC.contact_generation_offset_m,
+    "contact_rest_offset_m": SPEC.contact_rest_offset_m,
+    "position_repair_slop_m": SPEC.contact_slop_m,
+}
+
+PHYSX_PGS_SOLVER_CONFIGURATION = {
+    "type": "physx_pgs",
+    "position_iterations": SPEC.solver_iterations,
+    "velocity_iterations": 2,
+    "enhanced_determinism": True,
+    "angular_damping": CUDA_ANGULAR_DAMPING,
+    "sleep_enabled": False,
+    "contact_generation_offset_m": SPEC.contact_generation_offset_m,
+    "contact_rest_offset_m": SPEC.contact_rest_offset_m,
 }
 
 
@@ -294,6 +331,13 @@ def validate_coupling_report(report: Mapping[str, Any], *, backend: str) -> None
             raise RuntimeError(f"coupling report requires exact {key}")
     if correctness.get("gate_thresholds") != GATE_THRESHOLDS:
         raise RuntimeError("coupling gate thresholds differ from the fixed contract")
+    expected_solver = (
+        PHYSX_PGS_SOLVER_CONFIGURATION
+        if backend == PHYSX_BACKEND
+        else CUDA_SOLVER_CONFIGURATION
+    )
+    if report.get("solver_configuration") != expected_solver:
+        raise RuntimeError("coupling report solver configuration differs from the fixed backend profile")
     for key in (
         "finite_joint_and_body_state", "normalized_body_quaternions",
         "deterministic_replay_passed", "world_isolation_passed",

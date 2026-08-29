@@ -15,9 +15,11 @@ from box3d_cuda.contracts.coupling import (
     BODY_COUNT,
     CONTRACT_ID,
     CUDA_BACKEND,
+    CUDA_SOLVER_CONFIGURATION,
     DEFAULT_SEED,
     GATE_THRESHOLDS,
     PHYSX_BACKEND,
+    PHYSX_PGS_SOLVER_CONFIGURATION,
     SPEC,
     WORLDS,
 )
@@ -58,6 +60,7 @@ def measured_report(backend: str, *, rate: float) -> dict:
             "control_step": step,
             "joint_positions_rad": [[0.55 * (1.0 - progress), -1.0 * (1.0 - progress)] for _ in range(SAMPLED_WORLDS)],
             "joint_velocities_rad_s": [[-0.1, 0.15] for _ in range(SAMPLED_WORLDS)],
+            "joint_targets_rad": [[0.0, 0.0] for _ in range(SAMPLED_WORLDS)],
             "drive_efforts_nm": [[1.0, -0.5] for _ in range(SAMPLED_WORLDS)],
             "body_positions_m": [
                 [[body * 0.1 + (0.2 * progress if body == 4 else 0.0), 0.14, 0.0] for body in range(BODY_COUNT)]
@@ -71,6 +74,10 @@ def measured_report(backend: str, *, rate: float) -> dict:
                 [[0.02 if body == 4 else 0.0, 0.0, 0.0] for body in range(BODY_COUNT)]
                 for _ in range(SAMPLED_WORLDS)
             ],
+            "body_angular_velocities_rad_s": [
+                [[0.0, 0.0, 0.0] for _ in range(BODY_COUNT)]
+                for _ in range(SAMPLED_WORLDS)
+            ],
             "pair_contact": [[True, False, False, False, step >= 60] for _ in range(SAMPLED_WORLDS)],
             "pair_contact_impulse_magnitude_ns": [[0.08, 0.0, 0.0, 0.0, 0.04 if step >= 60 else 0.0] for _ in range(SAMPLED_WORLDS)],
         })
@@ -82,6 +89,11 @@ def measured_report(backend: str, *, rate: float) -> dict:
         "steps": BENCHMARK_STEPS,
         "world_steps_per_second": rate,
         "capabilities": {"articulated_joints": True, "rigid_body_contacts": True},
+        "solver_configuration": (
+            PHYSX_PGS_SOLVER_CONFIGURATION
+            if backend == PHYSX_BACKEND
+            else CUDA_SOLVER_CONFIGURATION
+        ),
         "correctness": correctness,
         "parity_trace": {
             "sampled_steps": list(SAMPLED_STEPS),

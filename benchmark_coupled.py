@@ -13,6 +13,7 @@ from .contracts.coupling import (
     BODY_COUNT,
     CONTRACT_ID,
     CONTROL_HZ,
+    CUDA_SOLVER_CONFIGURATION,
     CUDA_BACKEND,
     DEFAULT_SEED,
     GATE_THRESHOLDS,
@@ -179,6 +180,21 @@ def _targets(initial_q, step: int):
     return initial_q * (1.0 - smooth)
 
 
+def _drive_effort_proxy(bundle, joint_coordinate, target):
+    """Shared final-state PD observable used by both comparison backends."""
+
+    import torch
+
+    parents = bundle["joint_indices"][:, 0]
+    children = bundle["joint_indices"][:, 1]
+    relative_angular = bundle["state"][:, children, 10:13] - bundle["state"][:, parents, 10:13]
+    axes = bundle["axis"][None, :, :].expand(relative_angular.shape[0], -1, -1)
+    speed = torch.sum(relative_angular * axes, dim=-1)
+    effort = bundle["stiffness"][None, :] * (target - joint_coordinate) - bundle["damping"][None, :] * speed
+    limits = torch.tensor(SPEC.drive_effort_limits_nm, dtype=effort.dtype, device=effort.device)
+    return torch.clamp(effort, -limits, limits), speed
+
+
 def _step(bundle, target, config, *, articulation_projection: bool = False):
     import torch
 
@@ -235,14 +251,16 @@ def _run(
     parity_steps = set(range(0, BENCHMARK_STEPS, 12)) | {BENCHMARK_STEPS - 1}
     last = None
     for step in range(BENCHMARK_STEPS):
+        target = _targets(bundle["initial_q"], step)
         last = _step(
             bundle,
-            _targets(bundle["initial_q"], step),
+            target,
             config,
             articulation_projection=articulation_projection,
         )
         if diagnostics:
-            contact_frames += last[8].to(torch.int32)
+            pair_contact = _pair_signed_separations(bundle) <= SPEC.contact_slop_m
+            contact_frames += pair_contact.to(torch.int32)
             max_penetration = torch.maximum(max_penetration, last[9].max())
             max_anchor = torch.maximum(max_anchor, last[2].max())
             max_penetration_per_pair = torch.maximum(max_penetration_per_pair,last[9].amax(dim=0))
@@ -257,6 +275,7 @@ def _run(
             residual = _mechanical_energy(bundle) - energy0 - cumulative_work
             max_energy_residual = torch.maximum(max_energy_residual, torch.clamp_min(residual.max(),0.0))
             previous_q = last[1].clone()
+            effort_proxy, joint_speed = _drive_effort_proxy(bundle, last[1], target)
             if step >= BENCHMARK_STEPS - TAIL_WINDOW_STEPS:
                 tail_speed += torch.linalg.vector_norm(bundle["state"][:,4,7:10],dim=1) / TAIL_WINDOW_STEPS
             if capture_trace and ((step + 1) % 6 == 0 or step + 1 == BENCHMARK_STEPS):
@@ -268,38 +287,35 @@ def _run(
                     "contact_feature_ids":last[10][0].detach().cpu().tolist(),"contact_impulses":last[11][0].detach().cpu().tolist(),
                     "joint_cache":bundle["joint_cache"][0].detach().cpu().tolist(),
                     "pair_contact_count":last[12][0].detach().cpu().tolist(),"pair_normal_impulse_ns":last[13][0].detach().cpu().tolist(),
-                    "joint_target_rad":_targets(bundle["initial_q"],step)[0].detach().cpu().tolist(),
+                    "joint_target_rad":target[0].detach().cpu().tolist(),
                 })
             if capture_parity and step in parity_steps:
-                parents=torch.tensor(SPEC.joint_parent_body_indices,dtype=torch.int64,device=bundle["state"].device)
-                children=torch.tensor(SPEC.joint_child_body_indices,dtype=torch.int64,device=bundle["state"].device)
-                joint_velocity=bundle["state"][:64,children,12]-bundle["state"][:64,parents,12]
                 parity_trace.append({
                     "control_step":step,
                     "joint_positions_rad":last[1][:64].detach().cpu().tolist(),
-                    "joint_velocities_rad_s":joint_velocity.detach().cpu().tolist(),
-                    "drive_efforts_nm":(last[5][:64]*CONTROL_HZ).detach().cpu().tolist(),
+                    "joint_velocities_rad_s":joint_speed[:64].detach().cpu().tolist(),
+                    "drive_efforts_nm":effort_proxy[:64].detach().cpu().tolist(),
+                    "joint_targets_rad":target[:64].detach().cpu().tolist(),
                     "body_positions_m":bundle["state"][:64,:,:3].detach().cpu().tolist(),
                     "body_quaternions_xyzw":bundle["state"][:64,:,3:7].detach().cpu().tolist(),
                     "body_linear_velocities_mps":bundle["state"][:64,:,7:10].detach().cpu().tolist(),
-                    "pair_contact":(_pair_signed_separations(bundle)[:64] <= SPEC.contact_slop_m).detach().cpu().tolist(),
+                    "body_angular_velocities_rad_s":bundle["state"][:64,:,10:13].detach().cpu().tolist(),
+                    "pair_contact":pair_contact[:64].detach().cpu().tolist(),
                     "pair_contact_impulse_magnitude_ns":last[13][:64].detach().cpu().tolist(),
                 })
             if capture_parity and step in IMPACT_STEPS:
-                parents=torch.tensor(SPEC.joint_parent_body_indices,dtype=torch.int64,device=bundle["state"].device)
-                children=torch.tensor(SPEC.joint_child_body_indices,dtype=torch.int64,device=bundle["state"].device)
-                joint_velocity=bundle["state"][:64,children,12]-bundle["state"][:64,parents,12]
                 pair_index=SPEC.contact_pair_roles.index("link2_payload")
                 impact_trace.append({
                     "control_step":step,
                     "joint_positions_rad":last[1][:64].detach().cpu().tolist(),
-                    "joint_velocities_rad_s":joint_velocity.detach().cpu().tolist(),
-                    "drive_efforts_nm":(last[5][:64]*CONTROL_HZ).detach().cpu().tolist(),
+                    "joint_velocities_rad_s":joint_speed[:64].detach().cpu().tolist(),
+                    "drive_efforts_nm":effort_proxy[:64].detach().cpu().tolist(),
+                    "joint_targets_rad":target[:64].detach().cpu().tolist(),
                     "payload_position_m":bundle["state"][:64,4,:3].detach().cpu().tolist(),
                     "payload_linear_velocity_mps":bundle["state"][:64,4,7:10].detach().cpu().tolist(),
                     "link2_position_m":bundle["state"][:64,3,:3].detach().cpu().tolist(),
                     "link2_linear_velocity_mps":bundle["state"][:64,3,7:10].detach().cpu().tolist(),
-                    "link2_payload_contact":(_pair_signed_separations(bundle)[:64,pair_index] <= SPEC.contact_slop_m).detach().cpu().tolist(),
+                    "link2_payload_contact":pair_contact[:64,pair_index].detach().cpu().tolist(),
                     "link2_payload_impulse_magnitude_ns":last[13][:64,pair_index].detach().cpu().tolist(),
                 })
     assert last is not None
@@ -367,6 +383,10 @@ def benchmark(output_path: Path, *, articulation_projection: bool = False) -> di
             "device":torch.cuda.get_device_name(device),"peak_memory_bytes":torch.cuda.max_memory_allocated(device),
             "capabilities":{"articulated_joints":True,"rigid_body_contacts":True,
                             "two_revolute_articulation_projection":articulation_projection},
+            "solver_configuration":{
+                **CUDA_SOLVER_CONFIGURATION,
+                "two_revolute_articulation_projection":articulation_projection,
+            },
             "anti_fake_audit":{"pose_copy_count":0,"attachment_state_count":0,"hidden_payload_force_count":0},
             "diagnostic_scope":{"passive_energy":"measured as positive mechanical-energy residual after integrated drive work",
                                 "momentum":"not a closed-system gate for this driven floor-contact workload",
