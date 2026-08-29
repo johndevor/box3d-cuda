@@ -9,6 +9,7 @@ from box3d_cuda.industrial_joint_import import (
 from box3d_cuda.benchmark_industrial_joints import (
     CONTROLLER_DAMPING,
     DEFAULT_SEED,
+    VISUALIZATION_TRACE_STEPS,
     _limit_targets,
     _with_runtime_controller,
     target_positions,
@@ -73,6 +74,8 @@ def test_compiler_fixes_only_base_and_preserves_engineering_limits() -> None:
 
 
 def test_industrial_control_schedule_is_held_then_seeded_per_world() -> None:
+    assert VISUALIZATION_TRACE_STEPS[0] == 0
+    assert VISUALIZATION_TRACE_STEPS[-1] == 359
     assert target_positions(0, 0) == [0.0] * 6
     assert target_positions(59, 63) == [0.0] * 6
     assert target_positions(120, 0, DEFAULT_SEED) != target_positions(

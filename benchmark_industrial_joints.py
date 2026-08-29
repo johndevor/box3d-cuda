@@ -38,6 +38,7 @@ CONTROLLER_DAMPING = (70.0, 3000.0, 55.0, 25.0, 18.0, 12.0)
 PARITY_WORLD_IDS = (0, 1, 17, 63)
 PARITY_STEPS = 120
 TRACE_STEPS = tuple(range(0, PARITY_STEPS, 12)) + (PARITY_STEPS - 1,)
+VISUALIZATION_TRACE_STEPS = tuple(range(0, STEPS, 12)) + (STEPS - 1,)
 REPRESENTABLE_LIMIT_JOINTS = (1, 2, 4)
 UNVALIDATED_FULL_RANGE_JOINTS = ("joint_a1", "joint_a4", "joint_a6")
 STATE_TOLERANCE = 2.0e-2
@@ -287,8 +288,17 @@ def _gpu_correctness(torch, compiled, config, worlds, seed):
         max_effort = max(max_effort, float((result[5].abs() / (inputs["effort"] * config.dt)).max().item()))
         speed_limits = torch.tensor(compiled.maximum_velocity_rad_s, dtype=torch.float32, device="cuda")[None, :]
         max_speed = max(max_speed, float((_gpu_projected_velocities(torch, result[0], inputs).abs() / speed_limits).max().item()))
-        if step in TRACE_STEPS:
-            trace.append({"step": step, "world0_coordinate_rad": result[1][0].detach().cpu().tolist(), "world0_target_rad": target[0].detach().cpu().tolist()})
+        if step in VISUALIZATION_TRACE_STEPS:
+            trace.append({
+                "step": step,
+                "time_s": (step + 1) / CONTROL_HZ,
+                "world0_body_state": result[0][0].detach().cpu().tolist(),
+                "world0_coordinate_rad": result[1][0].detach().cpu().tolist(),
+                "world0_target_rad": target[0].detach().cpu().tolist(),
+                "world0_anchor_error_m": result[2][0].detach().cpu().tolist(),
+                "world0_angular_error_rad": result[3][0].detach().cpu().tolist(),
+                "world0_motor_impulse_nms": result[5][0].detach().cpu().tolist(),
+            })
     quaternion_error = float((torch.linalg.vector_norm(result[0][:, :, 3:7], dim=-1) - 1.0).abs().max().item())
     environment_joint_tail_rms = torch.sqrt(tail_squared / TAIL_STEPS)
     per_joint_batch_tail_rms = torch.sqrt(
