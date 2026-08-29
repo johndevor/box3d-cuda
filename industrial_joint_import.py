@@ -56,6 +56,20 @@ class IndustrialJointModel:
     manufacturer_dynamics: bool = False
 
 
+@dataclass(frozen=True)
+class IndustrialJointWorld:
+    """One zero-coordinate industrial arm compiled for the joint solver."""
+
+    state_y_up: Tuple[Tuple[float, ...], ...]
+    inverse_mass: Tuple[float, ...]
+    inverse_inertia_local: Tuple[Vec3, ...]
+    topology: object
+    maximum_effort_nm: Tuple[float, ...]
+    maximum_velocity_rad_s: Tuple[float, ...]
+    link_frame_positions_y_up: Tuple[Vec3, ...]
+    link_frame_quaternions_xyzw_y_up: Tuple[Tuple[float, float, float, float], ...]
+
+
 def _vec(text: str | None, *, default: Vec3 = (0.0, 0.0, 0.0)) -> Vec3:
     if text is None:
         return default
@@ -70,6 +84,113 @@ def _positive(value: str | None, label: str) -> float:
     if not math.isfinite(parsed) or parsed <= 0.0:
         raise ValueError(f"{label} must be positive and finite")
     return parsed
+
+
+def _qmul(a, b):
+    return (
+        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    )
+
+
+def _qrotate(q, v):
+    qv = (q[0], q[1], q[2])
+    cross = (
+        qv[1] * v[2] - qv[2] * v[1],
+        qv[2] * v[0] - qv[0] * v[2],
+        qv[0] * v[1] - qv[1] * v[0],
+    )
+    twice = tuple(2.0 * value for value in cross)
+    again = (
+        qv[1] * twice[2] - qv[2] * twice[1],
+        qv[2] * twice[0] - qv[0] * twice[2],
+        qv[0] * twice[1] - qv[1] * twice[0],
+    )
+    return tuple(v[index] + q[3] * twice[index] + again[index] for index in range(3))
+
+
+def _rpy_quaternion(rpy: Vec3):
+    roll, pitch, yaw = rpy
+    qx = (math.sin(roll / 2.0), 0.0, 0.0, math.cos(roll / 2.0))
+    qy = (0.0, math.sin(pitch / 2.0), 0.0, math.cos(pitch / 2.0))
+    qz = (0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0))
+    return _qmul(_qmul(qz, qy), qx)
+
+
+def compile_industrial_joint_world(model: IndustrialJointModel) -> IndustrialJointWorld:
+    """Compile URDF zero pose into maximal-coordinate solver tensors.
+
+    URDF link-local coordinates remain body-local coordinates. World poses are
+    rotated from URDF z-up to the engine's canonical y-up frame by -90 degrees
+    about +x. Body positions are inertial centers of mass, so both local anchor
+    offsets account for each link's inertial origin.
+    """
+
+    from .joint_reference import JointTopology, REVOLUTE
+
+    if len(model.links) != 7 or len(model.joints) != 6:
+        raise ValueError("industrial joint world requires seven links and six joints")
+    basis = (-math.sqrt(0.5), 0.0, 0.0, math.sqrt(0.5))
+    link_position = [(0.0, 0.0, 0.0)] * len(model.links)
+    link_quaternion = [(0.0, 0.0, 0.0, 1.0)] * len(model.links)
+    for joint in model.joints:
+        parent_p = link_position[joint.parent_index]
+        parent_q = link_quaternion[joint.parent_index]
+        origin_q = _rpy_quaternion(joint.origin_rpy_rad)
+        translated = _qrotate(parent_q, joint.origin_m_z_up)
+        link_position[joint.child_index] = tuple(parent_p[index] + translated[index] for index in range(3))
+        link_quaternion[joint.child_index] = _qmul(parent_q, origin_q)
+    world_position = [tuple(_qrotate(basis, position)) for position in link_position]
+    world_quaternion = [_qmul(basis, quaternion) for quaternion in link_quaternion]
+    state = []
+    for link, frame_p, frame_q in zip(model.links, world_position, world_quaternion):
+        center = _qrotate(frame_q, link.center_of_mass_m_z_up)
+        position = tuple(frame_p[index] + center[index] for index in range(3))
+        state.append((*position, *frame_q, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    parent_anchors = []
+    child_anchors = []
+    axes = []
+    references = []
+    for joint in model.joints:
+        parent_com = model.links[joint.parent_index].center_of_mass_m_z_up
+        child_com = model.links[joint.child_index].center_of_mass_m_z_up
+        parent_anchors.append(tuple(joint.origin_m_z_up[index] - parent_com[index] for index in range(3)))
+        child_anchors.append(tuple(-value for value in child_com))
+        origin_q = _rpy_quaternion(joint.origin_rpy_rad)
+        axis = _qrotate(origin_q, joint.axis_z_up)
+        length = math.sqrt(sum(value * value for value in axis))
+        if length <= 1.0e-12:
+            raise ValueError(f"joint {joint.name} axis has zero length")
+        axes.append(tuple(value / length for value in axis))
+        references.append(origin_q)
+    topology = JointTopology(
+        joint_indices=tuple((joint.parent_index, joint.child_index) for joint in model.joints),
+        joint_types=(REVOLUTE,) * len(model.joints),
+        parent_anchor_local=tuple(parent_anchors),
+        child_anchor_local=tuple(child_anchors),
+        axis_parent=tuple(axes),
+        reference_quaternion_parent_to_child=tuple(references),
+        lower_limit=tuple(joint.lower for joint in model.joints),
+        upper_limit=tuple(joint.upper for joint in model.joints),
+        damping=tuple(joint.damping for joint in model.joints),
+        motor_enabled=(True,) * len(model.joints),
+        collision_enabled=(False,) * len(model.joints),
+    )
+    return IndustrialJointWorld(
+        state_y_up=tuple(tuple(value for value in body) for body in state),
+        inverse_mass=(0.0,) + tuple(1.0 / link.mass_kg for link in model.links[1:]),
+        inverse_inertia_local=((0.0, 0.0, 0.0),) + tuple(
+            tuple(1.0 / value for value in link.inertia_diagonal_kg_m2)
+            for link in model.links[1:]
+        ),
+        topology=topology,
+        maximum_effort_nm=tuple(joint.effort for joint in model.joints),
+        maximum_velocity_rad_s=tuple(joint.velocity for joint in model.joints),
+        link_frame_positions_y_up=tuple(world_position),
+        link_frame_quaternions_xyzw_y_up=tuple(world_quaternion),
+    )
 
 
 def load_industrial_joint_model(
