@@ -10,6 +10,7 @@ from pathlib import Path
 _SAT_PAIR_VALIDATION_CACHE: dict[int, tuple] = {}
 _RAY_VALIDATION_CACHE: dict[int, tuple] = {}
 _RAY_GEOMETRY_VALIDATION_CACHE: dict[int, tuple] = {}
+_CAMERA_VALIDATION_CACHE: dict[int, tuple] = {}
 
 
 @lru_cache(maxsize=1)
@@ -21,7 +22,7 @@ def load_extension():
         raise RuntimeError("Box3D CUDA requires a visible CUDA device")
     root = Path(__file__).resolve().parent
     return load(
-        name="factory_box3d_cuda_v13",
+        name="factory_box3d_cuda_v14",
         sources=[
             str(root / "csrc" / "bindings.cpp"),
             str(root / "csrc" / "step.cu"),
@@ -31,6 +32,7 @@ def load_extension():
             str(root / "csrc" / "manifold.cu"),
             str(root / "csrc" / "joint.cu"),
             str(root / "csrc" / "ray.cu"),
+            str(root / "csrc" / "camera.cu"),
             str(root / "csrc" / "coupled.cu"),
             str(root / "csrc" / "articulation_response.cu"),
         ],
@@ -140,6 +142,216 @@ def ray_cast(state, half_extents, body_enabled, ray_origins, ray_directions, max
     return load_extension().ray_cast(
         state, half_extents, body_enabled, ray_origins, ray_directions, maximum_distance
     )
+
+
+def _validate_camera_topology(
+    parent_body,
+    position_parent,
+    quaternion_parent_from_camera,
+    intrinsics,
+    pixel_camera,
+    pixel_xy,
+    bodies: int,
+) -> None:
+    """Validate immutable calibration/topology once per tensor mutation."""
+
+    import torch
+
+    tensors = (
+        parent_body,
+        position_parent,
+        quaternion_parent_from_camera,
+        intrinsics,
+        pixel_camera,
+        pixel_xy,
+    )
+    key = id(parent_body)
+    versions = tuple(int(getattr(item, "_version", -1)) for item in tensors)
+    identities = tuple(id(item) for item in tensors)
+    cached = _CAMERA_VALIDATION_CACHE.get(key)
+    if (
+        cached is not None
+        and all(left is right for left, right in zip(cached[:6], tensors))
+        and cached[6:] == (*versions, *identities, bodies)
+    ):
+        return
+    if not all(
+        bool(torch.isfinite(item).all().item())
+        for item in (position_parent, quaternion_parent_from_camera, intrinsics)
+    ):
+        raise ValueError("camera poses and intrinsics must be finite")
+    quaternion_length = torch.linalg.vector_norm(
+        quaternion_parent_from_camera, dim=-1
+    )
+    if not bool(torch.all(torch.abs(quaternion_length - 1.0) <= 2.0e-5).item()):
+        raise ValueError("camera quaternions must be unit length within 2e-5")
+    if not bool(
+        torch.all(
+            (intrinsics[:, 0] > 0.0)
+            & (intrinsics[:, 1] > 0.0)
+            & (intrinsics[:, 4] > 0.0)
+        ).item()
+    ):
+        raise ValueError("camera focal lengths and maximum distance must be positive")
+    if not bool(torch.all((parent_body >= -1) & (parent_body < bodies)).item()):
+        raise ValueError("camera parent bodies must be -1 or in range")
+    cameras = parent_body.numel()
+    if not bool(torch.all((pixel_camera >= 0) & (pixel_camera < cameras)).item()):
+        raise ValueError("pixel_camera contains an out-of-range camera index")
+    if not bool(torch.all(pixel_xy >= 0).item()):
+        raise ValueError("pixel coordinates must be non-negative")
+    if len(_CAMERA_VALIDATION_CACHE) >= 128:
+        _CAMERA_VALIDATION_CACHE.clear()
+    _CAMERA_VALIDATION_CACHE[key] = (
+        *tensors,
+        *versions,
+        *identities,
+        bodies,
+    )
+
+
+def camera_rays(
+    state,
+    parent_body,
+    position_parent,
+    quaternion_parent_from_camera,
+    intrinsics,
+    pixel_camera,
+    pixel_xy,
+):
+    """Generate calibrated world-space camera rays entirely on CUDA.
+
+    ``intrinsics`` rows are ``[fx, fy, cx, cy, maximum_distance_m]``. Camera
+    poses are parent-from-camera in XYZW convention; parent ``-1`` is world.
+    Pixel rows are flattened in caller-defined camera/image order.
+    """
+
+    import torch
+
+    tensors = (
+        state,
+        parent_body,
+        position_parent,
+        quaternion_parent_from_camera,
+        intrinsics,
+        pixel_camera,
+        pixel_xy,
+    )
+    if not all(isinstance(item, torch.Tensor) for item in tensors):
+        raise TypeError("camera inputs must all be torch tensors")
+    if not all(item.is_cuda for item in tensors) or len(
+        {item.device for item in tensors}
+    ) != 1:
+        raise ValueError("camera inputs must share one CUDA device")
+    if any(
+        item.dtype != torch.float32
+        for item in (
+            state,
+            position_parent,
+            quaternion_parent_from_camera,
+            intrinsics,
+        )
+    ):
+        raise ValueError("camera state, poses, and intrinsics must be float32")
+    if any(
+        item.dtype != torch.int64
+        for item in (parent_body, pixel_camera, pixel_xy)
+    ):
+        raise ValueError("camera topology and pixel coordinates must be int64")
+    if state.ndim != 3 or state.shape[0] <= 0 or state.shape[2] != 13:
+        raise ValueError("camera state must have shape [worlds,bodies,13]")
+    worlds, bodies = state.shape[:2]
+    if not 1 <= bodies <= 32:
+        raise ValueError("camera state requires 1..32 bodies")
+    if parent_body.ndim != 1 or not 1 <= parent_body.numel() <= 64:
+        raise ValueError("parent_body must have shape [1..64]")
+    cameras = parent_body.numel()
+    if tuple(position_parent.shape) != (cameras, 3):
+        raise ValueError("position_parent must have shape [cameras,3]")
+    if tuple(quaternion_parent_from_camera.shape) != (cameras, 4):
+        raise ValueError(
+            "quaternion_parent_from_camera must have shape [cameras,4]"
+        )
+    if tuple(intrinsics.shape) != (cameras, 5):
+        raise ValueError("intrinsics must have shape [cameras,5]")
+    if pixel_camera.ndim != 1 or not 1 <= pixel_camera.numel() <= 262_144:
+        raise ValueError("pixel_camera must have shape [1..262144]")
+    rays = pixel_camera.numel()
+    if tuple(pixel_xy.shape) != (rays, 2):
+        raise ValueError("pixel_xy must have shape [rays,2]")
+    if worlds * rays > 1_048_576:
+        raise ValueError("camera batch exceeds 1,048,576 total rays")
+    if not bool(torch.isfinite(state[..., :7]).all().item()):
+        raise ValueError("camera parent body poses must be finite")
+    state_quaternion_length = torch.linalg.vector_norm(state[..., 3:7], dim=-1)
+    if not bool(
+        torch.all(torch.abs(state_quaternion_length - 1.0) <= 1.0e-4).item()
+    ):
+        raise ValueError("camera parent body quaternions must be unit length")
+    _validate_camera_topology(
+        parent_body,
+        position_parent,
+        quaternion_parent_from_camera,
+        intrinsics,
+        pixel_camera,
+        pixel_xy,
+        bodies,
+    )
+    return load_extension().camera_rays(*tensors)
+
+
+def camera_depth(distance, body_index, forward_cosine):
+    """Return optical-axis depth and hit range; misses are exact zero."""
+
+    import torch
+
+    tensors = (distance, body_index, forward_cosine)
+    if not all(isinstance(item, torch.Tensor) for item in tensors):
+        raise TypeError("camera depth inputs must all be torch tensors")
+    if not all(item.is_cuda for item in tensors) or len(
+        {item.device for item in tensors}
+    ) != 1:
+        raise ValueError("camera depth inputs must share one CUDA device")
+    if distance.dtype != torch.float32 or forward_cosine.dtype != torch.float32:
+        raise ValueError("camera distance and forward cosine must be float32")
+    if body_index.dtype != torch.int64:
+        raise ValueError("camera body index must be int64")
+    if distance.ndim != 2 or distance.numel() <= 0 or distance.numel() > 1_048_576:
+        raise ValueError("camera distance must have shape [worlds,rays]")
+    if body_index.shape != distance.shape or forward_cosine.shape != distance.shape:
+        raise ValueError("camera depth input shapes must match")
+    return load_extension().camera_depth(
+        distance, body_index, forward_cosine
+    )
+
+
+def depth_camera_query(
+    state,
+    half_extents,
+    body_enabled,
+    parent_body,
+    position_parent,
+    quaternion_parent_from_camera,
+    intrinsics,
+    pixel_camera,
+    pixel_xy,
+):
+    """Compile calibrated rays, query resident OBBs, and return CUDA depth."""
+
+    origins, directions, maximum, forward = camera_rays(
+        state,
+        parent_body,
+        position_parent,
+        quaternion_parent_from_camera,
+        intrinsics,
+        pixel_camera,
+        pixel_xy,
+    )
+    distance, body_index, normal = ray_cast(
+        state, half_extents, body_enabled, origins, directions, maximum
+    )
+    depth_z, hit_range = camera_depth(distance, body_index, forward)
+    return depth_z, hit_range, body_index, normal, origins, directions
 
 
 def step(state, inverse_mass, radius, *, dt, substeps, gravity_y, restitution, friction):

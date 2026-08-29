@@ -141,6 +141,20 @@ std::vector<torch::Tensor> box3d_ray_cast_cuda(
     torch::Tensor ray_directions,
     torch::Tensor maximum_distance);
 
+std::vector<torch::Tensor> box3d_camera_rays_cuda(
+    torch::Tensor state,
+    torch::Tensor parent_body,
+    torch::Tensor position_parent,
+    torch::Tensor quaternion_parent_from_camera,
+    torch::Tensor intrinsics,
+    torch::Tensor pixel_camera,
+    torch::Tensor pixel_xy);
+
+std::vector<torch::Tensor> box3d_camera_depth_cuda(
+    torch::Tensor distance,
+    torch::Tensor body_index,
+    torch::Tensor forward_cosine);
+
 torch::Tensor box3d_step(
     torch::Tensor state,
     torch::Tensor inverse_mass,
@@ -664,6 +678,83 @@ std::vector<torch::Tensor> box3d_ray_cast(
       maximum_distance.contiguous());
 }
 
+std::vector<torch::Tensor> box3d_camera_rays(
+    torch::Tensor state,
+    torch::Tensor parent_body,
+    torch::Tensor position_parent,
+    torch::Tensor quaternion_parent_from_camera,
+    torch::Tensor intrinsics,
+    torch::Tensor pixel_camera,
+    torch::Tensor pixel_xy) {
+  const auto device = state.device();
+  const std::vector<torch::Tensor> tensors = {
+      state, parent_body, position_parent, quaternion_parent_from_camera,
+      intrinsics, pixel_camera, pixel_xy};
+  for (const auto& tensor : tensors) {
+    TORCH_CHECK(tensor.is_cuda() && tensor.device() == device,
+                "all camera tensors must share one CUDA device");
+  }
+  TORCH_CHECK(state.scalar_type() == torch::kFloat32 &&
+              position_parent.scalar_type() == torch::kFloat32 &&
+              quaternion_parent_from_camera.scalar_type() == torch::kFloat32 &&
+              intrinsics.scalar_type() == torch::kFloat32,
+              "camera state, poses, and intrinsics must be float32");
+  TORCH_CHECK(parent_body.scalar_type() == torch::kInt64 &&
+              pixel_camera.scalar_type() == torch::kInt64 &&
+              pixel_xy.scalar_type() == torch::kInt64,
+              "camera topology and pixel coordinates must be int64");
+  TORCH_CHECK(state.dim() == 3 && state.size(0) > 0 && state.size(1) >= 1 &&
+              state.size(1) <= 32 && state.size(2) == 13,
+              "camera state must have shape [worlds,1..32,13]");
+  const int64_t worlds = state.size(0);
+  const int64_t cameras = parent_body.numel();
+  TORCH_CHECK(parent_body.dim() == 1 && cameras >= 1 && cameras <= 64,
+              "parent_body must have shape [1..64]");
+  TORCH_CHECK(position_parent.sizes() == torch::IntArrayRef({cameras, 3}) &&
+              quaternion_parent_from_camera.sizes() ==
+                  torch::IntArrayRef({cameras, 4}) &&
+              intrinsics.sizes() == torch::IntArrayRef({cameras, 5}),
+              "camera pose/intrinsic shapes mismatch");
+  TORCH_CHECK(pixel_camera.dim() == 1 && pixel_camera.numel() >= 1 &&
+              pixel_camera.numel() <= 262144,
+              "pixel_camera must have shape [1..262144]");
+  const int64_t rays = pixel_camera.numel();
+  TORCH_CHECK(pixel_xy.sizes() == torch::IntArrayRef({rays, 2}),
+              "pixel_xy must have shape [rays,2]");
+  TORCH_CHECK(worlds <= 1048576 / rays,
+              "camera ray batch exceeds 1,048,576 total rays");
+  return box3d_camera_rays_cuda(
+      state.contiguous(), parent_body.contiguous(),
+      position_parent.contiguous(),
+      quaternion_parent_from_camera.contiguous(), intrinsics.contiguous(),
+      pixel_camera.contiguous(), pixel_xy.contiguous());
+}
+
+std::vector<torch::Tensor> box3d_camera_depth(
+    torch::Tensor distance,
+    torch::Tensor body_index,
+    torch::Tensor forward_cosine) {
+  TORCH_CHECK(distance.is_cuda() && body_index.is_cuda() &&
+              forward_cosine.is_cuda(),
+              "all camera depth tensors must be CUDA");
+  TORCH_CHECK(distance.device() == body_index.device() &&
+              distance.device() == forward_cosine.device(),
+              "all camera depth tensors must share one CUDA device");
+  TORCH_CHECK(distance.scalar_type() == torch::kFloat32 &&
+              forward_cosine.scalar_type() == torch::kFloat32 &&
+              body_index.scalar_type() == torch::kInt64,
+              "camera distance/cosine must be float32 and body index int64");
+  TORCH_CHECK(distance.dim() == 2 && distance.size(0) > 0 &&
+              distance.size(1) > 0 && distance.numel() <= 1048576,
+              "camera distances must have shape [worlds,rays]");
+  TORCH_CHECK(body_index.sizes() == distance.sizes() &&
+              forward_cosine.sizes() == distance.sizes(),
+              "camera depth tensor shapes must match");
+  return box3d_camera_depth_cuda(
+      distance.contiguous(), body_index.contiguous(),
+      forward_cosine.contiguous());
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
   module.def("step", &box3d_step, "Box3D-derived fixed-world CUDA step");
   module.def("articulation_response", &box3d_articulation_response,
@@ -675,4 +766,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
   module.def("joint_step", &box3d_joint_step, "Fixed-topology articulated joint CUDA step");
   module.def("coupled_step", &box3d_coupled_step, "Coupled articulated-joint and persistent-contact CUDA step");
   module.def("ray_cast", &box3d_ray_cast, "Batched nearest-hit OBB ray query");
+  module.def("camera_rays", &box3d_camera_rays,
+             "Batched calibrated body-attached CUDA camera rays");
+  module.def("camera_depth", &box3d_camera_depth,
+             "Batched optical-axis CUDA depth from ray hits");
 }
