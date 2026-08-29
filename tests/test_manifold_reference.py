@@ -25,6 +25,7 @@ from box3d_cuda.manifold_reference import (
     TAIL_WINDOW_STEPS,
     assert_valid_manifold_state,
     build_manifold,
+    build_speculative_manifold,
     empty_manifold_cache,
     make_manifold_stack_state,
     step_manifold_reference,
@@ -136,6 +137,46 @@ class ManifoldGeometryTests(unittest.TestCase):
         self.assertEqual(len(first.points), 1)
         self.assertEqual(first.points[0].feature_id, second.points[0].feature_id)
         self.assertAlmostEqual(first.points[0].depth, 0.012, delta=2.0e-6)
+
+    def test_speculative_manifold_uses_true_sat_gap_and_distinct_feature(self):
+        a = _box((0.0, 0.0, 0.0), inverse_mass=0.0)
+        b = _box((1.0015, 0.0, 0.0))
+        original_extents = (a.half_extents.copy(), b.half_extents.copy())
+
+        self.assertIsNone(build_manifold(a, b, pair_index=9))
+        first = build_speculative_manifold(a, b, pair_index=9, contact_generation_distance=0.002)
+        second = build_speculative_manifold(a, b, pair_index=9, contact_generation_distance=0.002)
+
+        self.assertIsNotNone(first)
+        self.assertTrue(first.kind.startswith("speculative_"))
+        self.assertEqual(len(first.points), 1)
+        self.assertAlmostEqual(first.points[0].depth, -0.0015, places=12)
+        self.assertEqual(first.points[0].feature_id, second.points[0].feature_id)
+        self.assertEqual((a.half_extents, b.half_extents), original_extents)
+
+        b.position[0] = 0.9995
+        overlapping = build_manifold(a, b, pair_index=9)
+        self.assertIsNotNone(overlapping)
+        self.assertNotIn(
+            first.points[0].feature_id,
+            {point.feature_id for point in overlapping.points},
+        )
+
+    def test_speculative_manifold_respects_exact_generation_boundary(self):
+        a = _box((0.0, 0.0, 0.0), inverse_mass=0.0)
+        inside = _box((1.0019, 0.0, 0.0))
+        outside = _box((1.0021, 0.0, 0.0))
+
+        self.assertIsNotNone(
+            build_speculative_manifold(
+                a, inside, contact_generation_distance=0.002
+            )
+        )
+        self.assertIsNone(
+            build_speculative_manifold(
+                a, outside, contact_generation_distance=0.002
+            )
+        )
 
 
 class PersistentSolverTests(unittest.TestCase):

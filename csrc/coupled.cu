@@ -478,7 +478,7 @@ __device__ inline void solve_projected_normal(
     const int64_t *joint_indices,const int64_t *joint_types,const float *parent_anchor,
     const float *child_anchor,const float *axis_parent,const float *reference_quaternion,
     int world,int bodies,int joints,int left,int right,coupled_contact::MF *manifold,
-    coupled_contact::MP &contact,float restitution,float epsilon){
+    coupled_contact::MP &contact,float restitution,float epsilon,float h){
   int left_flat=world*bodies+left,right_flat=world*bodies+right;
   float left_arm[3],right_arm[3],left_velocity[3],right_velocity[3],relative[3];
   for(int k=0;k<3;++k){left_arm[k]=contact.p[k]-state[left_flat*STATE_WIDTH+k];right_arm[k]=contact.p[k]-state[right_flat*STATE_WIDTH+k];}
@@ -492,8 +492,9 @@ __device__ inline void solve_projected_normal(
       &left_articulation,&right_articulation);
   if(denominator<=epsilon)return;
   float normal_velocity=coupled_joint::dot3(relative,manifold->n);
-  float bounce=normal_velocity<-.5f?-restitution*normal_velocity:0.0f;
-  float old=contact.jn;contact.jn=fmaxf(0.0f,old+(bounce-normal_velocity)/denominator);
+  float bounce=contact.depth>=0.0f&&normal_velocity<-.5f?-restitution*normal_velocity:0.0f;
+  float allowed_closing=contact.depth<0.0f?contact.depth/h:0.0f;
+  float old=contact.jn;contact.jn=fmaxf(0.0f,old+(allowed_closing+bounce-normal_velocity)/denominator);
   float impulse[3];for(int k=0;k<3;++k)impulse[k]=manifold->n[k]*(contact.jn-old);
   apply_projected_pair_impulse(state,inverse_mass,inverse_inertia,world,bodies,left,right,
       contact.p,impulse,left_articulation,right_articulation);
@@ -540,7 +541,7 @@ __device__ inline void solve_contact_rows(
     const int64_t *joint_indices,const int64_t *joint_types,const float *parent_anchor,
     const float *child_anchor,const float *axis_parent,const float *reference_quaternion,
     const int64_t *contact_pairs,coupled_contact::MF *manifolds,const bool *active,
-    int world,int bodies,int joints,int pairs,float restitution,float friction,float epsilon,
+    int world,int bodies,int joints,int pairs,float restitution,float friction,float epsilon,float h,
     bool articulation_projection){
   for(int pair=0;pair<pairs;++pair)if(active[pair]){
     int left=int(contact_pairs[pair*2]),right=int(contact_pairs[pair*2+1]);
@@ -549,10 +550,10 @@ __device__ inline void solve_contact_rows(
       if(articulation_projection)solve_projected_normal(
           state,inverse_mass,inverse_inertia,joint_indices,joint_types,parent_anchor,child_anchor,
           axis_parent,reference_quaternion,world,bodies,joints,left,right,&manifolds[pair],
-          manifolds[pair].points[point],restitution,epsilon);
+          manifolds[pair].points[point],restitution,epsilon,h);
       else coupled_contact::solve_normal(state+left_flat*STATE_WIDTH,inverse_mass[left_flat],
           inverse_inertia+left_flat*3,state+right_flat*STATE_WIDTH,inverse_mass[right_flat],
-          inverse_inertia+right_flat*3,&manifolds[pair],manifolds[pair].points[point],restitution,epsilon);
+          inverse_inertia+right_flat*3,&manifolds[pair],manifolds[pair].points[point],restitution,epsilon,h);
     }
     for(int point=0;point<manifolds[pair].count;++point){
       if(articulation_projection)solve_projected_friction(
@@ -625,7 +626,7 @@ __global__ void coupled_kernel(
     int32_t *contact_count,float *normal_impulse,int worlds,int bodies,int joints,int pairs,float dt,
     int substeps,const float *runtime_gravity_xyz,const float *runtime_friction,
     const float *runtime_restitution,float gravity_y,float restitution,float friction,
-    float contact_slop,float position_correction,
+    float contact_generation_distance,float contact_slop,float position_correction,
     float angular_damping,int solver_iterations,float sat_epsilon,float joint_position_slop,float angular_slop,
     float maximum_linear_repair,float maximum_angular_repair,bool articulation_projection){
   int world=blockIdx.x*blockDim.x+threadIdx.x;if(world>=worlds)return;
@@ -637,8 +638,8 @@ __global__ void coupled_kernel(
   float control_pair_impulse[MAX_CONTACT_PAIRS][3]={};
   for(int substep=0;substep<substeps;++substep){
     for(int body=0;body<bodies;++body){int flat=world*bodies+body;if(inverse_mass[flat]==0)continue;float *value=state+flat*STATE_WIDTH;value[7]+=gravity_x*h;value[8]+=gravity_y*h;value[9]+=gravity_z*h;for(int k=0;k<3;k++){value[k]+=value[7+k]*h;value[10+k]*=damping_factor;}coupled_contact::integrate_q(value,h);}
-    coupled_contact::MF manifolds[MAX_CONTACT_PAIRS];bool contact_active[MAX_CONTACT_PAIRS]={};
-    for(int pair=0;pair<pairs;++pair){int left=int(contact_pairs[pair*2]),right=int(contact_pairs[pair*2+1]);int left_flat=world*bodies+left,right_flat=world*bodies+right,offset=(world*pairs+pair)*4;contact_active[pair]=coupled_contact::manifold(state+left_flat*STATE_WIDTH,half_extents+left_flat*3,state+right_flat*STATE_WIDTH,half_extents+right_flat*3,pair,sat_epsilon,&manifolds[pair]);if(contact_active[pair]){contact_ever[world*pairs+pair]=1;coupled_contact::seed(&manifolds[pair],contact_feature_ids+offset,contact_impulse_cache+offset*3);}}
+    coupled_contact::MF manifolds[MAX_CONTACT_PAIRS];bool contact_active[MAX_CONTACT_PAIRS]={},contact_actual[MAX_CONTACT_PAIRS]={};
+    for(int pair=0;pair<pairs;++pair){int left=int(contact_pairs[pair*2]),right=int(contact_pairs[pair*2+1]);int left_flat=world*bodies+left,right_flat=world*bodies+right,offset=(world*pairs+pair)*4;contact_active[pair]=coupled_contact::speculative_manifold(state+left_flat*STATE_WIDTH,half_extents+left_flat*3,state+right_flat*STATE_WIDTH,half_extents+right_flat*3,pair,contact_generation_distance,sat_epsilon,&manifolds[pair],&contact_actual[pair]);if(contact_active[pair]){if(contact_actual[pair])contact_ever[world*pairs+pair]=1;coupled_contact::seed(&manifolds[pair],contact_feature_ids+offset,contact_impulse_cache+offset*3);}}
     float joint_lambda[MAX_JOINTS*8]={};
     warm_joint_rows(state,inverse_mass,inverse_inertia,joint_indices,joint_types,parent_anchor,child_anchor,axis_parent,reference_quaternion,lower_limit,upper_limit,joint_cache,warm_start_factor,joint_lambda,world,bodies,joints,articulation_projection);
     if(articulation_projection)warm_projected_motors(
@@ -651,7 +652,7 @@ __global__ void coupled_kernel(
           state,inverse_mass,inverse_inertia,joint_indices,joint_types,parent_anchor,child_anchor,
           axis_parent,reference_quaternion,damping,motor_enabled,target_velocity,target_position,
           stiffness,maximum_effort,joint_lambda,world,bodies,joints,h);
-      solve_contact_rows(state,inverse_mass,inverse_inertia,joint_indices,joint_types,parent_anchor,child_anchor,axis_parent,reference_quaternion,contact_pairs,manifolds,contact_active,world,bodies,joints,pairs,restitution,friction,sat_epsilon,articulation_projection);
+      solve_contact_rows(state,inverse_mass,inverse_inertia,joint_indices,joint_types,parent_anchor,child_anchor,axis_parent,reference_quaternion,contact_pairs,manifolds,contact_active,world,bodies,joints,pairs,restitution,friction,sat_epsilon,h,articulation_projection);
     }
     // Accumulate the complete contact-impulse vector over the full control
     // step. PhysX reports the magnitude of normal plus both friction axes;
@@ -678,7 +679,32 @@ __global__ void coupled_kernel(
   for(int pair=0;pair<pairs;++pair)
     normal_impulse[world*pairs+pair]+=coupled_joint::norm3(control_pair_impulse[pair]);
   for(int joint=0;joint<joints;++joint){int parent=int(joint_indices[joint*2]),child=int(joint_indices[joint*2+1]);coupled_joint::G geometry=coupled_joint::geometry(state+(world*bodies+parent)*STATE_WIDTH,state+(world*bodies+child)*STATE_WIDTH,parent_anchor+joint*3,child_anchor+joint*3,axis_parent+joint*3,reference_quaternion+joint*4,int(joint_types[joint]));joint_coordinate[world*joints+joint]=geometry.coord;joint_anchor_error[world*joints+joint]=coupled_joint::norm3(geometry.lin);joint_angular_error[world*joints+joint]=coupled_joint::norm3(geometry.ang);float final_limit_error=fmaxf(0.0f,fmaxf(lower_limit[joint]-geometry.coord,geometry.coord-upper_limit[joint]));joint_limit_error[world*joints+joint]=final_limit_error;joint_limit_active[world*joints+joint]=final_limit_error>0.0f?1:0;}
-  for(int pair=0;pair<pairs;++pair){int left=int(contact_pairs[pair*2]),right=int(contact_pairs[pair*2+1]),offset=(world*pairs+pair)*4;coupled_contact::MF manifold;bool active=coupled_contact::manifold(state+(world*bodies+left)*STATE_WIDTH,half_extents+(world*bodies+left)*3,state+(world*bodies+right)*STATE_WIDTH,half_extents+(world*bodies+right)*3,pair,sat_epsilon,&manifold);if(!active){coupled_contact::write_cache(nullptr,contact_feature_ids+offset,contact_impulse_cache+offset*3);contact_count[world*pairs+pair]=0;penetration[world*pairs+pair]=0.0f;continue;}coupled_contact::seed(&manifold,contact_feature_ids+offset,contact_impulse_cache+offset*3);coupled_contact::write_cache(&manifold,contact_feature_ids+offset,contact_impulse_cache+offset*3);contact_count[world*pairs+pair]=manifold.count;float maximum_depth=0;for(int point=0;point<manifold.count;++point)maximum_depth=fmaxf(maximum_depth,manifold.points[point].depth);penetration[world*pairs+pair]=maximum_depth;}
+  for(int pair=0;pair<pairs;++pair){
+    int left=int(contact_pairs[pair*2]),right=int(contact_pairs[pair*2+1]);
+    int offset=(world*pairs+pair)*4,left_flat=world*bodies+left,right_flat=world*bodies+right;
+    coupled_contact::MF manifold;
+    bool active=coupled_contact::manifold(
+        state+left_flat*STATE_WIDTH,half_extents+left_flat*3,
+        state+right_flat*STATE_WIDTH,half_extents+right_flat*3,
+        pair,sat_epsilon,&manifold);
+    if(!active){
+      bool actual=false;
+      bool speculative=coupled_contact::speculative_manifold(
+          state+left_flat*STATE_WIDTH,half_extents+left_flat*3,
+          state+right_flat*STATE_WIDTH,half_extents+right_flat*3,
+          pair,contact_generation_distance,sat_epsilon,&manifold,&actual);
+      if(speculative){
+        coupled_contact::seed(&manifold,contact_feature_ids+offset,contact_impulse_cache+offset*3);
+        coupled_contact::write_cache(&manifold,contact_feature_ids+offset,contact_impulse_cache+offset*3);
+      }else coupled_contact::write_cache(nullptr,contact_feature_ids+offset,contact_impulse_cache+offset*3);
+      contact_count[world*pairs+pair]=0;penetration[world*pairs+pair]=0.0f;continue;
+    }
+    coupled_contact::seed(&manifold,contact_feature_ids+offset,contact_impulse_cache+offset*3);
+    coupled_contact::write_cache(&manifold,contact_feature_ids+offset,contact_impulse_cache+offset*3);
+    contact_count[world*pairs+pair]=manifold.count;float maximum_depth=0;
+    for(int point=0;point<manifold.count;++point)maximum_depth=fmaxf(maximum_depth,manifold.points[point].depth);
+    penetration[world*pairs+pair]=maximum_depth;
+  }
 }
 }
 
@@ -690,9 +716,9 @@ std::vector<torch::Tensor> box3d_coupled_step_cuda(
     torch::Tensor damping,torch::Tensor motor_enabled,torch::Tensor target_velocity,torch::Tensor target_position,
     torch::Tensor stiffness,torch::Tensor maximum_effort,torch::Tensor joint_cache,torch::Tensor contact_pairs,
     torch::Tensor contact_feature_ids,torch::Tensor contact_impulse_cache,double warm_start_factor,double dt,
-    int64_t substeps,double gravity_y,double restitution,double friction,double contact_slop,double position_correction,
+    int64_t substeps,double gravity_y,double restitution,double friction,double contact_generation_distance,double contact_slop,double position_correction,
     double angular_damping,int64_t solver_iterations,double sat_epsilon,double joint_position_slop,double angular_slop,
     double maximum_linear_repair,double maximum_angular_repair,bool articulation_projection){
-  const c10::cuda::CUDAGuard guard(state.device());auto output=state.clone();auto updated_joint_cache=joint_cache.clone();auto updated_feature_ids=contact_feature_ids.clone();auto updated_contact_cache=contact_impulse_cache.clone();int worlds=state.size(0),bodies=state.size(1),joints=joint_indices.size(0),pairs=contact_pairs.size(0);auto joint_scalar=torch::zeros({worlds,joints},state.options());auto coordinate=joint_scalar.clone(),anchor_error=joint_scalar.clone(),angular_error=joint_scalar.clone(),limit_error=joint_scalar.clone(),motor_impulse=joint_scalar.clone();auto limit_active=torch::zeros({worlds,joints},state.options().dtype(torch::kUInt8));auto contact_scalar=torch::zeros({worlds,pairs},state.options());auto penetration=contact_scalar.clone(),normal_impulse=contact_scalar.clone();auto contact_ever=torch::zeros({worlds,pairs},state.options().dtype(torch::kUInt8));auto contact_count=torch::zeros({worlds,pairs},state.options().dtype(torch::kInt32));constexpr int threads=64;coupled_kernel<<<(worlds+threads-1)/threads,threads,0,at::cuda::getDefaultCUDAStream()>>>(output.data_ptr<float>(),inverse_mass.data_ptr<float>(),half_extents.data_ptr<float>(),inverse_inertia.data_ptr<float>(),joint_indices.data_ptr<int64_t>(),joint_types.data_ptr<int64_t>(),parent_anchor.data_ptr<float>(),child_anchor.data_ptr<float>(),axis_parent.data_ptr<float>(),reference_quaternion.data_ptr<float>(),lower_limit.data_ptr<float>(),upper_limit.data_ptr<float>(),damping.data_ptr<float>(),motor_enabled.data_ptr<uint8_t>(),target_velocity.data_ptr<float>(),target_position.data_ptr<float>(),stiffness.data_ptr<float>(),maximum_effort.data_ptr<float>(),updated_joint_cache.data_ptr<float>(),contact_pairs.data_ptr<int64_t>(),updated_feature_ids.data_ptr<int64_t>(),updated_contact_cache.data_ptr<float>(),float(warm_start_factor),coordinate.data_ptr<float>(),anchor_error.data_ptr<float>(),angular_error.data_ptr<float>(),limit_error.data_ptr<float>(),motor_impulse.data_ptr<float>(),limit_active.data_ptr<uint8_t>(),contact_ever.data_ptr<uint8_t>(),penetration.data_ptr<float>(),contact_count.data_ptr<int32_t>(),normal_impulse.data_ptr<float>(),worlds,bodies,joints,pairs,float(dt),int(substeps),nullptr,nullptr,nullptr,float(gravity_y),float(restitution),float(friction),float(contact_slop),float(position_correction),float(angular_damping),int(solver_iterations),float(sat_epsilon),float(joint_position_slop),float(angular_slop),float(maximum_linear_repair),float(maximum_angular_repair),articulation_projection);C10_CUDA_KERNEL_LAUNCH_CHECK();return {output,coordinate,anchor_error,angular_error,limit_error,motor_impulse,limit_active,updated_joint_cache,contact_ever,penetration,updated_feature_ids,updated_contact_cache,contact_count,normal_impulse};
+  const c10::cuda::CUDAGuard guard(state.device());auto output=state.clone();auto updated_joint_cache=joint_cache.clone();auto updated_feature_ids=contact_feature_ids.clone();auto updated_contact_cache=contact_impulse_cache.clone();int worlds=state.size(0),bodies=state.size(1),joints=joint_indices.size(0),pairs=contact_pairs.size(0);auto joint_scalar=torch::zeros({worlds,joints},state.options());auto coordinate=joint_scalar.clone(),anchor_error=joint_scalar.clone(),angular_error=joint_scalar.clone(),limit_error=joint_scalar.clone(),motor_impulse=joint_scalar.clone();auto limit_active=torch::zeros({worlds,joints},state.options().dtype(torch::kUInt8));auto contact_scalar=torch::zeros({worlds,pairs},state.options());auto penetration=contact_scalar.clone(),normal_impulse=contact_scalar.clone();auto contact_ever=torch::zeros({worlds,pairs},state.options().dtype(torch::kUInt8));auto contact_count=torch::zeros({worlds,pairs},state.options().dtype(torch::kInt32));constexpr int threads=64;coupled_kernel<<<(worlds+threads-1)/threads,threads,0,at::cuda::getDefaultCUDAStream()>>>(output.data_ptr<float>(),inverse_mass.data_ptr<float>(),half_extents.data_ptr<float>(),inverse_inertia.data_ptr<float>(),joint_indices.data_ptr<int64_t>(),joint_types.data_ptr<int64_t>(),parent_anchor.data_ptr<float>(),child_anchor.data_ptr<float>(),axis_parent.data_ptr<float>(),reference_quaternion.data_ptr<float>(),lower_limit.data_ptr<float>(),upper_limit.data_ptr<float>(),damping.data_ptr<float>(),motor_enabled.data_ptr<uint8_t>(),target_velocity.data_ptr<float>(),target_position.data_ptr<float>(),stiffness.data_ptr<float>(),maximum_effort.data_ptr<float>(),updated_joint_cache.data_ptr<float>(),contact_pairs.data_ptr<int64_t>(),updated_feature_ids.data_ptr<int64_t>(),updated_contact_cache.data_ptr<float>(),float(warm_start_factor),coordinate.data_ptr<float>(),anchor_error.data_ptr<float>(),angular_error.data_ptr<float>(),limit_error.data_ptr<float>(),motor_impulse.data_ptr<float>(),limit_active.data_ptr<uint8_t>(),contact_ever.data_ptr<uint8_t>(),penetration.data_ptr<float>(),contact_count.data_ptr<int32_t>(),normal_impulse.data_ptr<float>(),worlds,bodies,joints,pairs,float(dt),int(substeps),nullptr,nullptr,nullptr,float(gravity_y),float(restitution),float(friction),float(contact_generation_distance),float(contact_slop),float(position_correction),float(angular_damping),int(solver_iterations),float(sat_epsilon),float(joint_position_slop),float(angular_slop),float(maximum_linear_repair),float(maximum_angular_repair),articulation_projection);C10_CUDA_KERNEL_LAUNCH_CHECK();return {output,coordinate,anchor_error,angular_error,limit_error,motor_impulse,limit_active,updated_joint_cache,contact_ever,penetration,updated_feature_ids,updated_contact_cache,contact_count,normal_impulse};
 }
 #endif

@@ -44,6 +44,9 @@ class SATConfig:
     angular_damping: float = 0.02
     solver_iterations: int = 6
     sat_epsilon: float = 1.0e-7
+    # Pair-level distance at which a solver may create a predictive contact
+    # row. Zero preserves the historical overlap-only narrow phase.
+    contact_generation_distance: float = 0.0
 
     def __post_init__(self) -> None:
         numeric = (
@@ -55,6 +58,7 @@ class SATConfig:
             self.position_correction,
             self.angular_damping,
             self.sat_epsilon,
+            self.contact_generation_distance,
         )
         if not all(math.isfinite(value) for value in numeric):
             raise ValueError("SAT configuration values must be finite")
@@ -62,8 +66,15 @@ class SATConfig:
             raise ValueError("dt, substeps, and solver_iterations must be positive")
         if not 0.0 <= self.restitution <= 1.0:
             raise ValueError("restitution must be in [0, 1]")
-        if self.friction < 0.0 or self.position_slop < 0.0 or self.angular_damping < 0.0:
-            raise ValueError("friction, slop, and damping cannot be negative")
+        if (
+            self.friction < 0.0
+            or self.position_slop < 0.0
+            or self.angular_damping < 0.0
+            or self.contact_generation_distance < 0.0
+        ):
+            raise ValueError(
+                "friction, slop, damping, and contact generation distance cannot be negative"
+            )
         if not 0.0 <= self.position_correction <= 1.0:
             raise ValueError("position_correction must be in [0, 1]")
         if self.sat_epsilon <= 0.0:

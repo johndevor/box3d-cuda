@@ -24,7 +24,7 @@ from box3d_cuda.joint_reference import JointConfig
 from box3d_cuda.sat_reference import SATConfig
 
 
-def _step(bundle, target, effort, steps, *, warm_start=True):
+def _step(bundle, target, effort, steps, *, warm_start=True, config=None):
     state, inverse_mass, half, inertia, topology, pairs, joint_cache, ids, impulses = bundle
     result = step_coupled_reference(
         state,
@@ -38,6 +38,7 @@ def _step(bundle, target, effort, steps, *, warm_start=True):
         impulses,
         target,
         effort,
+        CoupledConfig() if config is None else config,
         steps=steps,
         warm_start=warm_start,
     )
@@ -104,6 +105,59 @@ def test_zero_effort_counterfactual_cannot_move_payload():
     assert result.pair_contact_substeps == [[0]]
     assert result.state[0][PAYLOAD_BODY_INDEX] == initial
     assert result.motor_impulse == [[0.0]]
+
+
+def test_speculative_row_limits_closing_without_claiming_true_contact():
+    speculative_bundle = list(make_coupled_push_state(1))
+    default_bundle = list(make_coupled_push_state(1))
+    # The 3.5 mm initial gap enters a 2 mm predictive shell only after the
+    # first integration. It remains truly separated for the whole control step.
+    for bundle in (speculative_bundle, default_bundle):
+        bundle[0][0][PUSHER_BODY_INDEX][7] = 0.4
+        bundle[0][0][PAYLOAD_BODY_INDEX][0] = 0.4035
+
+    speculative_config = CoupledConfig(
+        contacts=SATConfig(
+            gravity_y=0.0,
+            solver_iterations=12,
+            contact_generation_distance=0.002,
+        )
+    )
+    speculative, _ = _step(
+        tuple(speculative_bundle),
+        [[0.0]],
+        [[0.0]],
+        1,
+        config=speculative_config,
+    )
+    overlap_only, _ = _step(
+        tuple(default_bundle), [[0.0]], [[0.0]], 1
+    )
+
+    assert speculative.pair_contacted == [[False]]
+    assert speculative.pair_contact_substeps == [[0]]
+    assert speculative.pair_contact_count == [[0]]
+    assert speculative.pair_penetration_m == [[0.0]]
+    assert speculative.pair_normal_impulse == [[0.0]]
+    assert speculative.peak_pair_normal_impulse == [[0.0]]
+    assert speculative.pair_separation_m[0][0] > 0.0
+    assert sum(value != 0 for value in speculative.cache_feature_ids[0][0]) == 1
+    assert speculative.cache_impulses[0][0][0][0] > 0.0
+    assert speculative.state[0][PUSHER_BODY_INDEX][7] < 0.4
+    assert overlap_only.state[0][PUSHER_BODY_INDEX][7] == pytest.approx(0.4)
+    # Predictive solving is velocity-only: neither path receives split repair.
+    assert speculative.state[0][PUSHER_BODY_INDEX][0] == pytest.approx(
+        overlap_only.state[0][PUSHER_BODY_INDEX][0]
+    )
+    assert speculative.state[0][PAYLOAD_BODY_INDEX][0] == pytest.approx(
+        overlap_only.state[0][PAYLOAD_BODY_INDEX][0]
+    )
+
+
+def test_contact_generation_distance_defaults_to_overlap_only_and_fails_closed():
+    assert SATConfig().contact_generation_distance == 0.0
+    with pytest.raises(ValueError, match="contact generation distance"):
+        SATConfig(contact_generation_distance=-1.0e-3)
 
 
 def test_effort_bound_quaternions_and_joint_limits():

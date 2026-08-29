@@ -35,6 +35,28 @@ def test_articulation_projection_is_explicit_and_opt_in() -> None:
     assert "if(articulation_projection)solve_projected_motors" in cuda
 
 
+def test_speculative_generation_is_global_but_native_v2_remains_frozen() -> None:
+    cuda = (ROOT / "csrc" / "coupled.cu").read_text()
+    native = (ROOT / "csrc" / "native_scene_v2.cu").read_text()
+
+    assert "coupled_contact::speculative_manifold" in cuda
+    assert "contact_actual[MAX_CONTACT_PAIRS]" in cuda
+    assert "if(contact_actual[pair])contact_ever" in cuda
+    assert "contact_generation_distance" in cuda
+    assert "contact_generation_distance */ 0.0f" in native
+
+
+def test_speculative_generation_is_global_but_native_v2_remains_frozen() -> None:
+    cuda = (ROOT / "csrc" / "coupled.cu").read_text()
+    native = (ROOT / "csrc" / "native_scene_v2.cu").read_text()
+
+    assert "coupled_contact::speculative_manifold" in cuda
+    assert "contact_actual[MAX_CONTACT_PAIRS]" in cuda
+    assert "if(contact_actual[pair])contact_ever" in cuda
+    assert "contact_generation_distance" in cuda
+    assert "contact_generation_distance */ 0.0f" in native
+
+
 def test_coupled_kernel_has_a_torch_independent_native_boundary() -> None:
     source = (ROOT / "csrc" / "coupled.cu").read_text()
     manifold = (ROOT / "csrc" / "manifold.cu").read_text()

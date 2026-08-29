@@ -52,6 +52,7 @@ from .manifold_reference import (
     _warm_start,
     _write_cache,
     build_manifold,
+    build_speculative_manifold,
     empty_manifold_cache,
 )
 from .sat_reference import RigidBox, SATConfig, sat_query
@@ -379,16 +380,24 @@ def step_coupled_reference(
             for world_index, world in enumerate(worlds):
                 world_manifolds = []
                 for pair_index, (a, b) in enumerate(contact_pairs):
-                    manifold = build_manifold(
+                    true_manifold = build_manifold(
                         world[a], world[b], pair_index, config.contacts.sat_epsilon
                     )
-                    if manifold is not None:
+                    manifold = build_speculative_manifold(
+                        world[a],
+                        world[b],
+                        pair_index,
+                        config.contacts.contact_generation_distance,
+                        config.contacts.sat_epsilon,
+                    )
+                    if true_manifold is not None:
                         pair_contacted[world_index][pair_index] = True
                         pair_contact_substeps[world_index][pair_index] += 1
                         peak_penetration[world_index][pair_index] = max(
                             peak_penetration[world_index][pair_index],
-                            max(point.depth for point in manifold.points),
+                            max(point.depth for point in true_manifold.points),
                         )
+                    if manifold is not None:
                         _seed_from_cache(
                             manifold,
                             ids[world_index][pair_index],
@@ -514,10 +523,11 @@ def step_coupled_reference(
                             _solve_friction_point(
                                 world[a], world[b], manifold, point, config.contacts
                             )
-                        peak_normal_impulse[world_index][pair_index] = max(
-                            peak_normal_impulse[world_index][pair_index],
-                            sum(point.normal_impulse for point in manifold.points),
-                        )
+                        if any(point.depth >= 0.0 for point in manifold.points):
+                            peak_normal_impulse[world_index][pair_index] = max(
+                                peak_normal_impulse[world_index][pair_index],
+                                sum(point.normal_impulse for point in manifold.points),
+                            )
             for world_index in range(len(worlds)):
                 for joint in range(len(topology.joint_indices)):
                     motor_total[world_index][joint] += row_lambda[world_index][joint][6]
@@ -555,10 +565,29 @@ def step_coupled_reference(
     for world_index, world in enumerate(worlds):
         for pair_index, (a, b) in enumerate(contact_pairs):
             final = build_manifold(world[a], world[b], pair_index, config.contacts.sat_epsilon)
+            final_cache_manifold = (
+                final
+                if final is not None
+                else build_speculative_manifold(
+                    world[a],
+                    world[b],
+                    pair_index,
+                    config.contacts.contact_generation_distance,
+                    config.contacts.sat_epsilon,
+                )
+            )
             query = sat_query(world[a], world[b], config.contacts.sat_epsilon)
             separation[world_index][pair_index] = query.separation
             if final is None:
-                ids[world_index][pair_index], impulses[world_index][pair_index] = _write_cache(None)
+                if final_cache_manifold is not None:
+                    _seed_from_cache(
+                        final_cache_manifold,
+                        ids[world_index][pair_index],
+                        impulses[world_index][pair_index],
+                    )
+                ids[world_index][pair_index], impulses[world_index][pair_index] = _write_cache(
+                    final_cache_manifold
+                )
                 continue
             cached = {
                 ids[world_index][pair_index][slot]: impulses[world_index][pair_index][slot]

@@ -127,7 +127,8 @@ std::vector<torch::Tensor> box3d_coupled_step_cuda(
     torch::Tensor target_position, torch::Tensor stiffness, torch::Tensor maximum_effort,
     torch::Tensor joint_cache, torch::Tensor contact_pairs, torch::Tensor contact_feature_ids,
     torch::Tensor contact_impulse_cache, double warm_start_factor, double dt, int64_t substeps,
-    double gravity_y, double restitution, double friction, double contact_slop,
+    double gravity_y, double restitution, double friction, double contact_generation_distance,
+    double contact_slop,
     double position_correction, double angular_damping, int64_t solver_iterations,
     double sat_epsilon, double joint_position_slop, double angular_slop,
     double maximum_linear_repair, double maximum_angular_repair,
@@ -557,7 +558,8 @@ std::vector<torch::Tensor> box3d_coupled_step(
     torch::Tensor target_position, torch::Tensor stiffness, torch::Tensor maximum_effort,
     torch::Tensor joint_cache, torch::Tensor contact_pairs, torch::Tensor contact_feature_ids,
     torch::Tensor contact_impulse_cache, double warm_start_factor, double dt, int64_t substeps,
-    double gravity_y, double restitution, double friction, double contact_slop,
+    double gravity_y, double restitution, double friction, double contact_generation_distance,
+    double contact_slop,
     double position_correction, double angular_damping, int64_t solver_iterations,
     double sat_epsilon, double joint_position_slop, double angular_slop,
     double maximum_linear_repair, double maximum_angular_repair,
@@ -617,6 +619,7 @@ std::vector<torch::Tensor> box3d_coupled_step(
               solver_iterations>0&&solver_iterations<=64&&std::isfinite(gravity_y)&&
               std::isfinite(restitution)&&restitution>=0&&restitution<=1&&
               std::isfinite(friction)&&friction>=0&&friction<=10&&
+              std::isfinite(contact_generation_distance)&&contact_generation_distance>=0&&
               std::isfinite(warm_start_factor)&&warm_start_factor>=0&&warm_start_factor<=1,
               "invalid coupled solver configuration");
   return box3d_coupled_step_cuda(
@@ -626,7 +629,7 @@ std::vector<torch::Tensor> box3d_coupled_step(
       damping.contiguous(),motor_enabled.contiguous(),target_velocity.contiguous(),target_position.contiguous(),
       stiffness.contiguous(),maximum_effort.contiguous(),joint_cache.contiguous(),contact_pairs.contiguous(),
       contact_feature_ids.contiguous(),contact_impulse_cache.contiguous(),warm_start_factor,dt,substeps,gravity_y,
-      restitution,friction,contact_slop,position_correction,angular_damping,solver_iterations,sat_epsilon,
+      restitution,friction,contact_generation_distance,contact_slop,position_correction,angular_damping,solver_iterations,sat_epsilon,
       joint_position_slop,angular_slop,maximum_linear_repair,maximum_angular_repair,
       articulation_projection);
 }

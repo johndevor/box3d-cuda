@@ -22,7 +22,17 @@ from box3d_cuda.contracts.coupling import (
     PHYSX_PGS_SOLVER_CONFIGURATION,
     SPEC,
     WORLDS,
+    initial_joint_positions_rad,
+    target_positions_rad,
+    target_scale,
 )
+
+
+def test_shared_target_scale_matches_contract_targets() -> None:
+    for step in (0, 59, 60, 61, 180, 300, 719):
+        initial = initial_joint_positions_rad(17)
+        expected = tuple(value * target_scale(step) for value in initial)
+        assert target_positions_rad(step, 17) == expected
 
 
 def measured_report(backend: str, *, rate: float) -> dict:

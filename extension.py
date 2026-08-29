@@ -22,7 +22,7 @@ def load_extension():
         raise RuntimeError("Box3D CUDA requires a visible CUDA device")
     root = Path(__file__).resolve().parent
     return load(
-        name="factory_box3d_cuda_v14",
+        name="factory_box3d_cuda_v15",
         sources=[
             str(root / "csrc" / "bindings.cpp"),
             str(root / "csrc" / "step.cu"),
@@ -460,7 +460,7 @@ def _validate_sat_config(config) -> None:
     required = (
         "dt", "substeps", "gravity_y", "restitution", "friction",
         "position_slop", "position_correction", "angular_damping",
-        "solver_iterations", "sat_epsilon",
+        "solver_iterations", "sat_epsilon", "contact_generation_distance",
     )
     missing = [name for name in required if not hasattr(config, name)]
     if missing:
@@ -468,6 +468,7 @@ def _validate_sat_config(config) -> None:
     numeric = (
         "dt", "gravity_y", "restitution", "friction", "position_slop",
         "position_correction", "angular_damping", "sat_epsilon",
+        "contact_generation_distance",
     )
     for name in numeric:
         value = getattr(config, name)
@@ -489,6 +490,8 @@ def _validate_sat_config(config) -> None:
         raise ValueError("SAT friction must be in [0,10]")
     if not 0.0 <= float(config.position_slop) <= 0.1:
         raise ValueError("SAT position_slop must be in [0,0.1]")
+    if not 0.0 <= float(config.contact_generation_distance) <= 0.1:
+        raise ValueError("SAT contact_generation_distance must be in [0,0.1]")
     if not 0.0 <= float(config.position_correction) <= 1.0:
         raise ValueError("SAT position_correction must be in [0,1]")
     if not 0.0 <= float(config.angular_damping) <= 100.0:
@@ -959,6 +962,7 @@ def coupled_step(
         float(joint_config.warm_start_factor), float(joint_config.dt),
         int(joint_config.substeps), float(joint_config.gravity_y),
         float(contact_config.restitution), float(contact_config.friction),
+        float(contact_config.contact_generation_distance),
         float(contact_config.position_slop), float(joint_config.position_correction),
         float(contact_config.angular_damping), int(joint_config.solver_iterations),
         float(contact_config.sat_epsilon), float(joint_config.position_slop),

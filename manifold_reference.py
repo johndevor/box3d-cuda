@@ -67,6 +67,7 @@ MAX_MANIFOLD_POINTS = 4
 SAT_AXIS_TIE_EPSILON_M = 1.0e-6
 _FACE_FEATURE_TAG = 1 << 60
 _EDGE_FEATURE_TAG = 2 << 60
+_SPECULATIVE_FEATURE_TAG = 3 << 60
 
 Vec3 = List[float]
 
@@ -244,10 +245,27 @@ def _edge_feature_id(pair_index: int, contact: SATContact) -> int:
     )
 
 
+def _speculative_feature_id(pair_index: int, contact: SATContact) -> int:
+    """Identify one predictive row without aliasing a true contact feature."""
+
+    normal_bits = sum(
+        (1 if component >= 0.0 else 0) << index
+        for index, component in enumerate(contact.normal)
+    )
+    return (
+        _SPECULATIVE_FEATURE_TAG
+        | ((pair_index & 0xFF) << 48)
+        | ((contact.axis_index & 0xF) << 40)
+        | normal_bits
+        | 1
+    )
+
+
 def _manifold_sat_contact(
     box_a: RigidBox,
     box_b: RigidBox,
     sat_epsilon: float,
+    contact_generation_distance: float = 0.0,
 ) -> Optional[SATContact]:
     """Stage-4 SAT with stable topology selection for redundant axes.
 
@@ -287,7 +305,7 @@ def _manifold_sat_contact(
         depth = -separation
         oriented = axis if signed_distance >= 0.0 else _scale(axis, -1.0)
         records.append((depth, oriented, index, kind))
-    if maximum_separation > sat_epsilon:
+    if maximum_separation > contact_generation_distance + sat_epsilon:
         return None
     if not records or tested < 6:
         raise AssertionError("manifold SAT did not select a valid face axis")
@@ -314,7 +332,7 @@ def _manifold_sat_contact(
     midpoint = _scale(_add(point_a, point_b), 0.5)
     return SATContact(
         tuple(normal),
-        max(0.0, minimum_depth),
+        minimum_depth if maximum_separation > sat_epsilon else max(0.0, minimum_depth),
         tuple(midpoint),
         axis_index,
         axis_kind,
@@ -469,6 +487,55 @@ def build_manifold(
     )
 
 
+def build_speculative_manifold(
+    box_a: RigidBox,
+    box_b: RigidBox,
+    pair_index: int = 0,
+    contact_generation_distance: float = 0.0,
+    sat_epsilon: float = 1.0e-7,
+) -> Optional[ContactManifold]:
+    """Build a true manifold or one deterministic predictive SAT row.
+
+    The predictive row uses the unmodified OBB geometry. Its signed depth is
+    negative and equals the true separating gap. A distinct feature namespace
+    prevents a cached shell impulse from being mistaken for an overlapping
+    face or edge feature when the shapes later touch.
+    """
+
+    distance = float(contact_generation_distance)
+    if not math.isfinite(distance) or distance < 0.0:
+        raise ValueError("contact_generation_distance must be finite and non-negative")
+    true_manifold = build_manifold(box_a, box_b, pair_index, sat_epsilon)
+    if true_manifold is not None or distance == 0.0:
+        return true_manifold
+    contact = _manifold_sat_contact(
+        box_a,
+        box_b,
+        sat_epsilon,
+        contact_generation_distance=distance,
+    )
+    if contact is None:
+        return None
+    if contact.depth >= 0.0:
+        raise AssertionError("speculative SAT row must retain a negative gap depth")
+    normal = list(contact.normal)
+    tangent_1, tangent_2 = tangent_basis(normal)
+    return ContactManifold(
+        normal,
+        tangent_1,
+        tangent_2,
+        [
+            ManifoldPoint(
+                _speculative_feature_id(pair_index, contact),
+                list(contact.point),
+                contact.depth,
+            )
+        ],
+        "speculative_{}".format(contact.axis_kind),
+        contact.axis_index,
+    )
+
+
 def _inverse_inertia_world(box: RigidBox, vector: Sequence[float]) -> Vec3:
     local = _inverse_rotate(box.quaternion, vector)
     scaled = [local[index] * box.inverse_inertia_local[index] for index in range(3)]
@@ -546,11 +613,20 @@ def _solve_normal_point(
         box_a, box_b, offset_a, offset_b, manifold.normal
     )
     if denominator > config.sat_epsilon:
-        bounce = -config.restitution * normal_speed if normal_speed < -0.5 else 0.0
+        overlapping = point.depth >= 0.0
+        bounce = (
+            -config.restitution * normal_speed
+            if overlapping and normal_speed < -0.5
+            else 0.0
+        )
         # Penetration drift is handled by the bounded split correction below,
         # not by injecting Baumgarte velocity. Keeping the velocity solve free
         # of penetration energy materially reduces resting-stack jitter.
-        delta = (bounce - normal_speed) / denominator
+        # A speculative row permits exactly the closing speed that reaches the
+        # true surface at the end of this substep. It never makes the generation
+        # shell a solid surface.
+        allowed_closing_speed = point.depth / h if point.depth < 0.0 else 0.0
+        delta = (allowed_closing_speed + bounce - normal_speed) / denominator
         previous = point.normal_impulse
         point.normal_impulse = max(0.0, previous + delta)
         _apply_pair_impulse(
@@ -983,6 +1059,7 @@ __all__ = [
     "ManifoldPoint",
     "assert_valid_manifold_state",
     "build_manifold",
+    "build_speculative_manifold",
     "empty_manifold_cache",
     "make_manifold_stack_state",
     "step_manifold_reference",

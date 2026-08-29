@@ -25,6 +25,7 @@ from .contracts.coupling import (
     SPEC,
     TAIL_WINDOW_STEPS,
     WORLDS,
+    target_scale,
     validate_coupling_report,
 )
 from .contracts.impact import IMPACT_STEPS
@@ -117,6 +118,7 @@ def _config(friction: float = SPEC.friction) -> CoupledConfig:
             dt=1.0 / CONTROL_HZ, substeps=PHYSICS_SUBSTEPS,
             gravity_y=SPEC.gravity_xyz_mps2[1], restitution=SPEC.restitution,
             friction=friction, position_slop=SPEC.contact_slop_m,
+            contact_generation_distance=SPEC.pair_contact_generation_distance_m,
             solver_iterations=SPEC.solver_iterations,
         ),
     )
@@ -173,11 +175,7 @@ def make_workload(worlds: int, device):
 
 
 def _targets(initial_q, step: int):
-    if step < HOLD_STEPS:
-        return initial_q
-    fraction = min(1.0, (step - HOLD_STEPS) / RAMP_STEPS)
-    smooth = fraction * fraction * (3.0 - 2.0 * fraction)
-    return initial_q * (1.0 - smooth)
+    return initial_q * target_scale(step)
 
 
 def _drive_effort_proxy(bundle, joint_coordinate, target):

@@ -112,10 +112,16 @@ class JointContactPusherSpec:
     gravity_xyz_mps2: tuple[float, float, float] = (0.0, -9.81, 0.0)
     friction: float = 0.60
     restitution: float = 0.0
-    contact_generation_offset_m: float = 0.0
+    # PhysX defines this per shape; two authored shapes therefore generate a
+    # pair candidate at twice this distance.
+    contact_generation_offset_m: float = 0.001
     contact_rest_offset_m: float = 0.0
     contact_slop_m: float = 0.001
     solver_iterations: int = 8
+
+    @property
+    def pair_contact_generation_distance_m(self) -> float:
+        return 2.0 * self.contact_generation_offset_m
 
     def __post_init__(self) -> None:
         if len(self.body_names) != BODY_COUNT or len(self.body_half_extents_m) != BODY_COUNT:
@@ -171,6 +177,7 @@ class JointContactPusherSpec:
             "friction": self.friction,
             "restitution": self.restitution,
             "contact_generation_offset_m": self.contact_generation_offset_m,
+            "pair_contact_generation_distance_m": self.pair_contact_generation_distance_m,
             "contact_rest_offset_m": self.contact_rest_offset_m,
             "contact_slop_m": self.contact_slop_m,
             "solver_iterations": self.solver_iterations,
@@ -252,6 +259,7 @@ CUDA_SOLVER_CONFIGURATION = {
     "angular_damping": CUDA_ANGULAR_DAMPING,
     "sleep_enabled": False,
     "contact_generation_offset_m": SPEC.contact_generation_offset_m,
+    "pair_contact_generation_distance_m": SPEC.pair_contact_generation_distance_m,
     "contact_rest_offset_m": SPEC.contact_rest_offset_m,
     "position_repair_slop_m": SPEC.contact_slop_m,
 }
@@ -264,6 +272,7 @@ PHYSX_PGS_SOLVER_CONFIGURATION = {
     "angular_damping": CUDA_ANGULAR_DAMPING,
     "sleep_enabled": False,
     "contact_generation_offset_m": SPEC.contact_generation_offset_m,
+    "pair_contact_generation_distance_m": SPEC.pair_contact_generation_distance_m,
     "contact_rest_offset_m": SPEC.contact_rest_offset_m,
 }
 
@@ -291,14 +300,20 @@ def target_positions_rad(
     if control_step < 0:
         raise ValueError("control step must be nonnegative")
     initial = initial_joint_positions_rad(world_index, seed)
+    scale = target_scale(control_step)
+    return tuple(start * scale for start in initial)  # type: ignore[return-value]
+
+
+def target_scale(control_step: int) -> float:
+    """Shared scalar schedule so both GPU harnesses issue bit-identical targets."""
+
+    if control_step < 0:
+        raise ValueError("control step must be nonnegative")
     if control_step < HOLD_STEPS:
-        return initial
+        return 1.0
     fraction = min(1.0, (control_step - HOLD_STEPS) / RAMP_STEPS)
     smooth = fraction * fraction * (3.0 - 2.0 * fraction)
-    return tuple(
-        start + smooth * (target - start)
-        for start, target in zip(initial, SPEC.final_joint_targets_rad)
-    )  # type: ignore[return-value]
+    return 1.0 - smooth
 
 
 def target_batch_rad(worlds: int, control_step: int, seed: int = DEFAULT_SEED) -> list[list[float]]:
