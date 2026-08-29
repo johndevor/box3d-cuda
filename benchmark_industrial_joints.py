@@ -29,7 +29,7 @@ TAIL_STEPS = 120
 DEFAULT_SEED = 67
 AMPLITUDES = (0.20, 0.12, 0.18, 0.22, 0.16, 0.25)
 FREQUENCIES = (0.05, 0.06, 0.07, 0.08, 0.09, 0.10)
-STIFFNESS = (30000.0, 30000.0, 22500.0, 7500.0, 5000.0, 3000.0)
+STIFFNESS = (30000.0, 45000.0, 22500.0, 7500.0, 5000.0, 3000.0)
 PARITY_WORLD_IDS = (0, 1, 17, 63)
 PARITY_STEPS = 120
 TRACE_STEPS = tuple(range(0, PARITY_STEPS, 12)) + (PARITY_STEPS - 1,)
@@ -331,6 +331,7 @@ def _limit_probe(torch, compiled, config):
     gpu_ever = torch.zeros((6, 6), dtype=torch.bool, device="cuda")
     active_mismatches = 0; observation_mismatches = 0
     max_cpu_excess = max_gpu_excess = 0.0
+    max_non_target_cpu_excess = max_non_target_gpu_excess = 0.0
     boundary_cpu = boundary_gpu = None
     for step in range(240):
         target_values = _limit_targets(step, compiled)
@@ -342,15 +343,45 @@ def _limit_probe(torch, compiled, config):
         cpu_state, cpu_cache = cpu.state, cpu.warm_start_cache
         gpu_result = _step(gpu, torch.tensor(target_values, dtype=torch.float32, device="cuda"), config)
         cpu_active = torch.tensor(cpu.limit_active, dtype=torch.bool, device="cuda"); gpu_active = gpu_result[6].to(dtype=torch.bool)
-        active_mismatches += int((cpu_active != gpu_active).sum().item()); gpu_ever |= gpu_active
+        gpu_ever |= gpu_active
+        for case, joint in enumerate(REPRESENTABLE_LIMIT_JOINTS):
+            for side in range(2):
+                world = 2 * case + side
+                active_mismatches += int(
+                    cpu_active[world, joint].item() != gpu_active[world, joint].item()
+                )
         # Threshold crossing can differ by one FP32/FP64 step. Gate stable
         # pushed/recovery observations and the accumulated activation pattern;
         # retain every transition mismatch as evidence rather than hiding it.
         if step in (150, 179, 239):
-            observation_mismatches += int((cpu_active != gpu_active).sum().item())
+            for case, joint in enumerate(REPRESENTABLE_LIMIT_JOINTS):
+                for side in range(2):
+                    world = 2 * case + side
+                    observation_mismatches += int(
+                        cpu_active[world, joint].item()
+                        != gpu_active[world, joint].item()
+                    )
         for world in range(6):
             for joint in range(6): cpu_ever[world][joint] |= cpu.limit_active[world][joint]
-        max_cpu_excess = max(max_cpu_excess, max(max(row) for row in cpu.limit_error)); max_gpu_excess = max(max_gpu_excess, float(gpu_result[4].max().item()))
+        for case, target_joint in enumerate(REPRESENTABLE_LIMIT_JOINTS):
+            for side in range(2):
+                world = 2 * case + side
+                max_cpu_excess = max(
+                    max_cpu_excess, cpu.limit_error[world][target_joint]
+                )
+                max_gpu_excess = max(
+                    max_gpu_excess, float(gpu_result[4][world, target_joint].item())
+                )
+                for joint in range(6):
+                    if joint == target_joint:
+                        continue
+                    max_non_target_cpu_excess = max(
+                        max_non_target_cpu_excess, cpu.limit_error[world][joint]
+                    )
+                    max_non_target_gpu_excess = max(
+                        max_non_target_gpu_excess,
+                        float(gpu_result[4][world, joint].item()),
+                    )
         if step == 179:
             boundary_cpu = [row[:] for row in cpu.coordinate]; boundary_gpu = gpu_result[1].detach().cpu().tolist()
     final_cpu = cpu.coordinate; final_gpu = gpu_result[1].detach().cpu().tolist()
@@ -371,6 +402,8 @@ def _limit_probe(torch, compiled, config):
         "cpu_cuda_limit_active_observation_mismatch_count": observation_mismatches,
         "limit_active_observation_steps": [150, 179, 239],
         "maximum_cpu_limit_excess_rad": max_cpu_excess, "maximum_cuda_limit_excess_rad": max_gpu_excess,
+        "maximum_non_target_cpu_limit_excess_rad": max_non_target_cpu_excess,
+        "maximum_non_target_cuda_limit_excess_rad": max_non_target_gpu_excess,
     }
     if not evidence["passed"]:
         raise RuntimeError("industrial representable-limit gate failed: " + json.dumps(evidence, sort_keys=True))
@@ -431,6 +464,8 @@ def main() -> int:
         "manufacturer_dynamics": False, "joint_friction_applied": False,
         "collision_geometry_applied": False, "self_collision_applied": False,
         "full_urdf_limit_range_validated": False, "unvalidated_full_range_joint_names": list(UNVALIDATED_FULL_RANGE_JOINTS),
+        "motor_stiffness_nm_per_rad": list(STIFFNESS),
+        "target_amplitude_rad": list(AMPLITUDES), "target_frequency_hz": list(FREQUENCIES),
         "cpu_cuda_trace_world_ids": list(PARITY_WORLD_IDS), "cpu_cuda_trace_sample_steps": list(TRACE_STEPS),
         "cpu_cuda_state_maximum_absolute_error": parity["state"],
         "cpu_cuda_diagnostic_maximum_absolute_error": parity["diagnostic"],
