@@ -2,8 +2,8 @@
 #define BOX3D_CUDA_V2_PROPOSAL_H_
 
 /* ABI-v2 draft revision 3. Descriptor layouts and semantics are frozen with
- * the World consumer. Resident coupled stepping is implemented; raycast
- * remains capability-gated and returns UNSUPPORTED. ABI v1 remains stable. */
+ * the World consumer. Resident coupled stepping and linear OBB rays are
+ * implemented. ABI v1 remains stable. */
 
 #include <stddef.h>
 #include <stdint.h>

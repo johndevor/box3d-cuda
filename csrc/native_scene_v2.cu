@@ -678,7 +678,7 @@ extern "C" BOX3D_CUDA_API box3d_cuda_status_v2 box3d_cuda_query_api_v2(
   info->struct_size = sizeof(*info);
   info->abi_version = BOX3D_CUDA_ABI_VERSION_V2;
   info->implementation_version_major = 0;
-  info->implementation_version_minor = 3;
+  info->implementation_version_minor = 4;
   info->implementation_version_patch = 0;
   info->draft_revision = BOX3D_CUDA_ABI_V2_DRAFT_REVISION;
   info->capabilities = kLifecycleCapabilities;
