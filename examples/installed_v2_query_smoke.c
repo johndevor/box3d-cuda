@@ -4,7 +4,13 @@
 #include <stdio.h>
 
 int main(void) {
-  const uint64_t expected = BOX3D_CUDA_CAP_V2_RESIDENT_STATE |
+  const uint64_t expected = BOX3D_CUDA_CAP_V2_ORIENTED_BOXES |
+                            BOX3D_CUDA_CAP_V2_EXPLICIT_CONTACT_PAIRS |
+                            BOX3D_CUDA_CAP_V2_FIXED_JOINTS |
+                            BOX3D_CUDA_CAP_V2_REVOLUTE_JOINTS |
+                            BOX3D_CUDA_CAP_V2_PRISMATIC_JOINTS |
+                            BOX3D_CUDA_CAP_V2_PERSISTENT_CONTACTS |
+                            BOX3D_CUDA_CAP_V2_RESIDENT_STATE |
                             BOX3D_CUDA_CAP_V2_DETERMINISTIC_SNAPSHOT |
                             BOX3D_CUDA_CAP_V2_ASYNC_CALLER_STREAM |
                             BOX3D_CUDA_CAP_V2_GLOBAL_MATERIAL |

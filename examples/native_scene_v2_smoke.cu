@@ -101,7 +101,8 @@ int main() {
       box3d_cuda_query_api_v2(&api) != BOX3D_CUDA_STATUS_V2_SUCCESS ||
       api.draft_revision != 3 ||
       (api.capabilities & BOX3D_CUDA_CAP_V2_PARTIAL_ENVIRONMENT_RESTORE) == 0 ||
-      (api.capabilities & BOX3D_CUDA_CAP_V2_ORIENTED_BOXES) != 0) {
+      (api.capabilities & BOX3D_CUDA_CAP_V2_ORIENTED_BOXES) == 0 ||
+      (api.capabilities & BOX3D_CUDA_CAP_V2_EXPLICIT_CONTACT_PAIRS) == 0) {
     std::fprintf(stderr, "ABI-v2 lifecycle capability discovery failed\n");
     return 1;
   }
@@ -327,6 +328,54 @@ int main() {
     return 9;
   }
 
+  uint8_t* contact_active = device_allocate<uint8_t>(ep);
+  uint8_t* contact_ever = device_allocate<uint8_t>(ep);
+  uint32_t* contact_count = device_allocate<uint32_t>(ep);
+  float* contact_penetration = device_allocate<float>(ep);
+  float* contact_normal_impulse = device_allocate<float>(ep);
+  box3d_cuda_scene_step_desc_v2 step{};
+  step.struct_size = sizeof(step);
+  step.abi_version = BOX3D_CUDA_ABI_VERSION_V2;
+  step.scene = scene;
+  step.steps = 2;
+  step.contact_active = contact_active;
+  step.contact_ever = contact_ever;
+  step.contact_count = contact_count;
+  step.contact_penetration = contact_penetration;
+  step.contact_normal_impulse = contact_normal_impulse;
+  if (box3d_cuda_scene_step_v2(&step) != BOX3D_CUDA_STATUS_V2_SUCCESS ||
+      box3d_cuda_scene_capture_v2(&capture) != BOX3D_CUDA_STATUS_V2_SUCCESS ||
+      cudaDeviceSynchronize() != cudaSuccess) {
+    std::fprintf(stderr, "resident OBB step failed\n");
+    return 10;
+  }
+  const auto stepped_state = host_copy(captured.state, eb * 13);
+  const auto final_active = host_copy(contact_active, ep);
+  const auto final_count = host_copy(contact_count, ep);
+  bool moved = false;
+  for (size_t environment = 0; environment < environments; ++environment) {
+    const size_t dynamic = environment * bodies + 1;
+    moved = moved ||
+            std::memcmp(stepped_state.data() + dynamic * 13,
+                        zero_mask_state.data() + dynamic * 13,
+                        13 * sizeof(float)) != 0;
+    if ((final_active[environment] != 0) !=
+            (final_count[environment] != 0) ||
+        final_count[environment] > BOX3D_CUDA_MANIFOLD_POINTS_V2) {
+      std::fprintf(stderr, "final contact diagnostics disagree\n");
+      return 11;
+    }
+  }
+  if (!moved) {
+    std::fprintf(stderr, "resident state did not advance\n");
+    return 12;
+  }
+  cudaFree(contact_active);
+  cudaFree(contact_ever);
+  cudaFree(contact_count);
+  cudaFree(contact_penetration);
+  cudaFree(contact_normal_impulse);
+
   captured.release();
   replacement.release();
   cudaFree(mask);
@@ -334,7 +383,7 @@ int main() {
       box3d_cuda_scene_get_info_v2(scene, &info) !=
           BOX3D_CUDA_STATUS_V2_INVALID_HANDLE) {
     std::fprintf(stderr, "scene unregister lifecycle failed\n");
-    return 10;
+    return 13;
   }
   std::puts("Box3D CUDA ABI-v2 r3 resident lifecycle passed");
   return 0;

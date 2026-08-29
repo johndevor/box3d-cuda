@@ -6,7 +6,6 @@
 
 #define BOX3D_CUDA_NATIVE_KERNELS_ONLY 1
 #include "step.cu"
-#include "coupled.cu"
 
 extern "C" uint32_t box3d_cuda_get_abi_version(void) {
   return BOX3D_CUDA_ABI_VERSION;

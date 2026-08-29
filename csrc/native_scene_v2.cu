@@ -19,9 +19,18 @@
 #include <unordered_set>
 #include <vector>
 
+#define BOX3D_CUDA_NATIVE_KERNELS_ONLY 1
+#include "coupled.cu"
+
 namespace {
 
 constexpr uint64_t kLifecycleCapabilities =
+    BOX3D_CUDA_CAP_V2_ORIENTED_BOXES |
+    BOX3D_CUDA_CAP_V2_EXPLICIT_CONTACT_PAIRS |
+    BOX3D_CUDA_CAP_V2_FIXED_JOINTS |
+    BOX3D_CUDA_CAP_V2_REVOLUTE_JOINTS |
+    BOX3D_CUDA_CAP_V2_PRISMATIC_JOINTS |
+    BOX3D_CUDA_CAP_V2_PERSISTENT_CONTACTS |
     BOX3D_CUDA_CAP_V2_RESIDENT_STATE |
     BOX3D_CUDA_CAP_V2_DETERMINISTIC_SNAPSHOT |
     BOX3D_CUDA_CAP_V2_ASYNC_CALLER_STREAM |
@@ -68,6 +77,15 @@ struct Scene {
   uint32_t solver_iterations = 0;
   uint32_t material_binding = BOX3D_CUDA_MATERIAL_GLOBAL_V2;
   float dt = 0.0f;
+  float warm_start_factor = 0.0f;
+  float contact_slop = 0.0f;
+  float position_correction = 0.0f;
+  float angular_damping = 0.0f;
+  float sat_epsilon = 0.0f;
+  float joint_position_slop = 0.0f;
+  float joint_angular_slop = 0.0f;
+  float maximum_linear_repair = 0.0f;
+  float maximum_angular_repair = 0.0f;
   uint8_t topology_sha256[BOX3D_CUDA_TOPOLOGY_HASH_BYTES_V2] = {};
   std::mutex operation_mutex;
   bool retired = false;
@@ -100,6 +118,16 @@ struct Scene {
   DeviceBuffer<float> joint_cache;
   DeviceBuffer<int64_t> contact_feature_ids;
   DeviceBuffer<float> contact_impulse_cache;
+  DeviceBuffer<float> diagnostic_joint_coordinate;
+  DeviceBuffer<float> diagnostic_joint_anchor_error;
+  DeviceBuffer<float> diagnostic_joint_angular_error;
+  DeviceBuffer<float> diagnostic_joint_limit_error;
+  DeviceBuffer<float> diagnostic_joint_motor_impulse;
+  DeviceBuffer<uint8_t> diagnostic_joint_limit_active;
+  DeviceBuffer<uint8_t> diagnostic_contact_ever;
+  DeviceBuffer<float> diagnostic_contact_penetration;
+  DeviceBuffer<int32_t> diagnostic_contact_count;
+  DeviceBuffer<float> diagnostic_contact_normal_impulse;
 
   ~Scene() {
     cudaSetDevice(device);
@@ -126,6 +154,16 @@ struct Scene {
     joint_cache.release();
     contact_feature_ids.release();
     contact_impulse_cache.release();
+    diagnostic_joint_coordinate.release();
+    diagnostic_joint_anchor_error.release();
+    diagnostic_joint_angular_error.release();
+    diagnostic_joint_limit_error.release();
+    diagnostic_joint_motor_impulse.release();
+    diagnostic_joint_limit_active.release();
+    diagnostic_contact_ever.release();
+    diagnostic_contact_penetration.release();
+    diagnostic_contact_count.release();
+    diagnostic_contact_normal_impulse.release();
   }
 };
 
@@ -351,6 +389,15 @@ bool initialize_scene(const box3d_cuda_scene_register_desc_v2& descriptor,
   scene.solver_iterations = descriptor.solver_iterations;
   scene.material_binding = descriptor.material_binding;
   scene.dt = descriptor.dt;
+  scene.warm_start_factor = descriptor.warm_start_factor;
+  scene.contact_slop = descriptor.contact_slop;
+  scene.position_correction = descriptor.position_correction;
+  scene.angular_damping = descriptor.angular_damping;
+  scene.sat_epsilon = descriptor.sat_epsilon;
+  scene.joint_position_slop = descriptor.joint_position_slop;
+  scene.joint_angular_slop = descriptor.joint_angular_slop;
+  scene.maximum_linear_repair = descriptor.maximum_linear_repair;
+  scene.maximum_angular_repair = descriptor.maximum_angular_repair;
   scene.body_caller_ids.assign(descriptor.body_caller_ids,
                                descriptor.body_caller_ids + descriptor.bodies);
   scene.body_motion.assign(descriptor.body_motion,
@@ -388,8 +435,6 @@ bool initialize_scene(const box3d_cuda_scene_register_desc_v2& descriptor,
                                              descriptor.joints) ||
       !scene.joint_damping.copy_from_cpu(descriptor.joint_damping,
                                          descriptor.joints) ||
-      !scene.joint_stiffness.copy_from_cpu(descriptor.joint_stiffness,
-                                           descriptor.joints) ||
       !scene.joint_control_mode.copy_from_cpu(descriptor.joint_control_mode,
                                               descriptor.joints) ||
       !convert_and_copy(scene.contact_body_indices,
@@ -405,12 +450,19 @@ bool initialize_scene(const box3d_cuda_scene_register_desc_v2& descriptor,
     return false;
 
   std::vector<uint8_t> motor_enabled(descriptor.joints, 0);
+  std::vector<float> solver_stiffness(descriptor.joints, 0.0f);
   for (size_t joint = 0; joint < descriptor.joints; ++joint) {
     motor_enabled[joint] = descriptor.joint_control_mode[joint] !=
                            BOX3D_CUDA_CONTROL_DISABLED_V2;
+    if (descriptor.joint_control_mode[joint] ==
+        BOX3D_CUDA_CONTROL_POSITION_V2) {
+      solver_stiffness[joint] = descriptor.joint_stiffness[joint];
+    }
   }
   if (!scene.joint_motor_enabled.copy_from_cpu(motor_enabled.data(),
-                                               motor_enabled.size()))
+                                               motor_enabled.size()) ||
+      !scene.joint_stiffness.copy_from_cpu(solver_stiffness.data(),
+                                           solver_stiffness.size()))
     return false;
 
   if (descriptor.joint_cache != nullptr) {
@@ -433,6 +485,18 @@ bool initialize_scene(const box3d_cuda_scene_register_desc_v2& descriptor,
       return false;
   } else if (!scene.contact_impulse_cache.allocate(ep * 12) ||
              !scene.contact_impulse_cache.fill_byte(0)) {
+    return false;
+  }
+  if (!scene.diagnostic_joint_coordinate.allocate(ej) ||
+      !scene.diagnostic_joint_anchor_error.allocate(ej) ||
+      !scene.diagnostic_joint_angular_error.allocate(ej) ||
+      !scene.diagnostic_joint_limit_error.allocate(ej) ||
+      !scene.diagnostic_joint_motor_impulse.allocate(ej) ||
+      !scene.diagnostic_joint_limit_active.allocate(ej) ||
+      !scene.diagnostic_contact_ever.allocate(ep) ||
+      !scene.diagnostic_contact_penetration.allocate(ep) ||
+      !scene.diagnostic_contact_count.allocate(ep) ||
+      !scene.diagnostic_contact_normal_impulse.allocate(ep)) {
     return false;
   }
   return box3d_cuda_native::compute_topology_sha256(
@@ -504,6 +568,54 @@ bool enqueue_environment_copy(void* destination, const void* source,
       static_cast<uint8_t*>(destination), static_cast<const uint8_t*>(source),
       environment_mask, bytes_per_environment);
   return cudaPeekAtLastError() == cudaSuccess;
+}
+
+bool enqueue_zero(void* destination, size_t bytes, cudaStream_t stream) {
+  return bytes == 0 || cudaMemsetAsync(destination, 0, bytes, stream) == cudaSuccess;
+}
+
+__global__ void pack_contact_final(const int32_t* source_count,
+                                   uint8_t* destination_active,
+                                   uint32_t* destination_count,
+                                   size_t count) {
+  const size_t index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index >= count) return;
+  const uint32_t value = source_count[index] > 0
+                             ? static_cast<uint32_t>(source_count[index])
+                             : 0u;
+  if (destination_active != nullptr) destination_active[index] = value != 0;
+  if (destination_count != nullptr) destination_count[index] = value;
+}
+
+bool optional_device_pointer(const void* pointer, int device) {
+  return pointer == nullptr || is_device_pointer(pointer, device);
+}
+
+bool valid_step_pointers(const Scene& scene,
+                         const box3d_cuda_scene_step_desc_v2& descriptor) {
+  const size_t ej = static_cast<size_t>(scene.environments) * scene.joints;
+  return required_device_pointer(descriptor.target_position, ej, scene.device) &&
+         required_device_pointer(descriptor.target_velocity, ej, scene.device) &&
+         required_device_pointer(descriptor.maximum_effort, ej, scene.device) &&
+         required_device_pointer(descriptor.maximum_speed, ej, scene.device) &&
+         required_device_pointer(descriptor.maximum_acceleration, ej,
+                                 scene.device) &&
+         optional_device_pointer(descriptor.joint_coordinate, scene.device) &&
+         optional_device_pointer(descriptor.joint_anchor_error, scene.device) &&
+         optional_device_pointer(descriptor.joint_angular_error, scene.device) &&
+         optional_device_pointer(descriptor.joint_limit_error, scene.device) &&
+         optional_device_pointer(descriptor.joint_motor_impulse, scene.device) &&
+         optional_device_pointer(descriptor.joint_limit_active, scene.device) &&
+         optional_device_pointer(descriptor.contact_active, scene.device) &&
+         optional_device_pointer(descriptor.contact_ever, scene.device) &&
+         optional_device_pointer(descriptor.contact_count, scene.device) &&
+         optional_device_pointer(descriptor.contact_penetration, scene.device) &&
+         optional_device_pointer(descriptor.contact_normal_impulse, scene.device);
+}
+
+bool enqueue_optional_copy(void* destination, const void* source, size_t bytes,
+                           cudaStream_t stream) {
+  return destination == nullptr || enqueue_copy(destination, source, bytes, stream);
 }
 
 bool valid_snapshot_pointers(const Scene& scene,
@@ -756,9 +868,122 @@ extern "C" BOX3D_CUDA_API box3d_cuda_status_v2 box3d_cuda_scene_step_v2(
     return BOX3D_CUDA_STATUS_V2_INVALID_ARGUMENT;
   if (descriptor->abi_version != BOX3D_CUDA_ABI_VERSION_V2)
     return BOX3D_CUDA_STATUS_V2_ABI_MISMATCH;
-  return find_scene(descriptor->scene) == nullptr
-             ? BOX3D_CUDA_STATUS_V2_INVALID_HANDLE
-             : BOX3D_CUDA_STATUS_V2_UNSUPPORTED;
+  if (descriptor->reserved_u32 != 0 || descriptor->steps == 0)
+    return BOX3D_CUDA_STATUS_V2_INVALID_ARGUMENT;
+  const auto scene = find_scene(descriptor->scene);
+  if (scene == nullptr) return BOX3D_CUDA_STATUS_V2_INVALID_HANDLE;
+  std::lock_guard<std::mutex> operation_lock(scene->operation_mutex);
+  if (scene->retired) return BOX3D_CUDA_STATUS_V2_INVALID_HANDLE;
+  if (cudaSetDevice(scene->device) != cudaSuccess)
+    return BOX3D_CUDA_STATUS_V2_CUDA_ERROR;
+  if (!valid_step_pointers(*scene, *descriptor))
+    return BOX3D_CUDA_STATUS_V2_INVALID_ARGUMENT;
+
+  cudaStream_t stream = reinterpret_cast<cudaStream_t>(descriptor->stream);
+  const size_t ej = static_cast<size_t>(scene->environments) * scene->joints;
+  const size_t ep =
+      static_cast<size_t>(scene->environments) * scene->contact_pairs;
+  const bool cleared =
+      enqueue_zero(scene->diagnostic_joint_coordinate.data,
+                   ej * sizeof(float), stream) &&
+      enqueue_zero(scene->diagnostic_joint_anchor_error.data,
+                   ej * sizeof(float), stream) &&
+      enqueue_zero(scene->diagnostic_joint_angular_error.data,
+                   ej * sizeof(float), stream) &&
+      enqueue_zero(scene->diagnostic_joint_limit_error.data,
+                   ej * sizeof(float), stream) &&
+      enqueue_zero(scene->diagnostic_joint_motor_impulse.data,
+                   ej * sizeof(float), stream) &&
+      enqueue_zero(scene->diagnostic_joint_limit_active.data,
+                   ej * sizeof(uint8_t), stream) &&
+      enqueue_zero(scene->diagnostic_contact_ever.data,
+                   ep * sizeof(uint8_t), stream) &&
+      enqueue_zero(scene->diagnostic_contact_penetration.data,
+                   ep * sizeof(float), stream) &&
+      enqueue_zero(scene->diagnostic_contact_count.data,
+                   ep * sizeof(int32_t), stream) &&
+      enqueue_zero(scene->diagnostic_contact_normal_impulse.data,
+                   ep * sizeof(float), stream);
+  if (!cleared) return BOX3D_CUDA_STATUS_V2_CUDA_ERROR;
+
+  constexpr int threads = 64;
+  const int blocks =
+      (static_cast<int>(scene->environments) + threads - 1) / threads;
+  for (uint32_t step = 0; step < descriptor->steps; ++step) {
+    coupled_kernel<<<blocks, threads, 0, stream>>>(
+        scene->state.data, scene->inverse_mass.data, scene->half_extents.data,
+        scene->inverse_inertia.data, scene->joint_body_indices.data,
+        scene->joint_types.data, scene->joint_parent_anchor.data,
+        scene->joint_child_anchor.data, scene->joint_axis_parent.data,
+        scene->joint_reference_xyzw.data, scene->joint_lower_limit.data,
+        scene->joint_upper_limit.data, scene->joint_damping.data,
+        scene->joint_motor_enabled.data, descriptor->target_velocity,
+        descriptor->target_position, scene->joint_stiffness.data,
+        descriptor->maximum_effort, scene->joint_cache.data,
+        scene->contact_body_indices.data, scene->contact_feature_ids.data,
+        scene->contact_impulse_cache.data, scene->warm_start_factor,
+        scene->diagnostic_joint_coordinate.data,
+        scene->diagnostic_joint_anchor_error.data,
+        scene->diagnostic_joint_angular_error.data,
+        scene->diagnostic_joint_limit_error.data,
+        scene->diagnostic_joint_motor_impulse.data,
+        scene->diagnostic_joint_limit_active.data,
+        scene->diagnostic_contact_ever.data,
+        scene->diagnostic_contact_penetration.data,
+        scene->diagnostic_contact_count.data,
+        scene->diagnostic_contact_normal_impulse.data,
+        static_cast<int>(scene->environments), static_cast<int>(scene->bodies),
+        static_cast<int>(scene->joints), static_cast<int>(scene->contact_pairs),
+        scene->dt, static_cast<int>(scene->substeps), scene->gravity_xyz.data,
+        scene->material_friction.data, scene->material_restitution.data, 0.0f,
+        0.0f, 0.0f, scene->contact_slop, scene->position_correction,
+        scene->angular_damping, static_cast<int>(scene->solver_iterations),
+        scene->sat_epsilon, scene->joint_position_slop,
+        scene->joint_angular_slop, scene->maximum_linear_repair,
+        scene->maximum_angular_repair, false);
+  }
+  if (cudaPeekAtLastError() != cudaSuccess)
+    return BOX3D_CUDA_STATUS_V2_CUDA_ERROR;
+
+  const bool copied =
+      enqueue_optional_copy(descriptor->joint_coordinate,
+                            scene->diagnostic_joint_coordinate.data,
+                            ej * sizeof(float), stream) &&
+      enqueue_optional_copy(descriptor->joint_anchor_error,
+                            scene->diagnostic_joint_anchor_error.data,
+                            ej * sizeof(float), stream) &&
+      enqueue_optional_copy(descriptor->joint_angular_error,
+                            scene->diagnostic_joint_angular_error.data,
+                            ej * sizeof(float), stream) &&
+      enqueue_optional_copy(descriptor->joint_limit_error,
+                            scene->diagnostic_joint_limit_error.data,
+                            ej * sizeof(float), stream) &&
+      enqueue_optional_copy(descriptor->joint_motor_impulse,
+                            scene->diagnostic_joint_motor_impulse.data,
+                            ej * sizeof(float), stream) &&
+      enqueue_optional_copy(descriptor->joint_limit_active,
+                            scene->diagnostic_joint_limit_active.data,
+                            ej * sizeof(uint8_t), stream) &&
+      enqueue_optional_copy(descriptor->contact_ever,
+                            scene->diagnostic_contact_ever.data,
+                            ep * sizeof(uint8_t), stream) &&
+      enqueue_optional_copy(descriptor->contact_penetration,
+                            scene->diagnostic_contact_penetration.data,
+                            ep * sizeof(float), stream) &&
+      enqueue_optional_copy(descriptor->contact_normal_impulse,
+                            scene->diagnostic_contact_normal_impulse.data,
+                            ep * sizeof(float), stream);
+  if (!copied) return BOX3D_CUDA_STATUS_V2_CUDA_ERROR;
+  if (ep != 0 &&
+      (descriptor->contact_active != nullptr || descriptor->contact_count != nullptr)) {
+    const int contact_blocks = (static_cast<int>(ep) + 127) / 128;
+    pack_contact_final<<<contact_blocks, 128, 0, stream>>>(
+        scene->diagnostic_contact_count.data, descriptor->contact_active,
+        descriptor->contact_count, ep);
+    if (cudaPeekAtLastError() != cudaSuccess)
+      return BOX3D_CUDA_STATUS_V2_CUDA_ERROR;
+  }
+  return BOX3D_CUDA_STATUS_V2_SUCCESS;
 }
 
 extern "C" BOX3D_CUDA_API box3d_cuda_status_v2 box3d_cuda_scene_raycast_v2(

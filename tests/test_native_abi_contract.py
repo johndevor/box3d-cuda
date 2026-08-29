@@ -7,6 +7,7 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = (ROOT / "include" / "box3d_cuda" / "box3d_cuda.h").read_text()
 NATIVE = (ROOT / "csrc" / "native_api.cu").read_text()
+NATIVE_SCENE = (ROOT / "csrc" / "native_scene_v2.cu").read_text()
 STEP = (ROOT / "csrc" / "step.cu").read_text()
 
 
@@ -26,8 +27,8 @@ def test_native_entry_point_reuses_exact_stage0_kernel():
 
 
 def test_native_translation_unit_compile_checks_coupled_kernel_without_torch():
-    assert "#define BOX3D_CUDA_NATIVE_KERNELS_ONLY 1" in NATIVE
-    assert '#include "coupled.cu"' in NATIVE
+    assert "#define BOX3D_CUDA_NATIVE_KERNELS_ONLY 1" in NATIVE_SCENE
+    assert '#include "coupled.cu"' in NATIVE_SCENE
 
 
 def test_native_descriptor_is_device_pointer_and_stream_based():
