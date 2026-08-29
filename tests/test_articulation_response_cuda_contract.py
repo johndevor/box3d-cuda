@@ -28,3 +28,12 @@ def test_benchmark_requires_oracle_parity_and_determinism() -> None:
     assert "maximum_error <= MAXIMUM_ORACLE_ABSOLUTE_ERROR" in source
     assert "torch.equal(first, second)" in source
     assert '"production_solver_modified": False' in source
+
+
+def test_production_response_benchmark_runs_both_solver_modes() -> None:
+    source = (ROOT / "benchmark_production_articulation_response.py").read_text()
+
+    assert '(("maximal", False), ("projected", True))' in source
+    assert "payload_momentum_impulse" in source
+    assert "planar_two_link_contact_response" in source
+    assert "torch.equal(left, right)" in source
