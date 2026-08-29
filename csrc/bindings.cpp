@@ -12,6 +12,14 @@ torch::Tensor box3d_step_cuda(
     double restitution,
     double friction);
 
+torch::Tensor box3d_articulation_response_cuda(
+    torch::Tensor base_joint_xy,
+    torch::Tensor second_joint_xy,
+    torch::Tensor link_centers_xy,
+    torch::Tensor contact_point_xy,
+    torch::Tensor normal_xy,
+    torch::Tensor properties);
+
 std::vector<torch::Tensor> box3d_gripper_step_cuda(
     torch::Tensor cube_state,
     torch::Tensor finger_positions,
@@ -153,6 +161,42 @@ torch::Tensor box3d_step(
   return box3d_step_cuda(
       state.contiguous(), inverse_mass.contiguous(), radius.contiguous(), dt,
       substeps, gravity_y, restitution, friction);
+}
+
+torch::Tensor box3d_articulation_response(
+    torch::Tensor base_joint_xy,
+    torch::Tensor second_joint_xy,
+    torch::Tensor link_centers_xy,
+    torch::Tensor contact_point_xy,
+    torch::Tensor normal_xy,
+    torch::Tensor properties) {
+  const std::vector<torch::Tensor> tensors = {
+      base_joint_xy, second_joint_xy, link_centers_xy,
+      contact_point_xy, normal_xy, properties};
+  const auto device = base_joint_xy.device();
+  for (const auto &tensor : tensors) {
+    TORCH_CHECK(tensor.is_cuda() && tensor.device() == device,
+                "all articulation response tensors must share one CUDA device");
+    TORCH_CHECK(tensor.scalar_type() == torch::kFloat32,
+                "all articulation response tensors must be float32");
+  }
+  TORCH_CHECK(base_joint_xy.dim() == 2 && base_joint_xy.size(0) > 0 &&
+              base_joint_xy.size(0) <= 1048576 && base_joint_xy.size(1) == 2,
+              "base_joint_xy must have shape [1..1048576,2]");
+  const int64_t worlds = base_joint_xy.size(0);
+  TORCH_CHECK(second_joint_xy.sizes() == torch::IntArrayRef({worlds, 2}),
+              "second_joint_xy must have shape [worlds,2]");
+  TORCH_CHECK(link_centers_xy.sizes() == torch::IntArrayRef({worlds, 2, 2}),
+              "link_centers_xy must have shape [worlds,2,2]");
+  TORCH_CHECK(contact_point_xy.sizes() == torch::IntArrayRef({worlds, 2}) &&
+              normal_xy.sizes() == torch::IntArrayRef({worlds, 2}),
+              "contact point and normal must have shape [worlds,2]");
+  TORCH_CHECK(properties.sizes() == torch::IntArrayRef({worlds, 7}),
+              "properties must have shape [worlds,7]");
+  return box3d_articulation_response_cuda(
+      base_joint_xy.contiguous(), second_joint_xy.contiguous(),
+      link_centers_xy.contiguous(), contact_point_xy.contiguous(),
+      normal_xy.contiguous(), properties.contiguous());
 }
 
 std::vector<torch::Tensor> box3d_gripper_step(
@@ -619,6 +663,8 @@ std::vector<torch::Tensor> box3d_ray_cast(
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
   module.def("step", &box3d_step, "Box3D-derived fixed-world CUDA step");
+  module.def("articulation_response", &box3d_articulation_response,
+             "Isolated planar two-link contact-response CUDA micro");
   module.def("gripper_step", &box3d_gripper_step, "Physical parallel-jaw box grasp CUDA step");
   module.def("obb_step", &box3d_obb_step, "Oriented box plane-contact CUDA step");
   module.def("sat_step", &box3d_sat_step, "Oriented box pair SAT contact CUDA step");

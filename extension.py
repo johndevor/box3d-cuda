@@ -32,6 +32,7 @@ def load_extension():
             str(root / "csrc" / "joint.cu"),
             str(root / "csrc" / "ray.cu"),
             str(root / "csrc" / "coupled.cu"),
+            str(root / "csrc" / "articulation_response.cu"),
         ],
         extra_cflags=["-O3"],
         extra_cuda_cflags=["-O3", "--use_fast_math", "-lineinfo"],
@@ -151,6 +152,61 @@ def step(state, inverse_mass, radius, *, dt, substeps, gravity_y, restitution, f
         float(gravity_y),
         float(restitution),
         float(friction),
+    )
+
+
+def articulation_response(
+    base_joint_xy,
+    second_joint_xy,
+    link_centers_xy,
+    contact_point_xy,
+    normal_xy,
+    properties,
+):
+    """Evaluate the isolated planar two-link contact-response micro on CUDA."""
+
+    import torch
+
+    tensors = (
+        base_joint_xy,
+        second_joint_xy,
+        link_centers_xy,
+        contact_point_xy,
+        normal_xy,
+        properties,
+    )
+    if not all(isinstance(item, torch.Tensor) for item in tensors):
+        raise TypeError("articulation response inputs must all be torch tensors")
+    if not all(item.is_cuda for item in tensors) or len({item.device for item in tensors}) != 1:
+        raise ValueError("articulation response inputs must share one CUDA device")
+    if any(item.dtype != torch.float32 for item in tensors):
+        raise ValueError("articulation response inputs must be float32")
+    if base_joint_xy.ndim != 2 or base_joint_xy.shape[1] != 2 or base_joint_xy.shape[0] <= 0:
+        raise ValueError("base_joint_xy must have shape [worlds,2]")
+    worlds = base_joint_xy.shape[0]
+    if worlds > 1_048_576:
+        raise ValueError("articulation response supports at most 1,048,576 worlds")
+    if tuple(second_joint_xy.shape) != (worlds, 2):
+        raise ValueError("second_joint_xy must have shape [worlds,2]")
+    if tuple(link_centers_xy.shape) != (worlds, 2, 2):
+        raise ValueError("link_centers_xy must have shape [worlds,2,2]")
+    if tuple(contact_point_xy.shape) != (worlds, 2) or tuple(normal_xy.shape) != (worlds, 2):
+        raise ValueError("contact_point_xy and normal_xy must have shape [worlds,2]")
+    if tuple(properties.shape) != (worlds, 7):
+        raise ValueError("properties must have shape [worlds,7]")
+    if not all(bool(torch.isfinite(item).all().item()) for item in tensors):
+        raise ValueError("articulation response inputs must be finite")
+    if not bool(torch.all(properties[:, :4] > 0.0).item()):
+        raise ValueError("masses and inertias must be positive")
+    if not bool(torch.all(properties[:, 4] >= 0.0).item()):
+        raise ValueError("other inverse effective mass must be non-negative")
+    if not bool(torch.all((properties[:, 6] >= 0.0) & (properties[:, 6] <= 1.0)).item()):
+        raise ValueError("restitution must be in [0,1]")
+    normal_length = torch.linalg.vector_norm(normal_xy, dim=-1)
+    if not bool(torch.all(torch.abs(normal_length - 1.0) <= 2.0e-5).item()):
+        raise ValueError("normal_xy must be normalized")
+    return load_extension().articulation_response(
+        *(item.contiguous() for item in tensors)
     )
 
 
