@@ -22,6 +22,21 @@ Stage 7's previously rejected strict instantaneous PhysX output-parity claim
 remains rejected. This extraction does not weaken that gate or turn the
 correctness benchmark into a speedup claim.
 
+## Post-extraction calibrated depth cameras
+
+Standalone commit `ba306ee` added a CUDA camera compiler above the existing OBB
+ray kernel. `daytona-stage6-depth-camera-20260829-r60` rebuilt the complete
+PyTorch extension on an RTX 5090, reran the original nearest-hit ray smoke, and
+then compared two heterogeneous calibrated scene/wrist cameras against the
+scalar CPU oracle. World-space origins and directions, hit IDs, range,
+optical-axis depth, body-attached pose composition, miss-zero semantics, unit
+normals, and deterministic replay all passed. Maximum depth error was
+`4.7684e-7 m`; maximum range error was `9.5367e-7 m`. The capped ephemeral
+sandbox was deleted and absence verified after both result files downloaded.
+
+This proves analytic OBB depth cameras, not rasterization, RGB, materials,
+textures, lens distortion, rolling shutter, noise, or matched PhysX throughput.
+
 ## Post-extraction articulation-response diagnosis
 
 The standalone response oracle and isolated CUDA kernel were added without

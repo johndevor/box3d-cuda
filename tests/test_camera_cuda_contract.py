@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CUDA_PATH = ROOT / "csrc" / "camera.cu"
 BINDINGS_PATH = ROOT / "csrc" / "bindings.cpp"
 EXTENSION_PATH = ROOT / "extension.py"
+BENCHMARK_PATH = ROOT / "benchmark_depth_camera.py"
 
 
 class CameraCudaSourceContractTests(unittest.TestCase):
@@ -88,6 +89,29 @@ class CameraFixtureOracleTests(unittest.TestCase):
         self.assertEqual([image.camera_id for image in images[0]], ["scene", "wrist"])
         self.assertTrue(any(value > 0.0 for row in images[0][1].depth_z_m for value in row))
         self.assertTrue(any(value == 0.0 for row in images[1][0].depth_z_m for value in row))
+
+
+class CameraBenchmarkContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = BENCHMARK_PATH.read_text()
+
+    def test_timing_includes_camera_rays_query_and_depth_on_cuda(self):
+        launch = self.source.split("def _launch(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("extension.camera_rays(", launch)
+        self.assertIn("extension.ray_cast(", launch)
+        self.assertIn("extension.camera_depth(", launch)
+        self.assertNotIn("for pixel", launch)
+        self.assertIn("torch.cuda.Event", self.source)
+
+    def test_correctness_gates_precede_timing_and_claims_are_bounded(self):
+        self.assertLess(
+            self.source.index("run_camera_correctness()"),
+            self.source.index("start.record()"),
+        )
+        self.assertIn("deterministic_replay_passed", self.source)
+        self.assertIn("reported_rgb_or_raster_pixels", self.source)
+        self.assertIn("No matched PhysX/ManiSkill speedup is claimed", self.source)
 
 
 if __name__ == "__main__":

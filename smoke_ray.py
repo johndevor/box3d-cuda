@@ -84,7 +84,7 @@ def run() -> dict:
         "schema_version": "box3d.ray-smoke/v1",
         "status": "passed",
         "device": torch.cuda.get_device_name(0),
-        "extension": "factory_box3d_cuda_v10",
+        "extension": "factory_box3d_cuda_v14",
         "checks": checks,
         "distances": distance_cpu.tolist(),
         "body_indices": body_cpu.tolist(),

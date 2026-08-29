@@ -43,9 +43,11 @@ CPU/CUDA micro-gates.
 
 Stage 6 adds a native batched nearest-hit ray query for up to 32 oriented boxes
 per fixed-small world. It returns range, stable body ID, and an outward unit
-normal with deterministic miss and tie semantics. A broader scalar CPU oracle
-also covers planes, hit positions, calibrated pinhole cameras, multi-camera
-rigs, range images, and optical-axis depth.
+normal with deterministic miss and tie semantics. A CUDA camera compiler now
+generates calibrated rays for up to 64 heterogeneous world- or body-attached
+pinhole cameras and converts hit range to optical-axis depth without a host
+pixel loop. The scalar CPU oracle independently covers the same camera pose,
+ray, range, miss, and optical-depth semantics, plus planes and hit positions.
 
 Stage 7 couples articulated joint rows and persistent contact rows in one
 fixed-small-world solver. Its CPU/CUDA physical correctness gate is accepted.
@@ -130,6 +132,10 @@ Stage 6 additionally measures:
   all eight IDs observed, deterministic replay, and bit-exact world isolation
 - RTX 5090 result: 21.192B native first-hit OBB ray queries/s across 1,024
   worlds and 240 query steps; maximum CPU/CUDA range error 1.91e-6 m
+- Post-extraction RTX 5090 camera gate: two heterogeneous scene/wrist cameras
+  across two isolated worlds passed CPU/CUDA origin, direction, hit-ID, range,
+  optical-depth, body-attachment, miss-zero, normal, and deterministic-replay
+  checks; maximum depth error was 4.77e-7 m and range error 9.54e-7 m
 - No PhysX speedup is claimed: PhysX 5's documented batch-query extension wraps
   scene raycasts and ManiSkill exposes no comparable native CUDA tensor batch
 
@@ -152,8 +158,9 @@ Stage 7 currently establishes:
 
 Not implemented: a broad phase, general convex collision, the complete Box3D
 Soft Step constraint set, reduced-coordinate articulation, CCD, sleep/islands,
-meshes, or GPU rendering. Stage 6 rays currently test OBBs with a linear
-per-world body scan; there is no acceleration structure or pixel renderer.
+meshes, or GPU raster rendering. Stage 6 analytic camera queries currently test
+OBBs with a linear per-world body scan; there is no acceleration structure,
+RGB, textures, lens distortion, rolling shutter, or sensor noise model.
 Stage 7 is a bounded maximal-coordinate joint/contact workload, not general
 robot dynamics or validated sim-to-real physics.
 
