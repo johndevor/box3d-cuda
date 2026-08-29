@@ -22,3 +22,6 @@ install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 add_executable(box3d_cuda_native_smoke examples/native_smoke.cu)
 target_link_libraries(box3d_cuda_native_smoke PRIVATE box3d_cuda_cabi)
+
+add_executable(box3d_cuda_topology_digest_smoke examples/topology_digest_smoke.cpp)
+target_compile_features(box3d_cuda_topology_digest_smoke PRIVATE cxx_std_17)

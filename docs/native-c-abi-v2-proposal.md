@@ -97,7 +97,9 @@ little-endian. Floats are their IEEE-754 binary32 bits with either sign of zero
 normalized to `0x00000000`. Mutable state, mass/inertia/extents, gravity values,
 materials, and caches are excluded because snapshots carry them.
 
-The dependency-free executable encoder is `topology_digest.py`. For the shared
+The dependency-free Python encoder is `topology_digest.py`; the independent
+native C++ implementation is `csrc/topology_sha256.h`, compile-checked by
+`box3d_cuda_topology_digest_smoke`. For the shared
 two-body World vector, draft revision 1 hashes to
 `06ab2f776dbf99c4dbf1a72220e6e56947fd24c1baeaa2d8068e837decaae0c4`.
 Changing only the included draft-revision scalar to revision 2 correctly gives
