@@ -418,7 +418,9 @@ def validate_coupling_contract_speedup(
         "maximum_body_position_error_m": MAX_BODY_POSITION_ERROR_M,
         "maximum_body_orientation_error_rad": MAX_BODY_ORIENTATION_ERROR_RAD,
         "maximum_body_velocity_error_mps": MAX_BODY_VELOCITY_ERROR_MPS,
+        "maximum_body_angular_velocity_error_rad_s": MAX_BODY_ANGULAR_VELOCITY_ERROR_RAD_S,
         "maximum_drive_effort_error_nm": MAX_DRIVE_EFFORT_ERROR_NM,
+        "maximum_joint_target_error_rad": MAX_JOINT_TARGET_ERROR_RAD,
         "maximum_pair_contact_impulse_magnitude_error_ns": MAX_PAIR_CONTACT_IMPULSE_MAGNITUDE_ERROR_NS,
         "maximum_payload_displacement_error_m": MAX_PAYLOAD_DISPLACEMENT_ERROR_M,
     }
@@ -433,6 +435,6 @@ def validate_coupling_contract_speedup(
 
 __all__ = [name for name in globals() if name.isupper()] + [
     "JointContactPusherSpec", "SPEC", "initial_joint_positions_rad",
-    "initial_payload_center_m", "target_positions_rad", "target_batch_rad",
+    "initial_payload_center_m", "target_positions_rad", "target_batch_rad", "target_scale",
     "validate_coupling_report", "validate_coupling_contract_speedup",
 ]

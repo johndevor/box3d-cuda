@@ -143,9 +143,11 @@ class CouplingTraceComparisonTests(unittest.TestCase):
         mutations = (
             ("joint_positions_rad", (0, 0), 0.1, "maximum_joint_position_error_rad"),
             ("joint_velocities_rad_s", (0, 0), 1.0, "maximum_joint_velocity_error_rad_s"),
+            ("joint_targets_rad", (0, 0), 0.01, "maximum_joint_target_error_rad"),
             ("drive_efforts_nm", (0, 0), 1.0, "maximum_drive_effort_error_nm"),
             ("body_positions_m", (0, 4, 1), 0.1, "maximum_body_position_error_m"),
             ("body_linear_velocities_mps", (0, 4, 0), 1.0, "maximum_body_velocity_error_mps"),
+            ("body_angular_velocities_rad_s", (0, 4, 2), 1.0, "maximum_body_angular_velocity_error_rad_s"),
             ("pair_contact_impulse_magnitude_ns", (0, 0), 1.0, "maximum_pair_contact_impulse_magnitude_error_ns"),
         )
         for field, indices, delta, message in mutations:
