@@ -134,3 +134,6 @@ cmake --build build -j2
 
 `cmake --install build --prefix <prefix>` installs the shared library beneath
 `<prefix>/lib` and both C headers beneath `<prefix>/include/box3d_cuda`.
+The dependency-free `examples/installed_v2_query_smoke.c` can then be compiled
+against that prefix to verify header layout, dynamic loading, exported query
+symbols, draft revision, and the exact capability mask.
