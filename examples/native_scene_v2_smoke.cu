@@ -1,0 +1,341 @@
+#include "../proposals/box3d_cuda_v2.h"
+
+#include <cuda_runtime.h>
+
+#include <cmath>
+#include <cstdlib>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <vector>
+
+namespace {
+
+template <typename T>
+T* device_copy(const std::vector<T>& values) {
+  if (values.empty()) return nullptr;
+  T* result = nullptr;
+  if (cudaMalloc(reinterpret_cast<void**>(&result), values.size() * sizeof(T)) !=
+          cudaSuccess ||
+      cudaMemcpy(result, values.data(), values.size() * sizeof(T),
+                 cudaMemcpyHostToDevice) != cudaSuccess) {
+    std::fprintf(stderr, "device allocation/copy failed\n");
+    std::exit(90);
+  }
+  return result;
+}
+
+template <typename T>
+T* device_allocate(size_t count) {
+  if (count == 0) return nullptr;
+  T* result = nullptr;
+  if (cudaMalloc(reinterpret_cast<void**>(&result), count * sizeof(T)) !=
+      cudaSuccess) {
+    std::fprintf(stderr, "device allocation failed\n");
+    std::exit(91);
+  }
+  return result;
+}
+
+template <typename T>
+std::vector<T> host_copy(const T* source, size_t count) {
+  std::vector<T> result(count);
+  if (count != 0 &&
+      cudaMemcpy(result.data(), source, count * sizeof(T),
+                 cudaMemcpyDeviceToHost) != cudaSuccess) {
+    std::fprintf(stderr, "device download failed\n");
+    std::exit(92);
+  }
+  return result;
+}
+
+struct Snapshot {
+  float* state = nullptr;
+  float* inverse_mass = nullptr;
+  float* inverse_inertia = nullptr;
+  float* half_extents = nullptr;
+  float* gravity = nullptr;
+  float* friction = nullptr;
+  float* restitution = nullptr;
+  int64_t* feature_ids = nullptr;
+  float* impulses = nullptr;
+
+  void release() {
+    cudaFree(state);
+    cudaFree(inverse_mass);
+    cudaFree(inverse_inertia);
+    cudaFree(half_extents);
+    cudaFree(gravity);
+    cudaFree(friction);
+    cudaFree(restitution);
+    cudaFree(feature_ids);
+    cudaFree(impulses);
+  }
+};
+
+Snapshot allocate_snapshot(size_t eb, size_t ep) {
+  Snapshot result;
+  result.state = device_allocate<float>(eb * 13);
+  result.inverse_mass = device_allocate<float>(eb);
+  result.inverse_inertia = device_allocate<float>(eb * 3);
+  result.half_extents = device_allocate<float>(eb * 3);
+  result.gravity = device_allocate<float>(3);
+  result.friction = device_allocate<float>(1);
+  result.restitution = device_allocate<float>(1);
+  result.feature_ids = device_allocate<int64_t>(ep * 4);
+  result.impulses = device_allocate<float>(ep * 12);
+  return result;
+}
+
+bool near(float first, float second) {
+  return std::fabs(first - second) <= 1.0e-6f;
+}
+
+}  // namespace
+
+int main() {
+  box3d_cuda_api_info_v2 api{};
+  api.struct_size = sizeof(api);
+  api.abi_version = BOX3D_CUDA_ABI_VERSION_V2;
+  if (box3d_cuda_get_abi_version_v2() != BOX3D_CUDA_ABI_VERSION_V2 ||
+      box3d_cuda_query_api_v2(&api) != BOX3D_CUDA_STATUS_V2_SUCCESS ||
+      api.draft_revision != 3 ||
+      (api.capabilities & BOX3D_CUDA_CAP_V2_PARTIAL_ENVIRONMENT_RESTORE) == 0 ||
+      (api.capabilities & BOX3D_CUDA_CAP_V2_ORIENTED_BOXES) != 0) {
+    std::fprintf(stderr, "ABI-v2 lifecycle capability discovery failed\n");
+    return 1;
+  }
+
+  constexpr uint32_t environments = 4;
+  constexpr uint32_t bodies = 2;
+  constexpr uint32_t pairs = 1;
+  constexpr size_t eb = environments * bodies;
+  constexpr size_t ep = environments * pairs;
+  const uint32_t body_ids[] = {10, 20};
+  const uint32_t body_motion[] = {BOX3D_CUDA_BODY_FIXED_V2,
+                                  BOX3D_CUDA_BODY_DYNAMIC_V2};
+  const uint32_t pair_ids[] = {30};
+  const uint32_t pair_bodies[] = {0, 1};
+  std::vector<float> state(eb * 13, 0.0f);
+  std::vector<float> inverse_mass(eb, 0.0f);
+  std::vector<float> inverse_inertia(eb * 3, 0.0f);
+  std::vector<float> half_extents(eb * 3, 0.5f);
+  std::vector<int64_t> feature_ids(ep * 4, -1);
+  std::vector<float> impulses(ep * 12, 0.0f);
+  for (size_t environment = 0; environment < environments; ++environment) {
+    for (size_t body = 0; body < bodies; ++body) {
+      const size_t flat = environment * bodies + body;
+      state[flat * 13 + 0] = static_cast<float>(environment * 10 + body);
+      state[flat * 13 + 6] = 1.0f;
+    }
+    const size_t dynamic = environment * bodies + 1;
+    inverse_mass[dynamic] = 0.5f;
+    inverse_inertia[dynamic * 3 + 0] = 0.25f;
+    inverse_inertia[dynamic * 3 + 1] = 0.25f;
+    inverse_inertia[dynamic * 3 + 2] = 0.25f;
+    feature_ids[environment * 4] = static_cast<int64_t>(100 + environment);
+    impulses[environment * 12] = static_cast<float>(environment + 1);
+  }
+
+  box3d_cuda_scene_register_desc_v2 registration{};
+  registration.struct_size = sizeof(registration);
+  registration.abi_version = BOX3D_CUDA_ABI_VERSION_V2;
+  registration.device_ordinal = -1;
+  registration.environments = environments;
+  registration.bodies = bodies;
+  registration.contact_pairs = pairs;
+  registration.substeps = 2;
+  registration.solver_iterations = 12;
+  registration.material_binding = BOX3D_CUDA_MATERIAL_GLOBAL_V2;
+  registration.dt = 1.0f / 60.0f;
+  registration.global_gravity_xyz[1] = -9.81f;
+  registration.global_friction = 0.6f;
+  registration.global_restitution = 0.1f;
+  registration.warm_start_factor = 0.8f;
+  registration.contact_slop = 1.0e-4f;
+  registration.position_correction = 0.8f;
+  registration.angular_damping = 0.02f;
+  registration.sat_epsilon = 1.0e-7f;
+  registration.joint_position_slop = 1.0e-5f;
+  registration.joint_angular_slop = 1.0e-5f;
+  registration.maximum_linear_repair = 0.1f;
+  registration.maximum_angular_repair = 0.2f;
+  registration.body_caller_ids = body_ids;
+  registration.body_motion = body_motion;
+  registration.contact_pair_caller_ids = pair_ids;
+  registration.contact_body_indices = pair_bodies;
+  registration.state = state.data();
+  registration.inverse_mass = inverse_mass.data();
+  registration.inverse_inertia = inverse_inertia.data();
+  registration.half_extents = half_extents.data();
+  registration.contact_feature_ids = feature_ids.data();
+  registration.contact_impulse_cache = impulses.data();
+
+  box3d_cuda_scene_handle_v2 scene = 0;
+  const auto register_status = box3d_cuda_scene_register_v2(&registration, &scene);
+  if (register_status != BOX3D_CUDA_STATUS_V2_SUCCESS || scene == 0) {
+    std::fprintf(stderr, "scene registration failed: %s\n",
+                 box3d_cuda_status_string_v2(register_status));
+    return 2;
+  }
+  box3d_cuda_scene_info_v2 info{};
+  info.struct_size = sizeof(info);
+  info.abi_version = BOX3D_CUDA_ABI_VERSION_V2;
+  if (box3d_cuda_scene_get_info_v2(scene, &info) !=
+          BOX3D_CUDA_STATUS_V2_SUCCESS ||
+      info.environments != environments || info.bodies != bodies ||
+      info.contact_pairs != pairs) {
+    std::fprintf(stderr, "scene info failed\n");
+    return 3;
+  }
+
+  Snapshot captured = allocate_snapshot(eb, ep);
+  box3d_cuda_scene_capture_desc_v2 capture{};
+  capture.struct_size = sizeof(capture);
+  capture.abi_version = BOX3D_CUDA_ABI_VERSION_V2;
+  capture.scene = scene;
+  std::memcpy(capture.topology_sha256, info.topology_sha256, 32);
+  capture.state = captured.state;
+  capture.inverse_mass = captured.inverse_mass;
+  capture.inverse_inertia = captured.inverse_inertia;
+  capture.half_extents = captured.half_extents;
+  capture.gravity_xyz = captured.gravity;
+  capture.material_friction = captured.friction;
+  capture.material_restitution = captured.restitution;
+  capture.contact_feature_ids = captured.feature_ids;
+  capture.contact_impulse_cache = captured.impulses;
+  if (box3d_cuda_scene_capture_v2(&capture) != BOX3D_CUDA_STATUS_V2_SUCCESS ||
+      cudaDeviceSynchronize() != cudaSuccess) {
+    std::fprintf(stderr, "initial capture failed\n");
+    return 4;
+  }
+
+  std::vector<float> replacement_state = state;
+  std::vector<float> replacement_mass = inverse_mass;
+  std::vector<float> replacement_inertia = inverse_inertia;
+  std::vector<float> replacement_extents = half_extents;
+  std::vector<int64_t> replacement_features = feature_ids;
+  std::vector<float> replacement_impulses = impulses;
+  for (size_t environment = 0; environment < environments; ++environment) {
+    replacement_state[(environment * bodies + 1) * 13] += 1000.0f;
+    replacement_mass[environment * bodies + 1] += 0.1f;
+    replacement_inertia[(environment * bodies + 1) * 3] += 0.1f;
+    replacement_extents[(environment * bodies + 1) * 3] += 0.1f;
+    replacement_features[environment * 4] += 1000;
+    replacement_impulses[environment * 12] += 1000.0f;
+  }
+  Snapshot replacement;
+  replacement.state = device_copy(replacement_state);
+  replacement.inverse_mass = device_copy(replacement_mass);
+  replacement.inverse_inertia = device_copy(replacement_inertia);
+  replacement.half_extents = device_copy(replacement_extents);
+  replacement.gravity = device_copy(std::vector<float>{1.0f, -3.0f, 2.0f});
+  replacement.friction = device_copy(std::vector<float>{0.9f});
+  replacement.restitution = device_copy(std::vector<float>{0.3f});
+  replacement.feature_ids = device_copy(replacement_features);
+  replacement.impulses = device_copy(replacement_impulses);
+  uint8_t* mask = device_copy(std::vector<uint8_t>{0, 7, 0, 1});
+
+  box3d_cuda_scene_restore_desc_v2 restore{};
+  restore.struct_size = sizeof(restore);
+  restore.abi_version = BOX3D_CUDA_ABI_VERSION_V2;
+  restore.scene = scene;
+  std::memcpy(restore.topology_sha256, info.topology_sha256, 32);
+  restore.state = replacement.state;
+  restore.inverse_mass = replacement.inverse_mass;
+  restore.inverse_inertia = replacement.inverse_inertia;
+  restore.half_extents = replacement.half_extents;
+  restore.gravity_xyz = replacement.gravity;
+  restore.material_friction = replacement.friction;
+  restore.material_restitution = replacement.restitution;
+  restore.contact_feature_ids = replacement.feature_ids;
+  restore.contact_impulse_cache = replacement.impulses;
+  restore.environment_mask = mask;
+  if (box3d_cuda_scene_restore_v2(&restore) != BOX3D_CUDA_STATUS_V2_SUCCESS ||
+      box3d_cuda_scene_capture_v2(&capture) != BOX3D_CUDA_STATUS_V2_SUCCESS ||
+      cudaDeviceSynchronize() != cudaSuccess) {
+    std::fprintf(stderr, "masked restore/capture failed\n");
+    return 5;
+  }
+  const auto observed_state = host_copy(captured.state, eb * 13);
+  const auto observed_mass = host_copy(captured.inverse_mass, eb);
+  const auto observed_inertia = host_copy(captured.inverse_inertia, eb * 3);
+  const auto observed_extents = host_copy(captured.half_extents, eb * 3);
+  const auto observed_features = host_copy(captured.feature_ids, ep * 4);
+  const auto observed_impulses = host_copy(captured.impulses, ep * 12);
+  const auto observed_gravity = host_copy(captured.gravity, 3);
+  const auto observed_friction = host_copy(captured.friction, 1);
+  const auto observed_restitution = host_copy(captured.restitution, 1);
+  for (size_t environment = 0; environment < environments; ++environment) {
+    const bool selected = environment == 1 || environment == 3;
+    const size_t dynamic = environment * bodies + 1;
+    if (!near(observed_state[dynamic * 13],
+              selected ? replacement_state[dynamic * 13] : state[dynamic * 13]) ||
+        !near(observed_mass[dynamic],
+              selected ? replacement_mass[dynamic] : inverse_mass[dynamic]) ||
+        !near(observed_inertia[dynamic * 3],
+              selected ? replacement_inertia[dynamic * 3]
+                       : inverse_inertia[dynamic * 3]) ||
+        !near(observed_extents[dynamic * 3],
+              selected ? replacement_extents[dynamic * 3]
+                       : half_extents[dynamic * 3]) ||
+        observed_features[environment * 4] !=
+            (selected ? replacement_features[environment * 4]
+                      : feature_ids[environment * 4]) ||
+        !near(observed_impulses[environment * 12],
+              selected ? replacement_impulses[environment * 12]
+                       : impulses[environment * 12])) {
+      std::fprintf(stderr, "masked environment restore was not exact\n");
+      return 6;
+    }
+  }
+  if (!near(observed_gravity[0], 1.0f) ||
+      !near(observed_gravity[1], -3.0f) ||
+      !near(observed_gravity[2], 2.0f) ||
+      !near(observed_friction[0], 0.9f) ||
+      !near(observed_restitution[0], 0.3f)) {
+    std::fprintf(stderr, "global restore was not applied exactly once\n");
+    return 7;
+  }
+
+  cudaFree(replacement.gravity);
+  cudaFree(replacement.friction);
+  cudaFree(replacement.restitution);
+  replacement.gravity = device_copy(std::vector<float>{4.0f, -5.0f, 6.0f});
+  replacement.friction = device_copy(std::vector<float>{0.4f});
+  replacement.restitution = device_copy(std::vector<float>{0.2f});
+  cudaFree(mask);
+  mask = device_copy(std::vector<uint8_t>{0, 0, 0, 0});
+  restore.gravity_xyz = replacement.gravity;
+  restore.material_friction = replacement.friction;
+  restore.material_restitution = replacement.restitution;
+  restore.environment_mask = mask;
+  if (box3d_cuda_scene_restore_v2(&restore) != BOX3D_CUDA_STATUS_V2_SUCCESS ||
+      box3d_cuda_scene_capture_v2(&capture) != BOX3D_CUDA_STATUS_V2_SUCCESS ||
+      cudaDeviceSynchronize() != cudaSuccess) {
+    std::fprintf(stderr, "all-zero masked restore failed\n");
+    return 8;
+  }
+  const auto zero_mask_state = host_copy(captured.state, eb * 13);
+  const auto zero_mask_gravity = host_copy(captured.gravity, 3);
+  if (std::memcmp(zero_mask_state.data(), observed_state.data(),
+                  zero_mask_state.size() * sizeof(float)) != 0 ||
+      !near(zero_mask_gravity[0], 4.0f) ||
+      !near(zero_mask_gravity[1], -5.0f) ||
+      !near(zero_mask_gravity[2], 6.0f)) {
+    std::fprintf(stderr, "all-zero mask changed env state or skipped globals\n");
+    return 9;
+  }
+
+  captured.release();
+  replacement.release();
+  cudaFree(mask);
+  if (box3d_cuda_scene_unregister_v2(scene) != BOX3D_CUDA_STATUS_V2_SUCCESS ||
+      box3d_cuda_scene_get_info_v2(scene, &info) !=
+          BOX3D_CUDA_STATUS_V2_INVALID_HANDLE) {
+    std::fprintf(stderr, "scene unregister lifecycle failed\n");
+    return 10;
+  }
+  std::puts("Box3D CUDA ABI-v2 r3 resident lifecycle passed");
+  return 0;
+}
