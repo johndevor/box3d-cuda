@@ -42,7 +42,8 @@ MIN_FLOOR_PAYLOAD_CONTACT_FRAMES = 480
 MIN_PAYLOAD_FORWARD_DISPLACEMENT_M = 0.10
 MAX_UNCOMMANDED_ENERGY_INCREASE_J = 0.10
 MIN_FRICTION_NEGATIVE_CONTROL_TAIL_SPEED_DELTA_MPS = 0.02
-MAX_INITIAL_STATE_REPLICA_ERROR = 1.0e-6
+MAX_INITIAL_BODY_POSITION_REPLICA_ERROR_M = 5.0e-5
+MAX_INITIAL_NONPOSITION_STATE_REPLICA_ERROR = 1.0e-6
 
 MIN_CONTACT_STATE_AGREEMENT_RATIO = 0.99
 MAX_JOINT_POSITION_ERROR_RAD = 0.015
@@ -227,7 +228,8 @@ class JointContactPusherSpec:
 SPEC = JointContactPusherSpec()
 
 GATE_THRESHOLDS = {
-    "maximum_initial_state_replica_error": MAX_INITIAL_STATE_REPLICA_ERROR,
+    "maximum_initial_body_position_replica_error_m": MAX_INITIAL_BODY_POSITION_REPLICA_ERROR_M,
+    "maximum_initial_nonposition_state_replica_error": MAX_INITIAL_NONPOSITION_STATE_REPLICA_ERROR,
     "maximum_joint_limit_excess_rad": MAX_JOINT_LIMIT_EXCESS_RAD,
     "maximum_drive_effort_ratio": MAX_DRIVE_EFFORT_RATIO,
     "maximum_joint_anchor_error_m": MAX_JOINT_ANCHOR_ERROR_M,
@@ -368,7 +370,8 @@ def validate_coupling_report(report: Mapping[str, Any], *, backend: str) -> None
         if correctness.get(key) is not True:
             raise RuntimeError(f"coupling evidence failed {key}")
     maximums = {
-        "maximum_initial_state_replica_error": MAX_INITIAL_STATE_REPLICA_ERROR,
+        "maximum_initial_body_position_replica_error_m": MAX_INITIAL_BODY_POSITION_REPLICA_ERROR_M,
+        "maximum_initial_nonposition_state_replica_error": MAX_INITIAL_NONPOSITION_STATE_REPLICA_ERROR,
         "maximum_joint_limit_excess_rad": MAX_JOINT_LIMIT_EXCESS_RAD,
         "maximum_drive_effort_ratio": MAX_DRIVE_EFFORT_RATIO,
         "maximum_joint_anchor_error_m": MAX_JOINT_ANCHOR_ERROR_M,

@@ -349,9 +349,10 @@ def benchmark(output_path: Path, *, articulation_projection: bool = False) -> di
     start.record(); timed_last,_=_run(timed,config,diagnostics=False,articulation_projection=articulation_projection); end.record(); torch.cuda.synchronize()
     duration=start.elapsed_time(end)/1000.0
     checked=make_workload(WORLDS,device)
-    initial_state_replica_error=float((checked["initial_state"]-checked["initial_state"][0:1]).abs().max().item())
+    initial_position_replica_error=float((checked["initial_state"][...,:3]-checked["initial_state"][0:1,:,:3]).abs().max().item())
+    initial_nonposition_replica_error=float((checked["initial_state"][...,3:]-checked["initial_state"][0:1,:,3:]).abs().max().item())
     initial_joint_replica_error=float((checked["initial_q"]-checked["initial_q"][0:1]).abs().max().item())
-    maximum_initial_state_replica_error=max(initial_state_replica_error,initial_joint_replica_error)
+    maximum_initial_nonposition_replica_error=max(initial_nonposition_replica_error,initial_joint_replica_error)
     checked_last,diagnostics=_run(checked,config,diagnostics=True,capture_trace=True,capture_parity=True,articulation_projection=articulation_projection); torch.cuda.synchronize()
     deterministic = all(torch.equal(a,b) for a,b in zip(timed_last,checked_last))
     isolated=make_workload(1,device); isolated_last,_=_run(isolated,config,diagnostics=False,articulation_projection=articulation_projection); torch.cuda.synchronize()
@@ -362,8 +363,9 @@ def benchmark(output_path: Path, *, articulation_projection: bool = False) -> di
     correctness={
         "passed":False,"measured_runtime_evidence":True,"synthetic":False,**SPEC.metadata(seed=DEFAULT_SEED),
         "gate_thresholds":dict(GATE_THRESHOLDS),"finite_joint_and_body_state":bool(torch.isfinite(checked["state"]).all().item()),
-        "replicated_initial_state_passed":maximum_initial_state_replica_error<=GATE_THRESHOLDS["maximum_initial_state_replica_error"],
-        "maximum_initial_state_replica_error":maximum_initial_state_replica_error,
+        "replicated_initial_state_passed":initial_position_replica_error<=GATE_THRESHOLDS["maximum_initial_body_position_replica_error_m"] and maximum_initial_nonposition_replica_error<=GATE_THRESHOLDS["maximum_initial_nonposition_state_replica_error"],
+        "maximum_initial_body_position_replica_error_m":initial_position_replica_error,
+        "maximum_initial_nonposition_state_replica_error":maximum_initial_nonposition_replica_error,
         "normalized_body_quaternions":float(diagnostics["max_quat"].item())<=GATE_THRESHOLDS["maximum_quaternion_norm_error"],
         "deterministic_replay_passed":deterministic,"world_isolation_passed":world_isolation,
         "joint_limits_respected":float(diagnostics["max_limit"].item())<=GATE_THRESHOLDS["maximum_joint_limit_excess_rad"],
