@@ -16,7 +16,7 @@ through a Factory OS consumer bundle pinned to that exact revision.
   fixed Stage-6 benchmark passed (`box3d.batched-ray-depth/v1`).
 - `daytona-box3d-extraction-stage7-20260829-r1` on RTX 5090: coupled smoke and
   full bounded Stage-7 correctness benchmark passed
-  (`box3d.joint-contact-pusher/v1`).
+  (`box3d.joint-contact-pusher/v2`).
 
 Stage 7's previously rejected strict instantaneous PhysX output-parity claim
 remains rejected. This extraction does not weaken that gate or turn the

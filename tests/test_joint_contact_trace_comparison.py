@@ -24,6 +24,7 @@ from box3d_cuda.contracts.coupling import (
     WORLDS,
     initial_joint_positions_rad,
     target_positions_rad,
+    target_batch_rad,
     target_scale,
 )
 
@@ -33,6 +34,14 @@ def test_shared_target_scale_matches_contract_targets() -> None:
         initial = initial_joint_positions_rad(17)
         expected = tuple(value * target_scale(step) for value in initial)
         assert target_positions_rad(step, 17) == expected
+
+
+def test_matched_batch_replicates_world_zero_initial_targets() -> None:
+    targets = target_batch_rad(64, 120)
+
+    assert len(targets) == 64
+    assert all(target == targets[0] for target in targets)
+    assert SPEC.metadata()["initial_state_batch_layout"] == "replicated_world_zero"
 
 
 def measured_report(backend: str, *, rate: float) -> dict:

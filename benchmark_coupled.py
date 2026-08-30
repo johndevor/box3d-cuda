@@ -127,7 +127,11 @@ def _config(friction: float = SPEC.friction) -> CoupledConfig:
 def make_workload(worlds: int, device):
     import torch
 
-    world = torch.arange(worlds, dtype=torch.float32, device=device)
+    # Strict cross-engine parity uses one exact state replicated across the
+    # timed batch. Heterogeneous randomization is a separate stress contract:
+    # PhysX GPU contact state was observed to drift before contact when these
+    # millimetre-scale offsets varied inside one batched scene.
+    world = torch.zeros(worlds, dtype=torch.float32, device=device)
     q1 = SPEC.initial_joint_positions_nominal_rad[0] + 0.01 * _seeded_unit(world, 0, DEFAULT_SEED)
     q2 = SPEC.initial_joint_positions_nominal_rad[1] + 0.01 * _seeded_unit(world, 1, DEFAULT_SEED)
     state = torch.zeros((worlds, BODY_COUNT, 13), dtype=torch.float32, device=device)

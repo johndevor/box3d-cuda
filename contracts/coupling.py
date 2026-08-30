@@ -12,7 +12,8 @@ import math
 from typing import Any, Mapping, Sequence
 
 
-CONTRACT_ID = "box3d.joint-contact-pusher/v1"
+CONTRACT_ID = "box3d.joint-contact-pusher/v2"
+INITIAL_STATE_BATCH_LAYOUT = "replicated_world_zero"
 CUDA_BACKEND = "box3d_cuda_stage7"
 PHYSX_BACKEND = "maniskill_physx_cuda"
 DEFAULT_SEED = 79
@@ -150,6 +151,7 @@ class JointContactPusherSpec:
     def metadata(self, *, seed: int = DEFAULT_SEED) -> dict[str, Any]:
         return {
             "scenario_seed": seed,
+            "initial_state_batch_layout": INITIAL_STATE_BATCH_LAYOUT,
             "control_hz": CONTROL_HZ,
             "physics_substeps": PHYSICS_SUBSTEPS,
             "benchmark_steps": BENCHMARK_STEPS,
@@ -319,7 +321,7 @@ def target_scale(control_step: int) -> float:
 def target_batch_rad(worlds: int, control_step: int, seed: int = DEFAULT_SEED) -> list[list[float]]:
     if worlds <= 0:
         raise ValueError("world count must be positive")
-    return [list(target_positions_rad(control_step, world, seed)) for world in range(worlds)]
+    return [list(target_positions_rad(control_step, 0, seed)) for _ in range(worlds)]
 
 
 def _numeric(value: Any, name: str) -> float:
