@@ -553,6 +553,15 @@ def main() -> int:
     reward_probe = _fixed_action_reward_probe(
         native, torch, config, bundle, reset_snapshot
     )
+    reward_probe_passed = bool(
+        reward_probe["best_mean_goal_progress_m"] > 1.0e-4
+        and reward_probe["progress_spread_m"] > 1.0e-4
+    )
+    if not reward_probe_passed:
+        raise RuntimeError(
+            "bounded controls do not produce a learnable reward difference: "
+            + json.dumps(reward_probe, sort_keys=True)
+        )
     policy = BatchedActorCritic(torch, config, learner_seeds)
     optimizer = torch.optim.Adam(policy.parameters, lr=3.0e-4)
 
@@ -645,10 +654,7 @@ def main() -> int:
         "instance_ids_are_bounded": bool(
             torch.all((initial_ids >= -1) & (initial_ids < bundle["state"].shape[1])).item()
         ),
-        "bounded_control_changes_reward": bool(
-            reward_probe["best_mean_goal_progress_m"] > 1.0e-4
-            and reward_probe["progress_spread_m"] > 1.0e-4
-        ),
+        "bounded_control_changes_reward": reward_probe_passed,
         "asynchronous_partial_reset_observed": bool(
             not args.asynchronous_resets or all(partial_reset_observed_by_update)
         ),
