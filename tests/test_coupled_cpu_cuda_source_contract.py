@@ -65,6 +65,14 @@ def test_projected_path_distributes_split_repair_through_articulation() -> None:
     assert "else repair_contact_with_articulation_shock" in source
 
 
+def test_stage7_repair_targets_rest_offset_not_contact_classification_slop() -> None:
+    benchmark = (ROOT / "benchmark_coupled.py").read_text()
+    contract = (ROOT / "contracts" / "coupling.py").read_text()
+
+    assert "position_slop=SPEC.contact_rest_offset_m" in benchmark
+    assert '"position_repair_slop_m": SPEC.contact_rest_offset_m' in contract
+
+
 def test_speculative_generation_is_global_but_native_v2_remains_frozen() -> None:
     cuda = (ROOT / "csrc" / "coupled.cu").read_text()
     native = (ROOT / "csrc" / "native_scene_v2.cu").read_text()
