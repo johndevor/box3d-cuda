@@ -33,6 +33,7 @@ def _step(
     warm_start=True,
     config=None,
     constraint_first_integration=False,
+    contact_warm_start_factor=1.0,
 ):
     state, inverse_mass, half, inertia, topology, pairs, joint_cache, ids, impulses = bundle
     result = step_coupled_reference(
@@ -51,6 +52,7 @@ def _step(
         steps=steps,
         warm_start=warm_start,
         constraint_first_integration=constraint_first_integration,
+        contact_warm_start_factor=contact_warm_start_factor,
     )
     next_bundle = (
         result.state,
@@ -227,6 +229,48 @@ def test_warm_start_toggle_is_explicit_and_bounded():
     assert_valid_coupled_result(cold)
     assert warm.peak_pair_penetration_m[0][0] <= MAXIMUM_CONTACT_PENETRATION_M
     assert cold.peak_pair_penetration_m[0][0] <= MAXIMUM_CONTACT_PENETRATION_M
+
+
+def test_contact_warm_start_factor_defaults_to_full_cache_replay():
+    _, bundle = _step(make_coupled_push_state(1), [[1.0]], [[100.0]], 70)
+    default, _ = _step(bundle, [[1.0]], [[100.0]], 1)
+    explicit, _ = _step(
+        bundle,
+        [[1.0]],
+        [[100.0]],
+        1,
+        contact_warm_start_factor=1.0,
+    )
+
+    assert default == explicit
+
+
+def test_zero_contact_warm_start_factor_discards_cached_contact_impulses():
+    _, bundle = _step(make_coupled_push_state(1), [[1.0]], [[100.0]], 70)
+    zero_factor, _ = _step(
+        bundle,
+        [[1.0]],
+        [[100.0]],
+        1,
+        contact_warm_start_factor=0.0,
+    )
+    cleared = list(bundle)
+    cleared[8] = [[[[0.0, 0.0, 0.0] for _ in range(4)]]]
+    zero_cache, _ = _step(tuple(cleared), [[1.0]], [[100.0]], 1)
+
+    assert zero_factor == zero_cache
+
+
+@pytest.mark.parametrize("factor", [-0.01, 1.01, math.inf, math.nan])
+def test_contact_warm_start_factor_fails_closed(factor):
+    with pytest.raises(ValueError, match="contact_warm_start_factor"):
+        _step(
+            make_coupled_push_state(1),
+            [[1.0]],
+            [[100.0]],
+            1,
+            contact_warm_start_factor=factor,
+        )
 
 
 def test_fails_closed_for_mismatched_solver_contract_and_filtered_pair():

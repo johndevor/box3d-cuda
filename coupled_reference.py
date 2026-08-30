@@ -321,6 +321,7 @@ def step_coupled_reference(
     steps: int = 1,
     warm_start: bool = True,
     constraint_first_integration: bool = False,
+    contact_warm_start_factor: float = 1.0,
 ) -> CoupledStepResult:
     """Advance joints and contacts together without attachment or pose copying."""
 
@@ -328,6 +329,15 @@ def step_coupled_reference(
         raise ValueError("steps must be a positive integer")
     if not isinstance(constraint_first_integration, bool):
         raise TypeError("constraint_first_integration must be bool")
+    if isinstance(contact_warm_start_factor, bool) or not isinstance(
+        contact_warm_start_factor, (int, float)
+    ):
+        raise TypeError("contact_warm_start_factor must be a real number")
+    contact_warm_start_factor = float(contact_warm_start_factor)
+    if not math.isfinite(contact_warm_start_factor) or not (
+        0.0 <= contact_warm_start_factor <= 1.0
+    ):
+        raise ValueError("contact_warm_start_factor must be finite and in [0,1]")
     _validate_layout(
         state,
         inverse_mass,
@@ -410,6 +420,11 @@ def step_coupled_reference(
                             ids[world_index][pair_index],
                             impulses[world_index][pair_index],
                         )
+                        if warm_start and contact_warm_start_factor != 1.0:
+                            for point in manifold.points:
+                                point.normal_impulse *= contact_warm_start_factor
+                                point.tangent_impulse_1 *= contact_warm_start_factor
+                                point.tangent_impulse_2 *= contact_warm_start_factor
                     world_manifolds.append(manifold)
                 manifolds.append(world_manifolds)
 

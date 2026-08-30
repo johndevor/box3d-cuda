@@ -193,7 +193,14 @@ def _drive_effort_proxy(bundle, joint_coordinate, target):
     return torch.clamp(effort, -limits, limits), speed
 
 
-def _step(bundle, target, config, *, articulation_projection: bool = False):
+def _step(
+    bundle,
+    target,
+    config,
+    *,
+    articulation_projection: bool = False,
+    contact_warm_start_factor: float = 1.0,
+):
     import torch
 
     worlds = bundle["state"].shape[0]
@@ -206,6 +213,7 @@ def _step(bundle, target, config, *, articulation_projection: bool = False):
         bundle["contact_impulse_cache"], config, motor_target_position=target, stiffness=bundle["stiffness"],
         joint_warm_start_cache=bundle["joint_cache"],
         articulation_projection=articulation_projection,
+        contact_warm_start_factor=contact_warm_start_factor,
     )
     bundle["state"], bundle["joint_cache"], bundle["contact_feature_ids"], bundle["contact_impulse_cache"] = result[0], result[7], result[10], result[11]
     return result

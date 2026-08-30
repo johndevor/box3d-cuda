@@ -801,6 +801,7 @@ def coupled_step(
     stiffness=None,
     joint_warm_start_cache=None,
     articulation_projection=False,
+    contact_warm_start_factor=1.0,
 ):
     """Solve articulated rows and persistent contact rows in one CUDA loop.
 
@@ -818,6 +819,15 @@ def coupled_step(
 
     if not isinstance(articulation_projection, bool):
         raise TypeError("articulation_projection must be bool")
+    if isinstance(contact_warm_start_factor, bool) or not isinstance(
+        contact_warm_start_factor, (int, float)
+    ):
+        raise TypeError("contact_warm_start_factor must be a real number")
+    contact_warm_start_factor = float(contact_warm_start_factor)
+    if not math.isfinite(contact_warm_start_factor) or not (
+        0.0 <= contact_warm_start_factor <= 1.0
+    ):
+        raise ValueError("contact_warm_start_factor must be finite and in [0,1]")
 
     joint_config = config.joints
     contact_config = config.contacts
@@ -969,4 +979,5 @@ def coupled_step(
         float(joint_config.angular_slop), float(joint_config.maximum_linear_repair_m),
         float(joint_config.maximum_angular_repair_rad),
         articulation_projection,
+        contact_warm_start_factor,
     )

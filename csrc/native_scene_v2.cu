@@ -926,6 +926,7 @@ extern "C" BOX3D_CUDA_API box3d_cuda_status_v2 box3d_cuda_scene_step_v2(
         descriptor->maximum_effort, scene->joint_cache.data,
         scene->contact_body_indices.data, scene->contact_feature_ids.data,
         scene->contact_impulse_cache.data, scene->warm_start_factor,
+        /* contact_warm_start_factor: frozen ABI-v2 r3 behavior */ 1.0f,
         scene->diagnostic_joint_coordinate.data,
         scene->diagnostic_joint_anchor_error.data,
         scene->diagnostic_joint_angular_error.data,

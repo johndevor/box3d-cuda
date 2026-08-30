@@ -132,7 +132,7 @@ std::vector<torch::Tensor> box3d_coupled_step_cuda(
     double position_correction, double angular_damping, int64_t solver_iterations,
     double sat_epsilon, double joint_position_slop, double angular_slop,
     double maximum_linear_repair, double maximum_angular_repair,
-    bool articulation_projection);
+    bool articulation_projection, double contact_warm_start_factor);
 
 std::vector<torch::Tensor> box3d_ray_cast_cuda(
     torch::Tensor state,
@@ -563,7 +563,7 @@ std::vector<torch::Tensor> box3d_coupled_step(
     double position_correction, double angular_damping, int64_t solver_iterations,
     double sat_epsilon, double joint_position_slop, double angular_slop,
     double maximum_linear_repair, double maximum_angular_repair,
-    bool articulation_projection) {
+    bool articulation_projection, double contact_warm_start_factor) {
   const auto device = state.device();
   const std::vector<torch::Tensor> tensors = {
       state,inverse_mass,half_extents,inverse_inertia,joint_indices,joint_types,
@@ -620,7 +620,8 @@ std::vector<torch::Tensor> box3d_coupled_step(
               std::isfinite(restitution)&&restitution>=0&&restitution<=1&&
               std::isfinite(friction)&&friction>=0&&friction<=10&&
               std::isfinite(contact_generation_distance)&&contact_generation_distance>=0&&
-              std::isfinite(warm_start_factor)&&warm_start_factor>=0&&warm_start_factor<=1,
+              std::isfinite(warm_start_factor)&&warm_start_factor>=0&&warm_start_factor<=1&&
+              std::isfinite(contact_warm_start_factor)&&contact_warm_start_factor>=0&&contact_warm_start_factor<=1,
               "invalid coupled solver configuration");
   return box3d_coupled_step_cuda(
       state.contiguous(),inverse_mass.contiguous(),half_extents.contiguous(),inverse_inertia.contiguous(),
@@ -631,7 +632,7 @@ std::vector<torch::Tensor> box3d_coupled_step(
       contact_feature_ids.contiguous(),contact_impulse_cache.contiguous(),warm_start_factor,dt,substeps,gravity_y,
       restitution,friction,contact_generation_distance,contact_slop,position_correction,angular_damping,solver_iterations,sat_epsilon,
       joint_position_slop,angular_slop,maximum_linear_repair,maximum_angular_repair,
-      articulation_projection);
+      articulation_projection,contact_warm_start_factor);
 }
 
 std::vector<torch::Tensor> box3d_ray_cast(

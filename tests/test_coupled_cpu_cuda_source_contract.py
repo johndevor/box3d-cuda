@@ -35,6 +35,20 @@ def test_articulation_projection_is_explicit_and_opt_in() -> None:
     assert "if(articulation_projection)solve_projected_motors" in cuda
 
 
+def test_contact_warm_start_factor_is_opt_in_and_native_r3_stays_frozen() -> None:
+    extension = (ROOT / "extension.py").read_text()
+    reference = (ROOT / "coupled_reference.py").read_text()
+    bindings = (ROOT / "csrc" / "bindings.cpp").read_text()
+    cuda = (ROOT / "csrc" / "coupled.cu").read_text()
+    native = (ROOT / "csrc" / "native_scene_v2.cu").read_text()
+
+    assert "contact_warm_start_factor=1.0" in extension
+    assert "contact_warm_start_factor: float = 1.0" in reference
+    assert "double contact_warm_start_factor" in bindings
+    assert "points[point].jn*=contact_warm_start_factor" in cuda
+    assert "frozen ABI-v2 r3 behavior */ 1.0f" in native
+
+
 def test_impact_iteration_sweep_uses_production_observables_and_projection() -> None:
     source = (ROOT / "sweep_impact_iterations.py").read_text()
 
@@ -42,6 +56,16 @@ def test_impact_iteration_sweep_uses_production_observables_and_projection() -> 
     assert "_drive_effort_proxy(bundle, result[1], target)" in source
     assert '"drive_efforts_nm": effort_proxy' in source
     assert '"contact_generation_distance_m"' in source
+
+
+def test_contact_warm_start_sweep_is_bounded_and_diagnostic_only() -> None:
+    source = (ROOT / "sweep_contact_warm_start.py").read_text()
+
+    assert "CONTACT_WARM_START_CANDIDATES = (0.0, 0.25, 0.5, 0.75, 1.0)" in source
+    assert "contact_warm_start_factor=factor" in source
+    assert "articulation_projection=True" in source
+    assert "diagnostic_only_no_speedup_or_solver_change_is_accepted" in source
+    assert '"accepted_contact_warm_start_factor": None' in source
 
 
 def test_projected_path_solves_velocity_before_pose_integration() -> None:
