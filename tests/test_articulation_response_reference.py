@@ -6,6 +6,7 @@ from box3d_cuda.articulation_response_reference import (
     ARTICULATION_RESPONSE_FIELDS,
     ARTICULATION_RESPONSE_WIDTH,
     planar_two_link_contact_response,
+    planar_two_link_position_projection,
 )
 
 
@@ -96,3 +97,56 @@ def test_invalid_inputs_fail_closed(field, value):
 
     with pytest.raises(ValueError):
         planar_two_link_contact_response(**arguments)
+
+
+def _position_projection_arguments():
+    base, second, center1, center2, contact, normal = _benchmark_geometry()
+    return dict(
+        base_joint_xy=base,
+        second_joint_xy=second,
+        link1_center_xy=center1,
+        link2_center_xy=center2,
+        contact_point_xy=contact,
+        normal_xy=normal,
+        link1_mass=2.0,
+        link2_mass=1.5,
+        link1_inertia_z=0.08406666666666666,
+        link2_inertia_z=0.0468,
+        other_inverse_effective_mass=1.0,
+    )
+
+
+def test_position_projection_closes_bounded_gap_across_both_sides():
+    result = planar_two_link_position_projection(
+        **_position_projection_arguments(),
+        penetration=0.003,
+        position_slop=0.001,
+        position_correction=0.8,
+    )
+
+    assert result.correction_distance == pytest.approx(0.0016)
+    assert result.pseudo_impulse > 0.0
+    assert result.articulated_point_displacement > 0.0
+    assert result.other_point_displacement > 0.0
+    assert (
+        result.articulated_point_displacement + result.other_point_displacement
+        == pytest.approx(result.correction_distance)
+    )
+
+
+def test_position_projection_respects_slop_and_fails_closed():
+    inactive = planar_two_link_position_projection(
+        **_position_projection_arguments(),
+        penetration=0.0005,
+        position_slop=0.001,
+        position_correction=0.8,
+    )
+    assert inactive.correction_distance == 0.0
+    assert inactive.pseudo_impulse == 0.0
+    with pytest.raises(ValueError, match="position projection"):
+        planar_two_link_position_projection(
+            **_position_projection_arguments(),
+            penetration=-0.1,
+            position_slop=0.0,
+            position_correction=0.8,
+        )

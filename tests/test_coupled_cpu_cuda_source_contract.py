@@ -55,6 +55,16 @@ def test_projected_path_solves_velocity_before_pose_integration() -> None:
     assert "if(!articulation_projection)" in source[gravity:solve]
 
 
+def test_projected_path_distributes_split_repair_through_articulation() -> None:
+    source = (ROOT / "csrc" / "coupled.cu").read_text()
+
+    assert "repair_contact_with_articulation_projection" in source
+    assert "apply_projected_pair_pose_impulse" in source
+    assert "apply_articulation_pose_delta" in source
+    assert "if(articulation_projection)repair_contact_with_articulation_projection" in source
+    assert "else repair_contact_with_articulation_shock" in source
+
+
 def test_speculative_generation_is_global_but_native_v2_remains_frozen() -> None:
     cuda = (ROOT / "csrc" / "coupled.cu").read_text()
     native = (ROOT / "csrc" / "native_scene_v2.cu").read_text()

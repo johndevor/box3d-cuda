@@ -280,6 +280,33 @@ __device__ inline void apply_articulation_velocity_delta(
   }
 }
 
+__device__ inline void apply_articulation_pose_delta(
+    float *state,int world,int bodies,const Articulation2 &articulation,
+    float delta0,float delta1){
+  float *link1=state+(world*bodies+articulation.link1)*STATE_WIDTH;
+  float *link2=state+(world*bodies+articulation.link2)*STATE_WIDTH;
+  float arm11[3],arm21[3],arm22[3],velocity11[3],velocity21[3],velocity22[3];
+  for(int k=0;k<3;++k){
+    arm11[k]=link1[k]-articulation.origin1[k];
+    arm21[k]=link2[k]-articulation.origin1[k];
+    arm22[k]=link2[k]-articulation.origin2[k];
+  }
+  coupled_joint::cross3(articulation.axis1,arm11,velocity11);
+  coupled_joint::cross3(articulation.axis1,arm21,velocity21);
+  coupled_joint::cross3(articulation.axis2,arm22,velocity22);
+  for(int k=0;k<3;++k){
+    link1[k]+=velocity11[k]*delta0;
+    link2[k]+=velocity21[k]*delta0+velocity22[k]*delta1;
+  }
+  float rotation1[3],rotation2[3];
+  for(int k=0;k<3;++k){
+    rotation1[k]=articulation.axis1[k]*delta0;
+    rotation2[k]=articulation.axis1[k]*delta0+articulation.axis2[k]*delta1;
+  }
+  coupled_joint::orient(link1,1.0f,rotation1);
+  coupled_joint::orient(link2,1.0f,rotation2);
+}
+
 __device__ inline void articulation_jacobian(
     const Articulation2 &articulation,int body,const float *point,const float *direction,float *jacobian){
   float arm1[3],velocity1[3];
@@ -453,6 +480,44 @@ __device__ inline void apply_projected_pair_impulse(
   }
 }
 
+__device__ inline void apply_free_body_pose_impulse(
+    float *body,float inverse_mass,const float *inverse_inertia,
+    const float *point,const float *impulse){
+  if(inverse_mass==0.0f)return;
+  float arm[3],moment[3],rotation[3];
+  for(int k=0;k<3;++k){arm[k]=point[k]-body[k];body[k]+=impulse[k]*inverse_mass;}
+  coupled_joint::cross3(arm,impulse,moment);
+  coupled_joint::iworld(body+3,inverse_inertia,moment,rotation);
+  coupled_joint::orient(body,inverse_mass,rotation);
+}
+
+__device__ inline void apply_articulation_pose_impulse(
+    float *state,int world,int bodies,const Articulation2 &articulation,int body,
+    const float *point,const float *impulse){
+  float generalized[2];articulation_jacobian(articulation,body,point,impulse,generalized);
+  const float delta0=articulation.inverse_mass_matrix[0]*generalized[0]+
+      articulation.inverse_mass_matrix[1]*generalized[1];
+  const float delta1=articulation.inverse_mass_matrix[1]*generalized[0]+
+      articulation.inverse_mass_matrix[2]*generalized[1];
+  apply_articulation_pose_delta(state,world,bodies,articulation,delta0,delta1);
+}
+
+__device__ inline void apply_projected_pair_pose_impulse(
+    float *state,const float *inverse_mass,const float *inverse_inertia,int world,int bodies,
+    int left,int right,const float *point,const float *impulse,
+    const Articulation2 &left_articulation,const Articulation2 &right_articulation){
+  int left_flat=world*bodies+left,right_flat=world*bodies+right;
+  float negative[3]={-impulse[0],-impulse[1],-impulse[2]};
+  if(left_articulation.valid)apply_articulation_pose_impulse(
+      state,world,bodies,left_articulation,left,point,negative);
+  else apply_free_body_pose_impulse(state+left_flat*STATE_WIDTH,inverse_mass[left_flat],
+      inverse_inertia+left_flat*3,point,negative);
+  if(right_articulation.valid)apply_articulation_pose_impulse(
+      state,world,bodies,right_articulation,right,point,impulse);
+  else apply_free_body_pose_impulse(state+right_flat*STATE_WIDTH,inverse_mass[right_flat],
+      inverse_inertia+right_flat*3,point,impulse);
+}
+
 __device__ inline void warm_projected_contact(
     float *state,const float *inverse_mass,const float *inverse_inertia,
     const int64_t *joint_indices,const int64_t *joint_types,const float *parent_anchor,
@@ -572,6 +637,31 @@ __device__ inline bool body_is_articulated(int body,const int64_t *joint_indices
   return false;
 }
 
+__device__ inline void repair_contact_with_articulation_projection(
+    float *state,const float *inverse_mass,const float *inverse_inertia,
+    const int64_t *joint_indices,const int64_t *joint_types,const float *parent_anchor,
+    const float *child_anchor,const float *axis_parent,const float *reference_quaternion,
+    int world,int bodies,int joints,int left,int right,const coupled_contact::MF &manifold,
+    float slop,float position_correction){
+  float depth=0.0f;int deepest=0;
+  for(int point=0;point<manifold.count;++point)if(manifold.points[point].depth>depth){
+    depth=manifold.points[point].depth;deepest=point;
+  }
+  const float correction=fminf(0.2f,fmaxf(0.0f,depth-slop)*position_correction);
+  if(correction<=0.0f)return;
+  const float *point=manifold.points[deepest].p;
+  Articulation2 left_articulation{},right_articulation{};
+  const float denominator=projected_pair_effective_mass(
+      state,inverse_mass,inverse_inertia,joint_indices,joint_types,parent_anchor,child_anchor,
+      axis_parent,reference_quaternion,world,bodies,joints,left,right,point,manifold.n,
+      &left_articulation,&right_articulation);
+  if(denominator<=1.0e-12f)return;
+  float impulse[3];for(int k=0;k<3;++k)impulse[k]=manifold.n[k]*correction/denominator;
+  apply_projected_pair_pose_impulse(
+      state,inverse_mass,inverse_inertia,world,bodies,left,right,point,impulse,
+      left_articulation,right_articulation);
+}
+
 __device__ inline void repair_contact_with_articulation_shock(
     float *left,float left_inverse_mass,int left_index,float *right,float right_inverse_mass,int right_index,
     const coupled_contact::MF &manifold,const int64_t *joint_indices,int joints,float slop,float position_correction){
@@ -689,7 +779,7 @@ __global__ void coupled_kernel(
     // Split position constraints are coupled too. Rebuilding contact geometry
     // between bounded passes avoids repeatedly applying a stale penetration.
     for(int repair_iteration=0;repair_iteration<POSITION_REPAIR_ITERATIONS;++repair_iteration){
-      for(int pair=pairs-1;pair>=0;--pair){int left=int(contact_pairs[pair*2]),right=int(contact_pairs[pair*2+1]);int left_flat=world*bodies+left,right_flat=world*bodies+right;coupled_contact::MF repair_manifold;if(coupled_contact::manifold(state+left_flat*STATE_WIDTH,half_extents+left_flat*3,state+right_flat*STATE_WIDTH,half_extents+right_flat*3,pair,sat_epsilon,&repair_manifold))repair_contact_with_articulation_shock(state+left_flat*STATE_WIDTH,inverse_mass[left_flat],left,state+right_flat*STATE_WIDTH,inverse_mass[right_flat],right,repair_manifold,joint_indices,joints,contact_slop,position_correction);}
+      for(int pair=pairs-1;pair>=0;--pair){int left=int(contact_pairs[pair*2]),right=int(contact_pairs[pair*2+1]);int left_flat=world*bodies+left,right_flat=world*bodies+right;coupled_contact::MF repair_manifold;if(coupled_contact::manifold(state+left_flat*STATE_WIDTH,half_extents+left_flat*3,state+right_flat*STATE_WIDTH,half_extents+right_flat*3,pair,sat_epsilon,&repair_manifold)){if(articulation_projection)repair_contact_with_articulation_projection(state,inverse_mass,inverse_inertia,joint_indices,joint_types,parent_anchor,child_anchor,axis_parent,reference_quaternion,world,bodies,joints,left,right,repair_manifold,contact_slop,position_correction);else repair_contact_with_articulation_shock(state+left_flat*STATE_WIDTH,inverse_mass[left_flat],left,state+right_flat*STATE_WIDTH,inverse_mass[right_flat],right,repair_manifold,joint_indices,joints,contact_slop,position_correction);}}
       repair_joint_constraints(state,inverse_mass,inverse_inertia,joint_indices,joint_types,parent_anchor,child_anchor,axis_parent,reference_quaternion,lower_limit,upper_limit,world,bodies,joints,position_correction,joint_position_slop,angular_slop,maximum_linear_repair,maximum_angular_repair);
     }
     for(int joint=0;joint<joints;++joint){float *lambda=joint_lambda+joint*8;motor_impulse[world*joints+joint]+=lambda[6];for(int row=0;row<8;++row)joint_cache[(world*joints+joint)*8+row]=lambda[row];}

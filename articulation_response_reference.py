@@ -194,9 +194,60 @@ def planar_two_link_contact_response(
     )
 
 
+@dataclass(frozen=True)
+class PlanarTwoLinkPositionProjection:
+    correction_distance: float
+    pseudo_impulse: float
+    articulated_joint_position_delta: Vec2
+    articulated_point_displacement: float
+    other_point_displacement: float
+
+
+def planar_two_link_position_projection(
+    *,
+    penetration: float,
+    position_slop: float,
+    position_correction: float,
+    **response_arguments,
+) -> PlanarTwoLinkPositionProjection:
+    """Project penetration through the same reduced contact Jacobian."""
+
+    depth = float(penetration)
+    slop = float(position_slop)
+    factor = float(position_correction)
+    if not all(math.isfinite(value) for value in (depth, slop, factor)):
+        raise ValueError("position projection values must be finite")
+    if depth < 0.0 or slop < 0.0 or not 0.0 <= factor <= 1.0:
+        raise ValueError(
+            "position projection requires nonnegative depth/slop and correction in [0,1]"
+        )
+    correction = min(0.2, max(0.0, depth - slop) * factor)
+    response = planar_two_link_contact_response(
+        relative_normal_velocity=-correction,
+        restitution=0.0,
+        **response_arguments,
+    )
+    articulated_displacement = (
+        response.articulated_inverse_effective_mass
+        * response.articulated_normal_impulse
+    )
+    other_displacement = (
+        response.other_inverse_effective_mass * response.articulated_normal_impulse
+    )
+    return PlanarTwoLinkPositionProjection(
+        correction_distance=correction,
+        pseudo_impulse=response.articulated_normal_impulse,
+        articulated_joint_position_delta=response.articulated_joint_velocity_delta,
+        articulated_point_displacement=articulated_displacement,
+        other_point_displacement=other_displacement,
+    )
+
+
 __all__ = [
     "ARTICULATION_RESPONSE_FIELDS",
     "ARTICULATION_RESPONSE_WIDTH",
     "PlanarTwoLinkContactResponse",
+    "PlanarTwoLinkPositionProjection",
     "planar_two_link_contact_response",
+    "planar_two_link_position_projection",
 ]
