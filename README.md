@@ -6,8 +6,12 @@ drop-in replacement for Box3D yet.
 
 The Python package preserves the original `box3d_cuda` API and lazily builds
 its PyTorch extension. A separate versioned native C ABI has no PyTorch
-dependency; ABI v1 intentionally exposes only the accepted Stage-0 sphere
-step. See [docs/native-c-abi.md](docs/native-c-abi.md).
+dependency. ABI v1 intentionally exposes only the accepted Stage-0 sphere
+step. The frozen ABI-v2 revision 3 boundary adds capability-gated resident
+fixed-small OBB scenes, coupled joint/contact stepping, deterministic snapshot
+and masked environment restore, and linear OBB rays; unsupported capabilities
+fail closed. See [docs/native-c-abi.md](docs/native-c-abi.md) and
+[docs/native-c-abi-v2-proposal.md](docs/native-c-abi-v2-proposal.md).
 
 The upstream source is pinned in `UPSTREAM.json`. Stage 0 maps Box3D's
 quaternion integration to CUDA and implements physical plane and sphere-pair
