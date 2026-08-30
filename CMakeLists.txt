@@ -22,6 +22,7 @@ install(TARGETS box3d_cuda_cabi
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES proposals/box3d_cuda_v2.h
+  proposals/box3d_cuda_machine_coupling_v1.h
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/box3d_cuda)
 
 add_executable(box3d_cuda_native_smoke examples/native_smoke.cu)
@@ -33,5 +34,13 @@ target_compile_features(box3d_cuda_topology_digest_smoke PRIVATE cxx_std_17)
 add_executable(box3d_cuda_native_scene_v2_smoke examples/native_scene_v2_smoke.cu)
 target_link_libraries(box3d_cuda_native_scene_v2_smoke PRIVATE box3d_cuda_cabi)
 set_target_properties(box3d_cuda_native_scene_v2_smoke PROPERTIES
+  CUDA_STANDARD 17
+  CUDA_STANDARD_REQUIRED YES)
+
+add_executable(box3d_cuda_native_machine_coupling_v1_smoke
+  examples/native_machine_coupling_v1_smoke.cu)
+target_link_libraries(box3d_cuda_native_machine_coupling_v1_smoke
+  PRIVATE box3d_cuda_cabi)
+set_target_properties(box3d_cuda_native_machine_coupling_v1_smoke PROPERTIES
   CUDA_STANDARD 17
   CUDA_STANDARD_REQUIRED YES)

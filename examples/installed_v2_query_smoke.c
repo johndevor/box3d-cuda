@@ -1,4 +1,4 @@
-#include <box3d_cuda/box3d_cuda_v2.h>
+#include <box3d_cuda/box3d_cuda_machine_coupling_v1.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -15,7 +15,9 @@ int main(void) {
                             BOX3D_CUDA_CAP_V2_LINEAR_OBB_RAYS |
                             BOX3D_CUDA_CAP_V2_ASYNC_CALLER_STREAM |
                             BOX3D_CUDA_CAP_V2_GLOBAL_MATERIAL |
-                            BOX3D_CUDA_CAP_V2_PARTIAL_ENVIRONMENT_RESTORE;
+                            BOX3D_CUDA_CAP_V2_PARTIAL_ENVIRONMENT_RESTORE |
+                            BOX3D_CUDA_CAP_V2_EXTERNAL_WRENCH_STEP |
+                            BOX3D_CUDA_CAP_V2_JOINT_VELOCITY_OUTPUT;
   box3d_cuda_api_info_v2 info = {0};
   info.struct_size = sizeof(info);
   info.abi_version = BOX3D_CUDA_ABI_VERSION_V2;

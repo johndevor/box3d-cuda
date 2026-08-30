@@ -719,7 +719,8 @@ __global__ void coupled_kernel(
     const float *runtime_restitution,float gravity_y,float restitution,float friction,
     float contact_generation_distance,float contact_slop,float position_correction,
     float angular_damping,int solver_iterations,float sat_epsilon,float joint_position_slop,float angular_slop,
-    float maximum_linear_repair,float maximum_angular_repair,bool articulation_projection){
+    float maximum_linear_repair,float maximum_angular_repair,bool articulation_projection,
+    const float *external_force_xyz=nullptr,const float *external_torque_xyz=nullptr){
   int world=blockIdx.x*blockDim.x+threadIdx.x;if(world>=worlds)return;
   float gravity_x=0.0f,gravity_z=0.0f;
   if(runtime_gravity_xyz!=nullptr){gravity_x=runtime_gravity_xyz[0];gravity_y=runtime_gravity_xyz[1];gravity_z=runtime_gravity_xyz[2];}
@@ -733,6 +734,15 @@ __global__ void coupled_kernel(
       float *value=state+flat*STATE_WIDTH;
       value[7]+=gravity_x*h;value[8]+=gravity_y*h;value[9]+=gravity_z*h;
       for(int k=0;k<3;k++)value[10+k]*=damping_factor;
+      if(external_force_xyz!=nullptr){
+        const float *force=external_force_xyz+flat*3;
+        for(int k=0;k<3;k++)value[7+k]+=force[k]*inverse_mass[flat]*h;
+      }
+      if(external_torque_xyz!=nullptr){
+        const float *torque=external_torque_xyz+flat*3;float response[3];
+        coupled_joint::iworld(value+3,inverse_inertia+flat*3,torque,response);
+        for(int k=0;k<3;k++)value[10+k]+=response[k]*h;
+      }
       // The reduced projection matches PhysX's force/constraint/pose phase:
       // solve velocity rows before integrating the pose.  The generic/native
       // path retains its accepted legacy ordering when projection is off.

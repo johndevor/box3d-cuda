@@ -111,11 +111,14 @@ This deliberate change prevents cross-revision snapshot restore.
 ## Implemented lifecycle subset
 
 The shared library exports every r3 symbol so clients can perform version and
-capability discovery without optional symbol probing. The current capability
-mask is `0x207ff`: oriented boxes, explicit pairs, fixed/revolute/prismatic
-joints, persistent contacts, resident state, deterministic snapshot, linear
-OBB rays, asynchronous caller streams, global material, and partial
-environment restore.
+capability discovery without optional symbol probing. The frozen 0.4.0 r3
+baseline capability mask is `0x207ff`: oriented boxes, explicit pairs,
+fixed/revolute/prismatic joints, persistent contacts, resident state,
+deterministic snapshot, linear OBB rays, asynchronous caller streams, global
+material, and partial environment restore. The 0.5.0 artifact additionally
+advertises the separately named machine-coupling extension at bits 18 and 19,
+for a current mask of `0xe07ff`; it does not change the r3 descriptor, topology
+digest, or existing symbol behavior. See `native-machine-coupling-v1.md`.
 Registration, scene-info, coupled step, full capture, exact masked restore, and
 synchronous unregister are implemented. Step keeps state and caches resident,
 holds one `[E,J]` action frame over the requested control steps, reports final
@@ -138,7 +141,8 @@ cmake --build build -j2
 ```
 
 `cmake --install build --prefix <prefix>` installs the shared library beneath
-`<prefix>/lib` and both C headers beneath `<prefix>/include/box3d_cuda`.
+`<prefix>/lib` and all C headers beneath `<prefix>/include/box3d_cuda`.
 The dependency-free `examples/installed_v2_query_smoke.c` can then be compiled
 against that prefix to verify header layout, dynamic loading, exported query
-symbols, draft revision, and the exact capability mask.
+symbols, draft revision, and the exact current capability mask, including the
+additive machine-coupling extension.

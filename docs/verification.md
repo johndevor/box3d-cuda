@@ -75,3 +75,19 @@ reduced-coordinate oracle across all 64 worlds:
 This validates articulation-projected contact response as the next production
 integration target. It does not by itself accept the full Stage-7 trajectory
 parity gate.
+
+## Native machine coupling
+
+Standalone commit `36a0591` adds the separately named, capability-gated
+machine-coupling extension without changing ABI-v2 r3. The bounded run
+`daytona-native-machine-coupling-20260829-r1` compiled the shared library with
+CUDA 12.8 on an RTX 5090 and passed the topology, native-v1, resident-r3, and
+installed-header smokes. It also executed all four agreed force/torque and
+signed joint-velocity goldens; the installed query reported the exact current
+mask `0xe07ff`.
+
+The run bundle contained 100 files with SHA-256
+`545567c988867a0f20382aac7af8d8b01bbaf2c282094b42c0510200c2b98c3f`.
+The redacted Factory OS evidence record has SHA-256
+`928a42e7b26fc96de2cc28b2fae5a06e70d57a17a9ae98325e607de274037328`.
+The ephemeral sandbox was deleted on the first attempt and verified absent.
