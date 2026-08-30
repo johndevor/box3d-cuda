@@ -24,7 +24,6 @@ constexpr int STATE_WIDTH = 13;
 constexpr int MAX_JOINTS = 16;
 constexpr int MAX_CONTACT_PAIRS = 16;
 constexpr int POSITION_REPAIR_ITERATIONS = 8;
-constexpr int PROJECTED_POSITION_REPAIR_ITERATIONS = 1;
 
 __device__ inline void warm_joint_rows(
     float *state, const float *inverse_mass, const float *inverse_inertia,
@@ -779,9 +778,7 @@ __global__ void coupled_kernel(
     for(int pair=0;pair<pairs;++pair){int offset=(world*pairs+pair)*4;if(contact_active[pair])coupled_contact::write_cache(&manifolds[pair],contact_feature_ids+offset,contact_impulse_cache+offset*3);else coupled_contact::write_cache(nullptr,contact_feature_ids+offset,contact_impulse_cache+offset*3);}
     // Split position constraints are coupled too. Rebuilding contact geometry
     // between bounded passes avoids repeatedly applying a stale penetration.
-    const int repair_iterations=articulation_projection?
-        PROJECTED_POSITION_REPAIR_ITERATIONS:POSITION_REPAIR_ITERATIONS;
-    for(int repair_iteration=0;repair_iteration<repair_iterations;++repair_iteration){
+    for(int repair_iteration=0;repair_iteration<POSITION_REPAIR_ITERATIONS;++repair_iteration){
       for(int pair=pairs-1;pair>=0;--pair){int left=int(contact_pairs[pair*2]),right=int(contact_pairs[pair*2+1]);int left_flat=world*bodies+left,right_flat=world*bodies+right;coupled_contact::MF repair_manifold;if(coupled_contact::manifold(state+left_flat*STATE_WIDTH,half_extents+left_flat*3,state+right_flat*STATE_WIDTH,half_extents+right_flat*3,pair,sat_epsilon,&repair_manifold)){if(articulation_projection)repair_contact_with_articulation_projection(state,inverse_mass,inverse_inertia,joint_indices,joint_types,parent_anchor,child_anchor,axis_parent,reference_quaternion,world,bodies,joints,left,right,repair_manifold,contact_slop,position_correction);else repair_contact_with_articulation_shock(state+left_flat*STATE_WIDTH,inverse_mass[left_flat],left,state+right_flat*STATE_WIDTH,inverse_mass[right_flat],right,repair_manifold,joint_indices,joints,contact_slop,position_correction);}}
       repair_joint_constraints(state,inverse_mass,inverse_inertia,joint_indices,joint_types,parent_anchor,child_anchor,axis_parent,reference_quaternion,lower_limit,upper_limit,world,bodies,joints,position_correction,joint_position_slop,angular_slop,maximum_linear_repair,maximum_angular_repair);
     }

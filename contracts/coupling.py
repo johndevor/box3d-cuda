@@ -254,7 +254,7 @@ CUDA_SOLVER_CONFIGURATION = {
     "type": "box3d_projected_pgs",
     "unified_velocity_iterations": SPEC.solver_iterations,
     "warm_start_factor": 0.8,
-    "split_position_repair_iterations": 1,
+    "split_position_repair_iterations": 8,
     "two_revolute_articulation_projection": True,
     "angular_damping": CUDA_ANGULAR_DAMPING,
     "sleep_enabled": False,

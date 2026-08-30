@@ -10,8 +10,7 @@ def test_position_repair_iteration_count_matches_cuda_source() -> None:
     source = (ROOT / "csrc" / "coupled.cu").read_text()
 
     assert f"POSITION_REPAIR_ITERATIONS = {POSITION_REPAIR_ITERATIONS}" in source
-    assert "PROJECTED_POSITION_REPAIR_ITERATIONS = 1" in source
-    assert "repair_iteration<repair_iterations" in source
+    assert "repair_iteration<POSITION_REPAIR_ITERATIONS" in source
 
 
 def test_articulation_shock_rule_matches_cuda_source() -> None:
@@ -64,8 +63,6 @@ def test_projected_path_distributes_split_repair_through_articulation() -> None:
     assert "apply_articulation_pose_delta" in source
     assert "if(articulation_projection)repair_contact_with_articulation_projection" in source
     assert "else repair_contact_with_articulation_shock" in source
-    assert "PROJECTED_POSITION_REPAIR_ITERATIONS = 1" in source
-    assert "articulation_projection?" in source
 
 
 def test_stage7_repair_targets_rest_offset_not_contact_classification_slop() -> None:
