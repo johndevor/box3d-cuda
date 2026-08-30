@@ -9,6 +9,7 @@ localization metrics. It cannot accept a speedup or production solver change.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from datetime import datetime, timezone
 import json
 import math
@@ -107,8 +108,19 @@ def _overall_errors(
     return errors
 
 
-def _capture_candidate(torch, device, factor: float) -> tuple[dict[str, Any], dict[str, float]]:
+def _capture_candidate(
+    torch,
+    device,
+    *,
+    contact_factor: float = 1.0,
+    joint_factor: float | None = None,
+) -> tuple[dict[str, Any], dict[str, float]]:
     config = _config()
+    if joint_factor is not None:
+        config = replace(
+            config,
+            joints=replace(config.joints, warm_start_factor=joint_factor),
+        )
     bundle = make_workload(IMPACT_SAMPLED_WORLDS, device)
     pair_index = SPEC.contact_pair_roles.index("link2_payload")
     maximum_anchor = 0.0
@@ -122,7 +134,7 @@ def _capture_candidate(torch, device, factor: float) -> tuple[dict[str, Any], di
                 target,
                 config,
                 articulation_projection=True,
-                contact_warm_start_factor=factor,
+                contact_warm_start_factor=contact_factor,
             )
             maximum_anchor = max(maximum_anchor, float(result[2].max().item()))
             maximum_penetration = max(maximum_penetration, float(result[9].max().item()))
@@ -178,7 +190,9 @@ def main() -> int:
     device = torch.device("cuda")
     candidates = []
     for factor in CONTACT_WARM_START_CANDIDATES:
-        report, physical = _capture_candidate(torch, device, factor)
+        report, physical = _capture_candidate(
+            torch, device, contact_factor=factor
+        )
         diagnosis = diagnose_impact_reports([reference, report])
         errors = _overall_errors(reference, report)
         candidates.append({

@@ -62,10 +62,18 @@ def test_contact_warm_start_sweep_is_bounded_and_diagnostic_only() -> None:
     source = (ROOT / "sweep_contact_warm_start.py").read_text()
 
     assert "CONTACT_WARM_START_CANDIDATES = (0.0, 0.25, 0.5, 0.75, 1.0)" in source
-    assert "contact_warm_start_factor=factor" in source
+    assert "contact_factor=factor" in source
     assert "articulation_projection=True" in source
     assert "diagnostic_only_no_speedup_or_solver_change_is_accepted" in source
     assert '"accepted_contact_warm_start_factor": None' in source
+
+
+def test_joint_warm_start_sweep_is_bounded_and_diagnostic_only() -> None:
+    source = (ROOT / "sweep_joint_warm_start.py").read_text()
+    assert "JOINT_WARM_START_CANDIDATES = (0.0, 0.25, 0.5, 0.75, 0.8, 1.0)" in source
+    assert "joint_factor=factor" in source
+    assert "diagnostic_only_no_speedup_or_solver_change_is_accepted" in source
+    assert '"accepted_joint_warm_start_factor": None' in source
 
 
 def test_projected_path_solves_velocity_before_pose_integration() -> None:
