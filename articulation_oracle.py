@@ -110,3 +110,88 @@ class PlanarTwoLink:
             velocity = [velocity[index] + acceleration[index] * h for index in range(2)]
             coordinate = [coordinate[index] + velocity[index] * h for index in range(2)]
         return (tuple(coordinate), tuple(velocity))
+
+    @staticmethod
+    def pd_torque(
+        q: Sequence[float],
+        qdot: Sequence[float],
+        target: Sequence[float],
+        stiffness_nm_per_rad: Sequence[float],
+        damping_nms_per_rad: Sequence[float],
+        effort_limit_nm: Sequence[float],
+    ) -> tuple[float, float]:
+        """Evaluate the two scalar, effort-limited position drives.
+
+        The result is the explicit torque frame used by the Stage-7 CUDA
+        articulation: ``kp * (target - q) - kd * qdot``, clamped per joint.
+        Keeping this calculation outside the dynamics step makes the drive
+        convention independently testable.
+        """
+
+        vectors = (
+            q,
+            qdot,
+            target,
+            stiffness_nm_per_rad,
+            damping_nms_per_rad,
+            effort_limit_nm,
+        )
+        if any(len(values) != 2 for values in vectors):
+            raise ValueError("PD drive vectors must each contain two values")
+        if not all(math.isfinite(value) for values in vectors for value in values):
+            raise ValueError("PD drive vectors must be finite")
+        if any(value < 0.0 for value in stiffness_nm_per_rad):
+            raise ValueError("PD stiffness cannot be negative")
+        if any(value < 0.0 for value in damping_nms_per_rad):
+            raise ValueError("PD damping cannot be negative")
+        if any(value < 0.0 for value in effort_limit_nm):
+            raise ValueError("PD effort limits cannot be negative")
+        torque = []
+        for index in range(2):
+            requested = (
+                stiffness_nm_per_rad[index] * (target[index] - q[index])
+                - damping_nms_per_rad[index] * qdot[index]
+            )
+            limit = effort_limit_nm[index]
+            torque.append(max(-limit, min(limit, requested)))
+        return (torque[0], torque[1])
+
+    def step_pd(
+        self,
+        q: Sequence[float],
+        qdot: Sequence[float],
+        target: Sequence[float],
+        *,
+        stiffness_nm_per_rad: Sequence[float],
+        damping_nms_per_rad: Sequence[float],
+        effort_limit_nm: Sequence[float],
+        dt: float = 1.0 / 120.0,
+        substeps: int = 2,
+    ) -> tuple[tuple[float, float], tuple[float, float]]:
+        """Advance a contact-free two-link arm with explicit PD drives.
+
+        The target and gains are held for the control step, while torque is
+        recomputed from the current coordinate and velocity at each internal
+        substep. Integration remains semi-implicit Euler, matching ``step``.
+        """
+
+        if len(q) != 2 or len(qdot) != 2:
+            raise ValueError("q and qdot must each contain two values")
+        if not math.isfinite(dt) or dt <= 0.0 or substeps <= 0:
+            raise ValueError("dt and substeps must be positive")
+        coordinate = [float(q[0]), float(q[1])]
+        velocity = [float(qdot[0]), float(qdot[1])]
+        h = dt / substeps
+        for _ in range(substeps):
+            torque = self.pd_torque(
+                coordinate,
+                velocity,
+                target,
+                stiffness_nm_per_rad,
+                damping_nms_per_rad,
+                effort_limit_nm,
+            )
+            acceleration = self.acceleration(coordinate, velocity, torque)
+            velocity = [velocity[index] + acceleration[index] * h for index in range(2)]
+            coordinate = [coordinate[index] + velocity[index] * h for index in range(2)]
+        return (tuple(coordinate), tuple(velocity))

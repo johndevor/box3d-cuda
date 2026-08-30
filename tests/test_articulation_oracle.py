@@ -1,6 +1,8 @@
 import pytest
+from dataclasses import replace
 
 from box3d_cuda.articulation_oracle import PlanarTwoLink
+from box3d_cuda.contracts.coupling import SPEC
 
 
 INITIAL_Q = (0.7400602698326111, -1.1593574285507202)
@@ -27,6 +29,58 @@ def test_stage7_two_substep_gravity_golden_is_deterministic():
     assert first[0] == pytest.approx(expected[0])
     assert first[1] == pytest.approx(expected[1])
     assert second == first
+
+
+def test_stage7_two_substep_drive_only_golden_is_deterministic():
+    oracle = replace(PlanarTwoLink.stage7(), gravity_mps2=0.0)
+    target = (INITIAL_Q[0] + 0.08, INITIAL_Q[1] - 0.06)
+    expected = (
+        (0.7403364503656445, -1.1602330402693655),
+        (0.043506675742280565, -0.13720874330654673),
+    )
+    kwargs = {
+        "stiffness_nm_per_rad": SPEC.drive_stiffness_nm_per_rad,
+        "damping_nms_per_rad": SPEC.drive_damping_nms_per_rad,
+        "effort_limit_nm": SPEC.drive_effort_limits_nm,
+    }
+    first = oracle.step_pd(INITIAL_Q, (0.0, 0.0), target, **kwargs)
+    second = oracle.step_pd(INITIAL_Q, (0.0, 0.0), target, **kwargs)
+    assert first[0] == pytest.approx(expected[0])
+    assert first[1] == pytest.approx(expected[1])
+    assert second == first
+
+
+def test_stage7_pd_effort_limit_is_explicit_and_symmetric():
+    torque = PlanarTwoLink.pd_torque(
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (100.0, -100.0),
+        SPEC.drive_stiffness_nm_per_rad,
+        SPEC.drive_damping_nms_per_rad,
+        SPEC.drive_effort_limits_nm,
+    )
+    assert torque == SPEC.drive_effort_limits_nm[:1] + (-SPEC.drive_effort_limits_nm[1],)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("stiffness_nm_per_rad", (-1.0, 1.0)),
+        ("damping_nms_per_rad", (1.0, -1.0)),
+        ("effort_limit_nm", (1.0, -1.0)),
+    ],
+)
+def test_stage7_pd_oracle_rejects_negative_controller_parameters(field, value):
+    arguments = {
+        "stiffness_nm_per_rad": (1.0, 1.0),
+        "damping_nms_per_rad": (1.0, 1.0),
+        "effort_limit_nm": (1.0, 1.0),
+    }
+    arguments[field] = value
+    with pytest.raises(ValueError):
+        PlanarTwoLink.pd_torque(
+            (0.0, 0.0), (0.0, 0.0), (0.0, 0.0), **arguments
+        )
 
 
 @pytest.mark.parametrize(
