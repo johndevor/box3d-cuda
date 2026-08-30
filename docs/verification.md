@@ -91,3 +91,27 @@ The run bundle contained 100 files with SHA-256
 The redacted Factory OS evidence record has SHA-256
 `928a42e7b26fc96de2cc28b2fae5a06e70d57a17a9ae98325e607de274037328`.
 The ephemeral sandbox was deleted on the first attempt and verified absent.
+
+## Parallel vision PPO baseline
+
+Standalone commit `cc39245` introduced a dependency-free learner/environment
+layout and GAE oracle plus a GPU-resident execution benchmark. Run
+`daytona-parallel-trainer-20260829-r1` used an RTX 5090 for eight independent
+learners with 512 environments each, a 32-step horizon, two PPO updates, two
+PPO epochs, and two calibrated 8x8 analytic depth/instance cameras per world.
+
+The timed rollout processed 262,144 physical world-actions at 914,284/s and
+33,554,432 depth pixels at 117,028,383/s. PPO optimization took 0.299887 s;
+rollout took 0.286720 s; peak Torch CUDA allocation was 478,583,296 bytes. All
+ten execution gates passed: finite observations/rewards/advantages/losses,
+bit-exact camera replay, bounded instance IDs, nontrivial hits/misses, changed
+physics state, finite per-learner returns, and nonzero parameter updates for
+all eight learners. All 4,096 worlds recorded contact in the final rollout.
+
+The result artifact SHA-256 is
+`6742191fe46aeb589d5843c89509a52e6ad176b6ac2bf17872951d88025ab301`;
+the redacted provider evidence SHA-256 is
+`35f752445fff55ddd8274c3b6d7b04dcdba9b00af2f9702dc080fb2141f357e4`.
+The ephemeral sandbox was deleted and verified absent. This accepts the
+parallel trainer's execution and throughput only. It does not accept a
+learning curve, asynchronous partial resets, RGB, or raster rendering.

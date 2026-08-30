@@ -164,6 +164,21 @@ Stage 7 currently establishes:
   sweeps from 4 through 32 did not resolve the structural response mismatch
 - No throughput comparison is accepted until that parity gate passes
 
+The first parallel vision-training baseline additionally establishes:
+
+- Eight independent Gaussian actor/value parameter sets train together over
+  512 environments each: 4,096 physical worlds total
+- Every rollout step includes Stage-7 rigid stepping, policy inference, two
+  calibrated 8x8 analytic depth/instance camera packets, rewards, and GPU
+  rollout-buffer writes; GAE and two PPO epochs also run on GPU
+- RTX 5090 result: 914,284 end-to-end world-actions/s and 117.0 million depth
+  pixels/s during rollout, with 478,583,296 bytes peak Torch CUDA allocation
+- All ten execution gates passed, every learner's parameter set changed, all
+  4,096 worlds produced physical contact, and the ephemeral sandbox was
+  deleted and verified absent
+- This is an optimization-loop and throughput proof. It does not yet accept a
+  learning curve, asynchronous partial episode resets, RGB, or raster pixels
+
 Not implemented: a broad phase, general convex collision, the complete Box3D
 Soft Step constraint set, reduced-coordinate articulation, CCD, sleep/islands,
 meshes, or GPU raster rendering. Stage 6 analytic camera queries currently test
@@ -188,11 +203,15 @@ adapters, dashboards, and browser presentation intentionally remain in
 
 ## Port order
 
-1. Resolve Stage-7 impact response parity without loosening the accepted gate.
-2. Constraint graph coloring and parallel contact/joint rows.
-3. Add a broad phase for larger per-world scenes, then profile CCD and sleep.
-4. Feed calibrated multi-rig depth packets into the staged RL observation API.
-5. Touch, grasp, lift and move parity against ManiSkill before RL training.
+1. Run multi-seed learning curves and independent masked episode resets above
+   the accepted parallel depth/instance PPO execution baseline.
+2. Add accelerated batched RGB/depth/segmentation raster output and measure
+   whole-loop pixels/s, samples/s, and VRAM rather than isolated rendering.
+3. Resolve Stage-7 impact response parity without loosening the accepted gate.
+4. Constraint graph coloring and parallel contact/joint rows.
+5. Add a broad phase for larger per-world scenes, then profile CCD and sleep.
+6. Touch, grasp, lift, and move parity against ManiSkill before claiming a
+   learned manipulation policy.
 
 The benchmark intentionally refuses a speedup claim when two result files do
 not share a `contract_id`.
