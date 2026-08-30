@@ -348,7 +348,11 @@ def benchmark(output_path: Path, *, articulation_projection: bool = False) -> di
     timed=make_workload(WORLDS,device); start=torch.cuda.Event(enable_timing=True); end=torch.cuda.Event(enable_timing=True)
     start.record(); timed_last,_=_run(timed,config,diagnostics=False,articulation_projection=articulation_projection); end.record(); torch.cuda.synchronize()
     duration=start.elapsed_time(end)/1000.0
-    checked=make_workload(WORLDS,device); checked_last,diagnostics=_run(checked,config,diagnostics=True,capture_trace=True,capture_parity=True,articulation_projection=articulation_projection); torch.cuda.synchronize()
+    checked=make_workload(WORLDS,device)
+    initial_state_replica_error=float((checked["initial_state"]-checked["initial_state"][0:1]).abs().max().item())
+    initial_joint_replica_error=float((checked["initial_q"]-checked["initial_q"][0:1]).abs().max().item())
+    maximum_initial_state_replica_error=max(initial_state_replica_error,initial_joint_replica_error)
+    checked_last,diagnostics=_run(checked,config,diagnostics=True,capture_trace=True,capture_parity=True,articulation_projection=articulation_projection); torch.cuda.synchronize()
     deterministic = all(torch.equal(a,b) for a,b in zip(timed_last,checked_last))
     isolated=make_workload(1,device); isolated_last,_=_run(isolated,config,diagnostics=False,articulation_projection=articulation_projection); torch.cuda.synchronize()
     world_isolation=all(torch.equal(batch[0],solo[0]) for batch,solo in zip(checked_last,isolated_last) if batch.ndim>0 and batch.shape[0]==WORLDS and solo.shape[0]==1)
@@ -358,6 +362,8 @@ def benchmark(output_path: Path, *, articulation_projection: bool = False) -> di
     correctness={
         "passed":False,"measured_runtime_evidence":True,"synthetic":False,**SPEC.metadata(seed=DEFAULT_SEED),
         "gate_thresholds":dict(GATE_THRESHOLDS),"finite_joint_and_body_state":bool(torch.isfinite(checked["state"]).all().item()),
+        "replicated_initial_state_passed":maximum_initial_state_replica_error<=GATE_THRESHOLDS["maximum_initial_state_replica_error"],
+        "maximum_initial_state_replica_error":maximum_initial_state_replica_error,
         "normalized_body_quaternions":float(diagnostics["max_quat"].item())<=GATE_THRESHOLDS["maximum_quaternion_norm_error"],
         "deterministic_replay_passed":deterministic,"world_isolation_passed":world_isolation,
         "joint_limits_respected":float(diagnostics["max_limit"].item())<=GATE_THRESHOLDS["maximum_joint_limit_excess_rad"],
@@ -379,7 +385,7 @@ def benchmark(output_path: Path, *, articulation_projection: bool = False) -> di
         "maximum_joint_anchor_error_by_joint_m":[float(value) for value in diagnostics["max_anchor_per_joint"].cpu().tolist()],
     }
     correctness["passed"]=all((
-        correctness["finite_joint_and_body_state"],correctness["normalized_body_quaternions"],deterministic,world_isolation,
+        correctness["finite_joint_and_body_state"],correctness["normalized_body_quaternions"],correctness["replicated_initial_state_passed"],deterministic,world_isolation,
         correctness["joint_limits_respected"],correctness["drive_effort_clamped"],correctness["real_contact_impulses_observed"],
         correctness["friction_negative_control_passed"],correctness["maximum_joint_anchor_error_m"]<=GATE_THRESHOLDS["maximum_joint_anchor_error_m"],
         correctness["maximum_penetration_m"]<=GATE_THRESHOLDS["maximum_penetration_m"],

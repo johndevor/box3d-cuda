@@ -51,6 +51,8 @@ def measured_report(backend: str, *, rate: float) -> dict:
         "synthetic": False,
         **SPEC.metadata(seed=DEFAULT_SEED),
         "gate_thresholds": dict(GATE_THRESHOLDS),
+        "replicated_initial_state_passed": True,
+        "maximum_initial_state_replica_error": 0.0,
         "finite_joint_and_body_state": True,
         "normalized_body_quaternions": True,
         "deterministic_replay_passed": True,
