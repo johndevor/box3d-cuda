@@ -117,7 +117,7 @@ def _config(friction: float = SPEC.friction) -> CoupledConfig:
         contacts=SATConfig(
             dt=1.0 / CONTROL_HZ, substeps=PHYSICS_SUBSTEPS,
             gravity_y=SPEC.gravity_xyz_mps2[1], restitution=SPEC.restitution,
-            friction=friction, position_slop=SPEC.contact_rest_offset_m,
+            friction=friction, position_slop=SPEC.contact_slop_m,
             contact_generation_distance=SPEC.pair_contact_generation_distance_m,
             solver_iterations=SPEC.solver_iterations,
         ),

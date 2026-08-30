@@ -261,7 +261,7 @@ CUDA_SOLVER_CONFIGURATION = {
     "contact_generation_offset_m": SPEC.contact_generation_offset_m,
     "pair_contact_generation_distance_m": SPEC.pair_contact_generation_distance_m,
     "contact_rest_offset_m": SPEC.contact_rest_offset_m,
-    "position_repair_slop_m": SPEC.contact_rest_offset_m,
+    "position_repair_slop_m": SPEC.contact_slop_m,
 }
 
 PHYSX_PGS_SOLVER_CONFIGURATION = {
