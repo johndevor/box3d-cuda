@@ -109,6 +109,7 @@ def test_parallel_trainer_benchmark_contract_is_truthful() -> None:
         "_gae_cuda",
         "_restore_masked",
         "_masked_restore_exact",
+        "_fixed_action_reward_probe",
         "learning_curve_summary",
         '"reported_rgb_or_raster_pixels": False',
         '"asynchronous_partial_episode_reset": args.asynchronous_resets',

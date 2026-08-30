@@ -116,9 +116,17 @@ The ephemeral sandbox was deleted and verified absent. This accepts the
 parallel trainer's execution and throughput only. It does not accept a
 learning curve, asynchronous partial resets, RGB, or raster rendering.
 
-The subsequent async-v2 implementation is locally gated by the full CPU suite
-(163 tests plus 18 subtests). It uses heterogeneous per-environment episode
-timeouts, restores only terminated worlds from device-resident reset tensors,
-checks both selected and unselected slices exactly, and reports independent
-learner curves. No async-v2 CUDA run or learning-curve acceptance is recorded
-here yet.
+Run `daytona-parallel-trainer-async-20260829-r2` exercised async-v2 on an RTX
+5090: eight independent seeds, 512 environments each, 32 steps per update, and
+eight updates. All 13 execution gates passed. Every learner completed 781--784
+episodes per update; 6,261 worlds reset independently per update; selected and
+unselected state/cache slices were exact. The timed rollouts processed 1.509M
+world-actions/s and 193.2M analytic depth pixels/s with 482,697,728 bytes peak
+Torch allocation. The result SHA-256 is
+`a95a1ce4cc99c4d98a93dbebface3e2c5ea2cb4d45626d3ad7fbb7b2f4611e6b`.
+
+Learning remains rejected: four of eight curves improved, below the required
+six. This is accepted async reset/execution evidence, not a learned-policy
+claim. A fixed-action reward-sensitivity probe was added afterward and remains
+to be exercised on CUDA. The full local suite remains green at 163 tests plus
+18 subtests.

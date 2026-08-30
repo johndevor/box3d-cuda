@@ -179,12 +179,17 @@ The first parallel vision-training baseline additionally establishes:
 - This is an optimization-loop and throughput proof. It does not yet accept a
   learning curve, asynchronous partial episode resets, RGB, or raster pixels
 
-The next trainer revision is implemented but not yet accepted by GPU evidence.
-It adds deterministic per-learner initialization seeds, heterogeneous episode
-timeouts, device-side environment masks, exact selected/unselected reset checks
-for rigid state and persistent caches, completed-episode accounting, and a
-fail-closed multi-seed learning-curve summary. The original v1 result above
-remains immutable; the new output uses `box3d.parallel-vision-ppo-async/v2`.
+The async-v2 trainer adds deterministic per-learner initialization seeds,
+heterogeneous episode timeouts, device-side environment masks, exact
+selected/unselected reset checks for rigid state and persistent caches,
+completed-episode accounting, and a fail-closed multi-seed learning-curve
+summary. Its first RTX 5090 run passed all 13 execution gates over 4,096 worlds
+and 50,088 partial resets, at 1.509M world-actions/s and 193.2M analytic depth
+pixels/s. The learning claim remains rejected: only four of eight seeds
+improved, while the contract requires six. A bounded fixed-action reward probe
+now runs before PPO so a locally uncontrollable task fails before training.
+The original v1 result above remains immutable; async output uses
+`box3d.parallel-vision-ppo-async/v2`.
 
 Not implemented: a broad phase, general convex collision, the complete Box3D
 Soft Step constraint set, reduced-coordinate articulation, CCD, sleep/islands,
@@ -210,8 +215,8 @@ adapters, dashboards, and browser presentation intentionally remain in
 
 ## Port order
 
-1. Run multi-seed learning curves and independent masked episode resets above
-   the accepted parallel depth/instance PPO execution baseline.
+1. Improve the task/reward formulation until at least six of eight independent
+   curves improve; masked async execution itself is accepted.
 2. Add accelerated batched RGB/depth/segmentation raster output and measure
    whole-loop pixels/s, samples/s, and VRAM rather than isolated rendering.
 3. Resolve Stage-7 impact response parity without loosening the accepted gate.

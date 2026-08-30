@@ -229,6 +229,49 @@ def _native_coupled_step(native, torch, bundle, joint_coordinate, actions, confi
     return result
 
 
+def _fixed_action_reward_probe(native, torch, config, bundle, reset_snapshot, steps=8):
+    """Prove that the reward changes under simple bounded control choices."""
+
+    candidates = (
+        (-1.0, -1.0), (-1.0, 0.0), (-1.0, 1.0),
+        (0.0, -1.0), (0.0, 0.0), (0.0, 1.0),
+        (1.0, -1.0), (1.0, 0.0), (1.0, 1.0),
+    )
+    initial_distance = torch.abs(GOAL_X_M - reset_snapshot["state"][:, 4, 0])
+    results = []
+    for candidate in candidates:
+        _restore(bundle, reset_snapshot)
+        joint_coordinate = bundle["initial_q"]
+        action = torch.tensor(
+            candidate, dtype=torch.float32, device=bundle["state"].device
+        ).expand(config.learners, config.environments_per_learner, -1)
+        contact_ever = torch.zeros(
+            config.total_worlds, dtype=torch.bool, device=bundle["state"].device
+        )
+        for _ in range(steps):
+            step_result = _native_coupled_step(
+                native, torch, bundle, joint_coordinate, action, config
+            )
+            joint_coordinate = step_result[1]
+            contact_ever |= step_result[8].to(dtype=torch.bool).any(dim=1)
+        final_distance = torch.abs(GOAL_X_M - bundle["state"][:, 4, 0])
+        progress = initial_distance - final_distance
+        results.append({
+            "action": list(candidate),
+            "mean_goal_progress_m": float(progress.mean().item()),
+            "contact_fraction": float(contact_ever.float().mean().item()),
+        })
+    _restore(bundle, reset_snapshot)
+    progress_values = [result["mean_goal_progress_m"] for result in results]
+    return {
+        "steps": steps,
+        "candidates": results,
+        "best_mean_goal_progress_m": max(progress_values),
+        "worst_mean_goal_progress_m": min(progress_values),
+        "progress_spread_m": max(progress_values) - min(progress_values),
+    }
+
+
 def _gae_cuda(torch, rewards, values, terminated, gamma: float, gae_lambda: float):
     advantages = torch.zeros_like(rewards)
     running = torch.zeros_like(rewards[0])
@@ -507,6 +550,9 @@ def main() -> int:
     bundle = make_workload(config.total_worlds, torch.device("cuda"))
     reset_snapshot = _snapshot(bundle)
     cameras = _camera_fixture(torch, config, bundle)
+    reward_probe = _fixed_action_reward_probe(
+        native, torch, config, bundle, reset_snapshot
+    )
     policy = BatchedActorCritic(torch, config, learner_seeds)
     optimizer = torch.optim.Adam(policy.parameters, lr=3.0e-4)
 
@@ -599,6 +645,10 @@ def main() -> int:
         "instance_ids_are_bounded": bool(
             torch.all((initial_ids >= -1) & (initial_ids < bundle["state"].shape[1])).item()
         ),
+        "bounded_control_changes_reward": bool(
+            reward_probe["best_mean_goal_progress_m"] > 1.0e-4
+            and reward_probe["progress_spread_m"] > 1.0e-4
+        ),
         "asynchronous_partial_reset_observed": bool(
             not args.asynchronous_resets or all(partial_reset_observed_by_update)
         ),
@@ -655,6 +705,7 @@ def main() -> int:
         "completed_episodes_per_update_and_learner": completed_episodes.cpu().tolist(),
         "partial_resets_per_update": reset_counts.cpu().tolist(),
         "learning_curve": curve_summary,
+        "fixed_action_reward_probe": reward_probe,
         "contacted_worlds_last_rollout": int(final_rollout["contact_ever"].sum().item()),
         "claims": {
             "gpu_resident_rollout_buffers": True,
