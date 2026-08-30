@@ -179,6 +179,13 @@ The first parallel vision-training baseline additionally establishes:
 - This is an optimization-loop and throughput proof. It does not yet accept a
   learning curve, asynchronous partial episode resets, RGB, or raster pixels
 
+The next trainer revision is implemented but not yet accepted by GPU evidence.
+It adds deterministic per-learner initialization seeds, heterogeneous episode
+timeouts, device-side environment masks, exact selected/unselected reset checks
+for rigid state and persistent caches, completed-episode accounting, and a
+fail-closed multi-seed learning-curve summary. The original v1 result above
+remains immutable; the new output uses `box3d.parallel-vision-ppo-async/v2`.
+
 Not implemented: a broad phase, general convex collision, the complete Box3D
 Soft Step constraint set, reduced-coordinate articulation, CCD, sleep/islands,
 meshes, or GPU raster rendering. Stage 6 analytic camera queries currently test

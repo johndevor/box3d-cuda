@@ -15,9 +15,12 @@ from pathlib import Path
 from .benchmark_coupled import _config, make_workload
 from .extension import load_extension
 from .parallel_trainer import (
+    ASYNC_CONTRACT_ID,
     CONTRACT_ID,
     ParallelTrainerConfig,
     camera_pixel_packet,
+    learner_seed,
+    learning_curve_summary,
 )
 
 
@@ -37,13 +40,21 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--horizon", type=int, default=32)
     parser.add_argument("--updates", type=int, default=UPDATES)
     parser.add_argument("--ppo-epochs", type=int, default=PPO_EPOCHS)
+    parser.add_argument("--base-seed", type=int, default=BASE_SEED)
+    parser.add_argument(
+        "--asynchronous-resets",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--minimum-episode-steps", type=int, default=8)
+    parser.add_argument("--maximum-episode-steps", type=int, default=24)
     return parser.parse_args()
 
 
 class BatchedActorCritic:
     """Small independent actor/value networks stored in learner-major tensors."""
 
-    def __init__(self, torch, config: ParallelTrainerConfig) -> None:
+    def __init__(self, torch, config: ParallelTrainerConfig, seeds: list[int]) -> None:
         self.torch = torch
         learners = config.learners
         observations = config.observation_dimensions
@@ -51,21 +62,32 @@ class BatchedActorCritic:
         device = torch.device("cuda")
         scale1 = math.sqrt(2.0 / (observations + HIDDEN_DIMENSIONS))
         scale2 = math.sqrt(2.0 / (HIDDEN_DIMENSIONS + actions))
+        if len(seeds) != learners:
+            raise ValueError("policy requires one explicit seed per learner")
+
+        parameter_block = 0
+
+        def learner_randn(*shape):
+            nonlocal parameter_block
+            rows = []
+            for seed in seeds:
+                generator = torch.Generator(device=device)
+                generator.manual_seed(seed + 104_729 * parameter_block)
+                rows.append(torch.randn(shape, generator=generator, device=device))
+            parameter_block += 1
+            return torch.stack(rows)
+
         self.parameters = [
             torch.nn.Parameter(
-                torch.randn(
-                    learners, observations, HIDDEN_DIMENSIONS, device=device
-                )
-                * scale1
+                learner_randn(observations, HIDDEN_DIMENSIONS) * scale1
             ),
             torch.nn.Parameter(torch.zeros(learners, HIDDEN_DIMENSIONS, device=device)),
             torch.nn.Parameter(
-                torch.randn(learners, HIDDEN_DIMENSIONS, actions, device=device)
-                * scale2
+                learner_randn(HIDDEN_DIMENSIONS, actions) * scale2
             ),
             torch.nn.Parameter(torch.zeros(learners, actions, device=device)),
             torch.nn.Parameter(
-                torch.randn(learners, HIDDEN_DIMENSIONS, 1, device=device)
+                learner_randn(HIDDEN_DIMENSIONS, 1)
                 * math.sqrt(2.0 / (HIDDEN_DIMENSIONS + 1))
             ),
             torch.nn.Parameter(torch.zeros(learners, 1, device=device)),
@@ -236,13 +258,83 @@ def _restore(bundle, snapshot) -> None:
         bundle[name].copy_(value)
 
 
-def _rollout(native, torch, policy, config, bundle, cameras):
+def _restore_masked(torch, bundle, snapshot, environment_mask) -> None:
+    for name, reference in snapshot.items():
+        value = bundle[name]
+        shape = (environment_mask.shape[0],) + (1,) * (value.ndim - 1)
+        value.copy_(torch.where(environment_mask.reshape(shape), reference, value))
+
+
+def _masked_restore_exact(torch, bundle, snapshot, before, environment_mask):
+    exact = torch.ones((), dtype=torch.bool, device=environment_mask.device)
+    for name, reference in snapshot.items():
+        value = bundle[name]
+        shape = (environment_mask.shape[0],) + (1,) * (value.ndim - 1)
+        expected = torch.where(environment_mask.reshape(shape), reference, before[name])
+        exact &= (value == expected).all()
+    return exact
+
+
+def _episode_lengths(
+    torch,
+    learner_seeds,
+    config,
+    episode_indices,
+    minimum_steps,
+    maximum_steps,
+    device,
+):
+    environment = torch.arange(
+        config.environments_per_learner, dtype=torch.int64, device=device
+    ).repeat(config.learners)
+    seeds = torch.tensor(learner_seeds, dtype=torch.int64, device=device).repeat_interleave(
+        config.environments_per_learner
+    )
+    span = maximum_steps - minimum_steps + 1
+    mixed = (
+        seeds + environment * 1_103_515_245 + episode_indices * 12_345
+    ) & 0x7FFFFFFF
+    return minimum_steps + mixed.remainder(span)
+
+
+def _rollout(
+    native,
+    torch,
+    policy,
+    config,
+    bundle,
+    cameras,
+    reset_snapshot,
+    learner_seeds,
+    minimum_episode_steps,
+    maximum_episode_steps,
+    asynchronous_resets,
+):
     observations, raw_actions, log_probabilities = [], [], []
     rewards, values, terminated = [], [], []
     joint_coordinate = bundle["initial_q"]
     previous_distance = torch.abs(GOAL_X_M - bundle["state"][:, 4, 0]).reshape(
         config.learners, config.environments_per_learner
     )
+    reset_distance = torch.abs(
+        GOAL_X_M - reset_snapshot["state"][:, 4, 0]
+    ).reshape_as(previous_distance)
+    episode_steps = torch.zeros(
+        config.total_worlds, dtype=torch.int64, device=bundle["state"].device
+    )
+    episode_indices = torch.zeros_like(episode_steps)
+    episode_returns = torch.zeros_like(previous_distance)
+    completed_return_sum = torch.zeros(
+        config.learners, dtype=torch.float32, device=bundle["state"].device
+    )
+    completed_episode_count = torch.zeros(
+        config.learners, dtype=torch.int64, device=bundle["state"].device
+    )
+    reset_count_by_world = torch.zeros_like(episode_steps)
+    masked_restore_exact = torch.ones(
+        (), dtype=torch.bool, device=bundle["state"].device
+    )
+    partial_reset_observed = torch.zeros_like(masked_restore_exact)
     contact_ever = torch.zeros(
         config.total_worlds, dtype=torch.bool, device=bundle["state"].device
     )
@@ -269,16 +361,50 @@ def _rollout(native, torch, policy, config, bundle, cameras):
             + 0.02 * contact.to(dtype=torch.float32)
             - 0.001 * action.square().sum(dim=-1)
         )
-        end = torch.full_like(
-            contact, time_index + 1 == config.horizon, dtype=torch.bool
-        )
+        episode_returns += reward
+        episode_steps += 1
+        if asynchronous_resets:
+            lengths = _episode_lengths(
+                torch,
+                learner_seeds,
+                config,
+                episode_indices,
+                minimum_episode_steps,
+                maximum_episode_steps,
+                bundle["state"].device,
+            )
+            end_flat = episode_steps >= lengths
+            end = end_flat.reshape_as(contact)
+        else:
+            end = torch.full_like(
+                contact, time_index + 1 == config.horizon, dtype=torch.bool
+            )
+            end_flat = end.reshape(-1)
         observations.append(observation)
         raw_actions.append(raw_action)
         log_probabilities.append(log_probability)
         rewards.append(reward)
         values.append(value)
         terminated.append(end)
-        previous_distance = distance
+        if asynchronous_resets:
+            completed_return_sum += (episode_returns * end).sum(dim=1)
+            completed_episode_count += end.sum(dim=1)
+            before = _snapshot(bundle)
+            _restore_masked(torch, bundle, reset_snapshot, end_flat)
+            partial_reset_observed |= end_flat.any() & (~end_flat).any()
+            masked_restore_exact &= _masked_restore_exact(
+                torch, bundle, reset_snapshot, before, end_flat
+            )
+            joint_coordinate = torch.where(
+                end_flat[:, None], bundle["initial_q"], joint_coordinate
+            )
+            previous_distance = torch.where(end, reset_distance, distance)
+            episode_returns = torch.where(end, 0.0, episode_returns)
+            episode_steps = torch.where(end_flat, 0, episode_steps)
+            episode_indices += end_flat.to(dtype=episode_indices.dtype)
+            reset_count_by_world += end_flat.to(dtype=reset_count_by_world.dtype)
+        else:
+            previous_distance = distance
     final_observation, _, _ = _camera_observation(
         native, torch, config, bundle, cameras, joint_coordinate
     )
@@ -291,6 +417,11 @@ def _rollout(native, torch, policy, config, bundle, cameras):
         "values": torch.cat((torch.stack(values), bootstrap[None]), dim=0),
         "terminated": torch.stack(terminated),
         "contact_ever": contact_ever,
+        "completed_return_sum": completed_return_sum,
+        "completed_episode_count": completed_episode_count,
+        "reset_count_by_world": reset_count_by_world,
+        "partial_reset_observed": partial_reset_observed,
+        "masked_restore_exact": masked_restore_exact,
         "final_depth": final_depth,
         "final_ids": final_ids,
     }
@@ -352,6 +483,14 @@ def main() -> int:
     args = arguments()
     if args.updates < 1 or args.ppo_epochs < 1:
         raise ValueError("updates and PPO epochs must be positive")
+    if args.base_seed < 0:
+        raise ValueError("base seed must be non-negative")
+    if (
+        args.minimum_episode_steps < 1
+        or args.maximum_episode_steps < args.minimum_episode_steps
+        or args.maximum_episode_steps > 65_536
+    ):
+        raise ValueError("episode bounds must satisfy 1 <= minimum <= maximum <= 65536")
     config = ParallelTrainerConfig(
         learners=args.learners,
         environments_per_learner=args.environments_per_learner,
@@ -361,13 +500,14 @@ def main() -> int:
 
     if not torch.cuda.is_available():
         raise RuntimeError("parallel trainer requires a visible CUDA device")
-    torch.manual_seed(BASE_SEED)
-    torch.cuda.manual_seed_all(BASE_SEED)
+    torch.manual_seed(args.base_seed)
+    torch.cuda.manual_seed_all(args.base_seed)
+    learner_seeds = [learner_seed(args.base_seed, learner) for learner in range(config.learners)]
     native = load_extension()
     bundle = make_workload(config.total_worlds, torch.device("cuda"))
     reset_snapshot = _snapshot(bundle)
     cameras = _camera_fixture(torch, config, bundle)
-    policy = BatchedActorCritic(torch, config)
+    policy = BatchedActorCritic(torch, config, learner_seeds)
     optimizer = torch.optim.Adam(policy.parameters, lr=3.0e-4)
 
     initial_observation, initial_depth, initial_ids = _camera_observation(
@@ -384,6 +524,10 @@ def main() -> int:
     rollout_events = []
     update_events = []
     returns_by_update = []
+    completed_episodes_by_update = []
+    reset_count_by_update = []
+    masked_restore_exact_by_update = []
+    partial_reset_observed_by_update = []
     final_rollout = final_loss = final_advantages = None
     for _ in range(args.updates):
         rollout_start = torch.cuda.Event(enable_timing=True)
@@ -392,7 +536,19 @@ def main() -> int:
         rollout_start.record()
         _restore(bundle, reset_snapshot)
         with torch.no_grad():
-            final_rollout = _rollout(native, torch, policy, config, bundle, cameras)
+            final_rollout = _rollout(
+                native,
+                torch,
+                policy,
+                config,
+                bundle,
+                cameras,
+                reset_snapshot,
+                learner_seeds,
+                args.minimum_episode_steps,
+                args.maximum_episode_steps,
+                args.asynchronous_resets,
+            )
         rollout_end.record()
         final_advantages, _returns, final_loss = _ppo_update(
             torch, policy, optimizer, config, final_rollout, args.ppo_epochs
@@ -400,7 +556,14 @@ def main() -> int:
         update_end.record()
         rollout_events.append((rollout_start, rollout_end))
         update_events.append((rollout_end, update_end))
-        returns_by_update.append(final_rollout["rewards"].sum(dim=0).mean(dim=1))
+        completed = final_rollout["completed_episode_count"]
+        completed_return = final_rollout["completed_return_sum"] / completed.clamp_min(1)
+        fallback_return = final_rollout["rewards"].sum(dim=0).mean(dim=1)
+        returns_by_update.append(torch.where(completed > 0, completed_return, fallback_return))
+        completed_episodes_by_update.append(completed)
+        reset_count_by_update.append(final_rollout["reset_count_by_world"].sum())
+        masked_restore_exact_by_update.append(final_rollout["masked_restore_exact"])
+        partial_reset_observed_by_update.append(final_rollout["partial_reset_observed"])
     torch.cuda.synchronize()
 
     rollout_seconds = sum(
@@ -412,6 +575,9 @@ def main() -> int:
     total_seconds = rollout_seconds + update_seconds
     deltas = _parameter_delta_per_learner(torch, before, policy.parameters)
     learner_returns = torch.stack(returns_by_update)
+    completed_episodes = torch.stack(completed_episodes_by_update)
+    reset_counts = torch.stack(reset_count_by_update)
+    curve_summary = learning_curve_summary(learner_returns.cpu().tolist())
     if final_rollout is None or final_loss is None or final_advantages is None:
         raise RuntimeError("parallel trainer produced no rollout")
     hit = final_rollout["final_ids"] >= 0
@@ -433,6 +599,15 @@ def main() -> int:
         "instance_ids_are_bounded": bool(
             torch.all((initial_ids >= -1) & (initial_ids < bundle["state"].shape[1])).item()
         ),
+        "asynchronous_partial_reset_observed": bool(
+            not args.asynchronous_resets or all(partial_reset_observed_by_update)
+        ),
+        "masked_reset_selected_and_unselected_exact": bool(
+            not args.asynchronous_resets or all(masked_restore_exact_by_update)
+        ),
+        "completed_episodes_are_nonzero": bool(
+            not args.asynchronous_resets or torch.all(completed_episodes > 0).item()
+        ),
     }
     if not all(gates.values()):
         raise RuntimeError("parallel trainer gate failed: " + json.dumps(gates, sort_keys=True))
@@ -440,7 +615,7 @@ def main() -> int:
     world_steps = args.updates * config.horizon * config.total_worlds
     pixels = world_steps * config.rays_per_world
     payload = {
-        "schema_version": CONTRACT_ID,
+        "schema_version": ASYNC_CONTRACT_ID if args.asynchronous_resets else CONTRACT_ID,
         "status": "passed",
         "device": torch.cuda.get_device_name(0),
         "configuration": {
@@ -456,6 +631,11 @@ def main() -> int:
             "rays_per_world": config.rays_per_world,
             "observation_dimensions": config.observation_dimensions,
             "action_dimensions": config.action_dimensions,
+            "base_seed": args.base_seed,
+            "learner_seeds": learner_seeds,
+            "asynchronous_resets": args.asynchronous_resets,
+            "minimum_episode_steps": args.minimum_episode_steps,
+            "maximum_episode_steps": args.maximum_episode_steps,
         },
         "timing": {
             "rollout_seconds": rollout_seconds,
@@ -472,14 +652,17 @@ def main() -> int:
         "gates": gates,
         "policy_parameter_delta_per_learner": deltas.cpu().tolist(),
         "mean_episode_return_per_update_and_learner": learner_returns.cpu().tolist(),
+        "completed_episodes_per_update_and_learner": completed_episodes.cpu().tolist(),
+        "partial_resets_per_update": reset_counts.cpu().tolist(),
+        "learning_curve": curve_summary,
         "contacted_worlds_last_rollout": int(final_rollout["contact_ever"].sum().item()),
         "claims": {
             "gpu_resident_rollout_buffers": True,
             "parallel_independent_policy_parameters": True,
             "analytic_depth_and_instance_pixels": True,
             "reported_rgb_or_raster_pixels": False,
-            "learning_curve_accepted": False,
-            "asynchronous_partial_episode_reset": False,
+            "learning_curve_accepted": curve_summary["accepted"],
+            "asynchronous_partial_episode_reset": args.asynchronous_resets,
             "notes": (
                 "Rollout timing includes batched actor/value inference, Stage-7 rigid stepping, "
                 "two calibrated camera ray packets, linear OBB queries, optical depth, rewards, and buffer writes."

@@ -15,6 +15,7 @@ from typing import Sequence
 
 
 CONTRACT_ID = "box3d.parallel-vision-ppo/v1"
+ASYNC_CONTRACT_ID = "box3d.parallel-vision-ppo-async/v2"
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,105 @@ def learner_seed(base_seed: int, learner: int) -> int:
     return (base_seed * 0x9E3779B1 + (learner + 1) * 0x85EBCA77) & 0x7FFFFFFF
 
 
+def deterministic_episode_length(
+    base_seed: int,
+    learner: int,
+    environment: int,
+    episode: int,
+    *,
+    minimum_steps: int = 8,
+    maximum_steps: int = 24,
+) -> int:
+    """Deterministic heterogeneous timeout for asynchronous vector episodes."""
+
+    for name, value in (
+        ("environment", environment),
+        ("episode", episode),
+        ("minimum_steps", minimum_steps),
+        ("maximum_steps", maximum_steps),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer")
+    if minimum_steps == 0 or maximum_steps < minimum_steps:
+        raise ValueError("episode step bounds must satisfy 1 <= minimum <= maximum")
+    span = maximum_steps - minimum_steps + 1
+    mixed = (
+        learner_seed(base_seed, learner)
+        + environment * 1_103_515_245
+        + episode * 12_345
+    ) & 0x7FFFFFFF
+    return minimum_steps + mixed % span
+
+
+def learning_curve_summary(
+    returns_by_update_and_learner: Sequence[Sequence[float]],
+    *,
+    minimum_updates: int = 8,
+    minimum_improvement: float = 0.0,
+) -> dict[str, object]:
+    """Summarize independent-seed curves without claiming success prematurely."""
+
+    if not returns_by_update_and_learner:
+        raise ValueError("learning curves require at least one update")
+    learners = len(returns_by_update_and_learner[0])
+    if learners == 0 or any(len(row) != learners for row in returns_by_update_and_learner):
+        raise ValueError("learning curves must be rectangular with a non-empty learner axis")
+    if any(
+        not math.isfinite(float(value))
+        for row in returns_by_update_and_learner
+        for value in row
+    ):
+        raise ValueError("learning-curve returns must be finite")
+    if minimum_updates < 2 or not math.isfinite(float(minimum_improvement)):
+        raise ValueError("learning-curve gate parameters are invalid")
+
+    updates = len(returns_by_update_and_learner)
+    window = max(1, updates // 4)
+    improvement = []
+    slope = []
+    x_mean = (updates - 1) / 2.0
+    denominator = sum((index - x_mean) ** 2 for index in range(updates))
+    for learner in range(learners):
+        curve = [float(row[learner]) for row in returns_by_update_and_learner]
+        early = sum(curve[:window]) / window
+        late = sum(curve[-window:]) / window
+        improvement.append(late - early)
+        y_mean = sum(curve) / updates
+        slope.append(
+            0.0
+            if denominator == 0.0
+            else sum(
+                (index - x_mean) * (value - y_mean)
+                for index, value in enumerate(curve)
+            )
+            / denominator
+        )
+    improved = sum(value > minimum_improvement for value in improvement)
+    required = math.ceil(0.75 * learners)
+    ordered = sorted(improvement)
+    middle = learners // 2
+    median = (
+        ordered[middle]
+        if learners % 2
+        else 0.5 * (ordered[middle - 1] + ordered[middle])
+    )
+    return {
+        "updates": updates,
+        "learners": learners,
+        "window_updates": window,
+        "improvement_per_learner": improvement,
+        "slope_per_update_per_learner": slope,
+        "improved_learners": improved,
+        "required_improved_learners": required,
+        "median_improvement": median,
+        "accepted": bool(
+            updates >= minimum_updates
+            and improved >= required
+            and median > minimum_improvement
+        ),
+    }
+
+
 def generalized_advantage_estimate(
     rewards: Sequence[Sequence[float]],
     values: Sequence[Sequence[float]],
@@ -160,9 +260,12 @@ def generalized_advantage_estimate(
 
 
 __all__ = [
+    "ASYNC_CONTRACT_ID",
     "CONTRACT_ID",
     "ParallelTrainerConfig",
     "camera_pixel_packet",
+    "deterministic_episode_length",
     "generalized_advantage_estimate",
+    "learning_curve_summary",
     "learner_seed",
 ]

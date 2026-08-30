@@ -115,3 +115,10 @@ the redacted provider evidence SHA-256 is
 The ephemeral sandbox was deleted and verified absent. This accepts the
 parallel trainer's execution and throughput only. It does not accept a
 learning curve, asynchronous partial resets, RGB, or raster rendering.
+
+The subsequent async-v2 implementation is locally gated by the full CPU suite
+(163 tests plus 18 subtests). It uses heterogeneous per-environment episode
+timeouts, restores only terminated worlds from device-resident reset tensors,
+checks both selected and unselected slices exactly, and reports independent
+learner curves. No async-v2 CUDA run or learning-curve acceptance is recorded
+here yet.
