@@ -77,7 +77,7 @@ class TestGaitShaping(unittest.TestCase):
         flat = (0.0, 0.0)
         up = (0.02, 0.0)
         # left swing 0.2 s (10 steps) with clearance, then touchdown
-        seq = [((True, True), flat)] + [((False, True), up)] * 10 \
+        seq = [((True, True), flat)] * 5 + [((False, True), up)] * 10 \
             + [((True, True), flat)]
         tracker = rw.GaitTracker(1)
         rewards = self.steps(tracker, seq)
@@ -87,7 +87,7 @@ class TestGaitShaping(unittest.TestCase):
                                rw.W_AIR_TIME, places=5)
         self.assertEqual(tracker.last_foot[0], 0)
         # an alternating right-foot step now earns air time + alternation
-        seq2 = [((True, True), flat)] + [((True, False), (0.0, 0.02))] * 10 \
+        seq2 = [((True, True), flat)] * 5 + [((True, False), (0.0, 0.02))] * 10 \
             + [((True, True), flat)]
         rewards2 = self.steps(tracker, seq2)
         self.assertAlmostEqual(rewards2[-1] - (rewards2[-2] - rw.W_CLEARANCE),
@@ -164,7 +164,7 @@ class SameFootPenaltyTest(unittest.TestCase):
     def test_repeated_foot_qualified_touchdown_is_penalized(self):
         flat = (0.0, 0.0)
         up = (0.02, 0.0)
-        swing = [((True, True), flat)] + [((False, True), up)] * 10 \
+        swing = [((True, True), flat)] * 5 + [((False, True), up)] * 10 \
             + [((True, True), flat)]
         tracker = rw.GaitTracker(1)
         tracker.v_avg[:] = 0.15

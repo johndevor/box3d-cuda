@@ -41,6 +41,13 @@ OPP_SUPPORT_FRAC = 0.90  # evaluator: opposite foot supports >= 90% of the swing
 W_CHATTER = 0.2          # penalty per touchdown after a sub-60 ms micro-swing;
                          # contact chatter destroys the 40 ms support windows.
 CHATTER_MAX_S = 0.06
+W_FLICKER = 0.3          # penalty per foot in stance at both step boundaries but
+                         # not in contact for all 10 native ticks: marginal
+                         # loading flickers at 2 ms scale and breaks the
+                         # evaluator's 40 ms continuous-support windows.
+TICKS_FULL = 10          # native ticks per policy step
+STANCE_MIN_S = 0.06      # a step qualifies only after >=60 ms of stance before
+                         # liftoff (median stance was 77-88 ms and flicker-cut).
 W_CLEARANCE = 0.1        # per swing foot per step whose whole sole clears >=10 mm.
 CLEARANCE_M = 0.010      # matches the strict evaluator's sole-clearance bound.
 W_DOUBLE_SUPPORT = 0.5   # penalty per step once both feet stay grounded too long.
@@ -50,7 +57,7 @@ W_SAME_FOOT = 2.0        # penalty when a qualified touchdown REPEATS the last
                          # foot. At 0.5 a repeat still netted +1.0 with the step
                          # bonus (u2400: symmetric gait, repeats persisted); at
                          # 2.0 a repeat nets -0.5 vs +2.0 for alternating.
-W_PHASE = 0.3            # per foot whose stance matches the observed 1.25 Hz
+W_PHASE = 0.5            # per foot whose stance matches the observed 1.25 Hz
                          # phase clock (left: sin>=0, right: sin<0); breaks the
                          # one-legged-limp optimum where alternation never fires.
 
@@ -70,6 +77,8 @@ class GaitTracker:
         self.liftoff_x = np.zeros((self.E, 2))       # foot COM x at liftoff
         self.opp_support = np.zeros((self.E, 2))     # s opposite foot grounded in swing
         self.v_avg = np.zeros(self.E)                # EMA of forward velocity
+        self.stance_time = np.zeros((self.E, 2))     # s of continuous stance
+        self.pre_swing_stance = np.zeros((self.E, 2))  # stance length before liftoff
 
     def reset(self, mask: np.ndarray | None = None) -> None:
         m = np.ones(self.E, bool) if mask is None else np.asarray(mask, bool)
@@ -79,6 +88,8 @@ class GaitTracker:
         self.liftoff_x[m] = 0.0
         self.opp_support[m] = 0.0
         self.v_avg[m] = 0.0
+        self.stance_time[m] = 0.0
+        self.pre_swing_stance[m] = 0.0
 
 
 def reward(prev_state: dict, state: dict, action: np.ndarray, command: np.ndarray,
@@ -119,7 +130,8 @@ def reward(prev_state: dict, state: dict, action: np.ndarray, command: np.ndarra
     else:                                     # older callers/tests: duration only
         placement_ok = np.ones_like(touchdown)
         opp_ok = np.ones_like(touchdown)
-    qualified = touchdown & duration_ok & placement_ok & opp_ok
+    stance_ok = tracker.pre_swing_stance >= STANCE_MIN_S
+    qualified = touchdown & duration_ok & placement_ok & opp_ok & stance_ok
     r += W_AIR_TIME * qualified.sum(1)
     # chatter: a touchdown after a sub-60 ms micro-swing breaks support windows
     r -= W_CHATTER * (touchdown & (tracker.air_time < CHATTER_MAX_S)).sum(1)
@@ -134,6 +146,15 @@ def reward(prev_state: dict, state: dict, action: np.ndarray, command: np.ndarra
         airborne = ~contact[:, foot]
         tracker.opp_support[liftoff[:, foot], foot] = 0.0
         tracker.opp_support[airborne, foot] += contact[airborne, 1 - foot] * dt
+        tracker.pre_swing_stance[liftoff[:, foot], foot] = \
+            tracker.stance_time[liftoff[:, foot], foot]
+    tracker.stance_time = np.where(contact, tracker.stance_time + dt, 0.0)
+
+    # 6c. flicker penalty: stance at both boundaries but partial tick contact
+    ct = state.get("contact_ticks")
+    if ct is not None:
+        flicker = prev_contact & contact & (np.asarray(ct) < TICKS_FULL)
+        r -= W_FLICKER * flicker.sum(1)
     # air-time accounting: grows while airborne, clears while in contact
     tracker.air_time = np.where(contact, 0.0, tracker.air_time + dt)
 

@@ -152,6 +152,10 @@ class FlatFloorDuckEnv(DuckEnvBatch):
         self._effective = self._clip_limits(self._targets)
 
         iterations = np.zeros(self.E, np.int32)
+        # per-tick foot contact: 2 ms flickers are invisible at the 20 ms
+        # policy boundary, but the evaluator's 40 ms continuity windows see
+        # them; the reward needs the tick-resolution count to shape them away.
+        contact_ticks = np.zeros((self.E, 2), np.int32)
         for tick in range(TICKS_PER_STEP):
             rc, diagnostics = self._lane.tick(self._effective)
             bad = [d for d in diagnostics if d["native_status"] != 0]
@@ -159,12 +163,15 @@ class FlatFloorDuckEnv(DuckEnvBatch):
                 self._raise_fault(rc, diagnostics, bad, tick, a)
             iterations = np.maximum(iterations,
                                     [d["iterations"] for d in diagnostics])
+            mid = self._lane.read()
+            contact_ticks += mid.foot_contact
             if on_tick is not None:
-                on_tick(self._lane.read())
+                on_tick(mid)
 
-        state = self._lane.read()
+        state = mid
         finite = state.finite()
         cur = self._reward_state(state, a, self._torque(state))
+        cur["contact_ticks"] = contact_ticks.copy()
         r = reward_mod.reward(self._prev, cur, a, self._command, self._tracker,
                               dt=CONTROL_DT)
         self._prev = cur
