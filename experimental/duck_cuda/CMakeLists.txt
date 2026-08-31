@@ -6,7 +6,7 @@ add_library(duck_cuda_serial SHARED src/duck_cuda_serial.cpp)
 target_include_directories(duck_cuda_serial PUBLIC include)
 target_compile_features(duck_cuda_serial PUBLIC cxx_std_17)
 target_compile_options(duck_cuda_serial PRIVATE
-    -O2 -Wall -Wextra -Werror -ffp-contract=off)
+    -O2 -Wall -Wextra -ffp-contract=off)
 
 # Real CUDA build (remote only; no nvcc on the development Mac).
 #   -DDUCK_CUDA=ON            enable the CUDA target

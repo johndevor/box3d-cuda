@@ -89,6 +89,13 @@ def emit(native, fixture, cm) -> str:
         "// every constant rounded once to float32. Drift-checked by test_serial_parity.py.",
         "#ifndef DUCK_MODEL_H",
         "#define DUCK_MODEL_H",
+        "// __constant__ puts the model tables in device constant memory (well",
+        "// under the 64 KB budget); host builds see plain static const.",
+        "#if defined(__CUDACC__)",
+        "#define DW_MODEL_CONST static __constant__ const",
+        "#else",
+        "#define DW_MODEL_CONST static const",
+        "#endif",
         "#define DW_B 16   // bodies: floor 0, root 1, hinge children j+2",
         "#define DW_J 14   // hinge joints",
         "#define DW_N 20   // generalized dofs (6 root + J)",
@@ -112,40 +119,40 @@ def emit(native, fixture, cm) -> str:
         f"#define DW_LIMIT_MARGIN {f32(0.0)}",
         f"#define DW_LIMIT_TIMECONST {f32(0.02)}",
         f"#define DW_LIMIT_DAMPRATIO {f32(1.0)}",
-        "static const float DW_LIMIT_SOLIMP[5] = "
+        "DW_MODEL_CONST float DW_LIMIT_SOLIMP[5] = "
         + row([0.9, 0.95, 0.001, 0.5, 2.0]) + ";",
-        "static const float DW_BODY_MASS[DW_B] = "
+        "DW_MODEL_CONST float DW_BODY_MASS[DW_B] = "
         + row([fixture.body[b].mass for b in range(B)]) + ";",
-        "static const float DW_BODY_INERTIA[DW_B][3] = {"
+        "DW_MODEL_CONST float DW_BODY_INERTIA[DW_B][3] = {"
         + ",".join(row(list(fixture.body[b].inertia)) for b in range(B)) + "};",
-        "static const unsigned DW_HINGE_PARENT[DW_J] = {"
+        "DW_MODEL_CONST unsigned DW_HINGE_PARENT[DW_J] = {"
         + ",".join(str(h.parent) for h in fixture.hinge) + "};",
-        "static const float DW_HINGE_AP[DW_J][3] = {"
+        "DW_MODEL_CONST float DW_HINGE_AP[DW_J][3] = {"
         + ",".join(row(list(h.ap)) for h in fixture.hinge) + "};",
-        "static const float DW_HINGE_AC[DW_J][3] = {"
+        "DW_MODEL_CONST float DW_HINGE_AC[DW_J][3] = {"
         + ",".join(row(list(h.ac)) for h in fixture.hinge) + "};",
-        "static const float DW_HINGE_AXIS[DW_J][3] = {"
+        "DW_MODEL_CONST float DW_HINGE_AXIS[DW_J][3] = {"
         + ",".join(row(list(h.axis)) for h in fixture.hinge) + "};",
-        "static const float DW_HINGE_REF[DW_J][4] = {"
+        "DW_MODEL_CONST float DW_HINGE_REF[DW_J][4] = {"
         + ",".join(row(list(h.reference)) for h in fixture.hinge) + "};",
-        "static const float DW_LIMIT_LOWER[DW_J] = "
+        "DW_MODEL_CONST float DW_LIMIT_LOWER[DW_J] = "
         + row([l.lower for l in limits]) + ";",
-        "static const float DW_LIMIT_UPPER[DW_J] = "
+        "DW_MODEL_CONST float DW_LIMIT_UPPER[DW_J] = "
         + row([l.upper for l in limits]) + ";",
-        "static const float DW_ROOT_COM[3] = "
+        "DW_MODEL_CONST float DW_ROOT_COM[3] = "
         + row(list(fixture.model.root_inertia)[:3]) + ";",
-        "static const float DW_ROOT_QPC[4] = "
+        "DW_MODEL_CONST float DW_ROOT_QPC[4] = "
         + row(list(fixture.model.root_inertia)[3:7]) + ";",
-        "static const float DW_REFERENCE_QPOS[DW_Q] = "
+        "DW_MODEL_CONST float DW_REFERENCE_QPOS[DW_Q] = "
         + row(list(fixture.reference)) + ";",
-        "static const float DW_INITIAL_QPOS[DW_Q] = " + row(base) + ";",
-        "static const float DW_INITIAL_VEL[DW_N] = " + row(vel) + ";",
-        "static const float DW_HOME_TARGETS[DW_J] = "
+        "DW_MODEL_CONST float DW_INITIAL_QPOS[DW_Q] = " + row(base) + ";",
+        "DW_MODEL_CONST float DW_INITIAL_VEL[DW_N] = " + row(vel) + ";",
+        "DW_MODEL_CONST float DW_HOME_TARGETS[DW_J] = "
         + row(frame["motor_targets"]) + ";",
-        "static const unsigned DW_PAIR_BODY_A[DW_PAIRS] = {6u,15u};",
-        "static const unsigned DW_PAIR_BODY_B[DW_PAIRS] = {0u,0u};",
-        "static const float DW_PAIR_MU[DW_PAIRS] = " + row(cm.mu[:2]) + ";",
-        "static const float DW_FOOT_VERTICES[DW_PAIRS][DW_FOOT_VERTS][3] = {"
+        "DW_MODEL_CONST unsigned DW_PAIR_BODY_A[DW_PAIRS] = {6u,15u};",
+        "DW_MODEL_CONST unsigned DW_PAIR_BODY_B[DW_PAIRS] = {0u,0u};",
+        "DW_MODEL_CONST float DW_PAIR_MU[DW_PAIRS] = " + row(cm.mu[:2]) + ";",
+        "DW_MODEL_CONST float DW_FOOT_VERTICES[DW_PAIRS][DW_FOOT_VERTS][3] = {"
         + ",".join(
             "{" + ",".join(row(list(cm.shapes[b].vertices[i])) for i in range(18)) + "}"
             for b in FOOT_BODIES) + "};",
