@@ -1,0 +1,38 @@
+{
+  "name": "compile-duck-cuda",
+  "tar_globs": [],
+  "upload_extra": [],
+  "jobs": [
+    {
+      "name": "gpu-info",
+      "command": "nvidia-smi | tee gpu-info.txt && nvcc --version | tee -a gpu-info.txt",
+      "timeout_s": 60,
+      "artifacts": ["gpu-info.txt"],
+      "continue_on_error": false
+    },
+    {
+      "name": "build",
+      "command": "set -o pipefail; ENGINE_DIR=experimental/duck_cuda; if [ -x \"$ENGINE_DIR/build_remote.sh\" ]; then (cd \"$ENGINE_DIR\" && ./build_remote.sh) 2>&1 | tee build.log; elif [ -f \"$ENGINE_DIR/CMakeLists.txt\" ]; then cmake -S \"$ENGINE_DIR\" -B build_cuda -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120 2>&1 | tee build.log && cmake --build build_cuda -j4 2>&1 | tee -a build.log; else echo \"PLACEHOLDER: $ENGINE_DIR has no build_remote.sh or CMakeLists.txt yet (engine not landed); nothing to build\" | tee build.log; fi",
+      "timeout_s": 600,
+      "artifacts": ["build.log"],
+      "continue_on_error": false
+    },
+    {
+      "name": "smoke-test",
+      "command": "set -o pipefail; TEST_BIN=$(find build_cuda experimental/duck_cuda -maxdepth 3 -type f -perm -u+x \\( -name 'test_*' -o -name '*_test' \\) 2>/dev/null | head -1); if [ -n \"$TEST_BIN\" ]; then echo \"running $TEST_BIN\" | tee smoke.log && \"$TEST_BIN\" 2>&1 | tee -a smoke.log; else echo 'PLACEHOLDER: no test binary found (adjust once the engine lands)' | tee smoke.log; fi",
+      "timeout_s": 300,
+      "artifacts": ["smoke.log"],
+      "continue_on_error": true
+    }
+  ],
+  "resources": {
+    "cpu": 4,
+    "memory_gib": 16,
+    "disk_gib": 20,
+    "gpu": 1,
+    "gpu_types": ["RTX-5090"],
+    "spot": true,
+    "ttl_minutes": 25,
+    "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
+  }
+}
