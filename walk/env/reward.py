@@ -131,7 +131,15 @@ def reward(prev_state: dict, state: dict, action: np.ndarray, command: np.ndarra
         placement_ok = np.ones_like(touchdown)
         opp_ok = np.ones_like(touchdown)
     stance_ok = tracker.pre_swing_stance >= STANCE_MIN_S
-    qualified = touchdown & duration_ok & placement_ok & opp_ok & stance_ok
+    phase = state.get("phase")
+    if phase is not None:
+        # structural alternation: a touchdown earns the step bonus only if it
+        # lands inside its foot's half of the gait clock (left: sin>=0).
+        stance_left = np.sin(np.asarray(phase, np.float64)) >= 0.0
+        phase_ok = np.stack([stance_left, ~stance_left], axis=1)
+    else:
+        phase_ok = np.ones_like(touchdown)
+    qualified = touchdown & duration_ok & placement_ok & opp_ok & stance_ok & phase_ok
     r += W_AIR_TIME * qualified.sum(1)
     # chatter: a touchdown after a sub-60 ms micro-swing breaks support windows
     r -= W_CHATTER * (touchdown & (tracker.air_time < CHATTER_MAX_S)).sum(1)
@@ -164,9 +172,7 @@ def reward(prev_state: dict, state: dict, action: np.ndarray, command: np.ndarra
     # 8b. phase-locked stance: while commanded, each foot is rewarded for
     # matching its half of the observed gait clock (left stance sin>=0).
     # Absent phase (older callers/tests) skips the term.
-    phase = state.get("phase")
     if phase is not None:
-        stance_left = np.sin(np.asarray(phase, np.float64)) >= 0.0
         match = (contact[:, 0] == stance_left).astype(np.float64) \
             + (contact[:, 1] == ~stance_left).astype(np.float64)
         r += W_PHASE * match * (np.abs(cmd) > 0)
