@@ -98,8 +98,9 @@ class TestMaskedReset(unittest.TestCase):
             # phase clock: env0 back at t=0 -> sin=0, cos=1; env1 keeps running
             self.assertAlmostEqual(float(obs[0, 56]), 0.0, places=6)
             self.assertAlmostEqual(float(obs[0, 57]), 1.0, places=6)
-            from walk.env.flat import PHASE_HZ
-            phase1 = 2 * math.pi * PHASE_HZ * 7 * CONTROL_DT
+            from walk.env.flat import PHASE_HZ_PER_MPS
+            phase1 = 2 * math.pi * PHASE_HZ_PER_MPS * float(env._command[1]) \
+                * 7 * CONTROL_DT
             self.assertAlmostEqual(float(obs[1, 56]), math.sin(phase1), places=5)
             _, _, done, info = env.step(action)
             self.assertFalse(done.any())

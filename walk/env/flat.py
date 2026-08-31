@@ -34,7 +34,9 @@ SIM_DT = 0.002
 TICKS_PER_STEP = 10
 ACTION_SCALE = 0.25
 MAX_TARGET_INCREMENT = 5.24 * CONTROL_DT          # 0.1048 rad per policy step
-PHASE_HZ = 2.5   # gait clock; 2.5 Hz matches the learned ~0.2 s step period
+PHASE_HZ_PER_MPS = 2.5 / 0.15   # speed-proportional gait clock: stride rate
+                                # scales with commanded speed (0.15 m/s keeps
+                                # the proven 2.5 Hz; 0.10 -> 1.67, 0.20 -> 3.33)
 COMMANDS_MPS = (0.10, 0.15, 0.20)                  # per-episode forward commands
 HORIZON_STEPS = 400                                # 8 s at 0.02 s per step
 MIN_HEIGHT_FRACTION = 0.7                          # of the HOME root height
@@ -223,7 +225,8 @@ class FlatFloorDuckEnv(DuckEnvBatch):
                 "torque": np.asarray(torque).copy(),
                 "foot_x": state.foot_pos[:, :, 0].copy(),
                 # same clock the policy observes in obs[:, 56:58]
-                "phase": 2.0 * math.pi * PHASE_HZ * self._t * CONTROL_DT}
+                "phase": 2.0 * math.pi * (PHASE_HZ_PER_MPS * self._command)
+                * self._t * CONTROL_DT}
 
     def _observe(self, state: native_lane.LaneState) -> np.ndarray:
         obs = np.zeros((self.E, OBS), np.float32)
@@ -236,7 +239,8 @@ class FlatFloorDuckEnv(DuckEnvBatch):
         obs[:, 48:51] = np.einsum("eji,ej->ei", rot, state.v[:, 0:3])
         obs[:, 51] = self._command
         obs[:, 54:56] = state.foot_contact
-        phase = 2.0 * math.pi * PHASE_HZ * self._t * CONTROL_DT
+        phase = 2.0 * math.pi * (PHASE_HZ_PER_MPS * self._command) \
+            * self._t * CONTROL_DT
         obs[:, 56] = np.sin(phase)
         obs[:, 57] = np.cos(phase)
         return obs
