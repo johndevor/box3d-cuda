@@ -13,6 +13,7 @@
 #define DW_HD __host__ __device__
 #include "duck_cuda_kernel.h"
 
+#include <cstddef>
 #include <new>
 #include <vector>
 
@@ -24,12 +25,30 @@ constexpr size_t kStackBytes = 64 * 1024;
 
 __global__ void dw_step_kernel(DwState* states, const float* targets,
                                uint32_t n_ticks, DwParams params,
-                               dwc1_diagnostic* diags, uint32_t E) {
+                               float* scratch, dwc1_diagnostic* diags,
+                               uint32_t E) {
   for (uint32_t e = blockIdx.x * blockDim.x + threadIdx.x; e < E;
        e += gridDim.x * blockDim.x) {
     dwc1_diagnostic d = {};
     d.environment = e;
-    dw_step_env(&states[e], targets + (size_t)e * DW_J, n_ticks, &params, &d);
+    dw_step_env(&states[e], targets + (size_t)e * DW_J, n_ticks, &params,
+                scratch + (size_t)e * DW_SCRATCH_FLOATS, &d);
+    diags[e] = d;
+  }
+}
+
+__global__ void dw_step_policy_kernel(DwState* states, const float* actions,
+                                      uint32_t n_ticks, DwParams params,
+                                      float* scratch, float* obs, float* rew,
+                                      uint8_t* done, dwc1_diagnostic* diags,
+                                      uint32_t E) {
+  for (uint32_t e = blockIdx.x * blockDim.x + threadIdx.x; e < E;
+       e += gridDim.x * blockDim.x) {
+    dwc1_diagnostic d = {};
+    d.environment = e;
+    dw_step_policy_env(&states[e], actions + (size_t)e * DW_J, n_ticks,
+                       &params, scratch + (size_t)e * DW_SCRATCH_FLOATS,
+                       obs + (size_t)e * DWP_OBS, rew + e, done + e, &d);
     diags[e] = d;
   }
 }
@@ -39,12 +58,20 @@ struct dwc1_scene {
   uint32_t E = 0;
   DwParams params{};
   DwState* device_state = nullptr;      // [E], authoritative
-  float* device_targets = nullptr;      // [E, J]
+  float* device_targets = nullptr;      // [E, J] targets or actions
+  float* device_scratch = nullptr;      // [E, DW_SCRATCH_FLOATS] K + response
+  float* device_obs = nullptr;          // [E, 58]
+  float* device_reward = nullptr;       // [E]
+  uint8_t* device_done = nullptr;       // [E]
   dwc1_diagnostic* device_diag = nullptr;  // [E]
   std::vector<DwState> initial, host;   // creation state + read scratch
   ~dwc1_scene() {
     cudaFree(device_state);
     cudaFree(device_targets);
+    cudaFree(device_scratch);
+    cudaFree(device_obs);
+    cudaFree(device_reward);
+    cudaFree(device_done);
     cudaFree(device_diag);
   }
 };
@@ -82,6 +109,12 @@ int dwc1_create(uint32_t environments, const float* joint_offsets,
     if (cudaDeviceSetLimit(cudaLimitStackSize, kStackBytes) != cudaSuccess
         || cudaMalloc(&s->device_state, sizeof(DwState) * environments) != cudaSuccess
         || cudaMalloc(&s->device_targets, sizeof(float) * environments * DW_J) != cudaSuccess
+        || cudaMalloc(&s->device_scratch,
+                      sizeof(float) * (size_t)environments * DW_SCRATCH_FLOATS) != cudaSuccess
+        || cudaMalloc(&s->device_obs,
+                      sizeof(float) * (size_t)environments * DWP_OBS) != cudaSuccess
+        || cudaMalloc(&s->device_reward, sizeof(float) * environments) != cudaSuccess
+        || cudaMalloc(&s->device_done, sizeof(uint8_t) * environments) != cudaSuccess
         || cudaMalloc(&s->device_diag, sizeof(dwc1_diagnostic) * environments) != cudaSuccess
         || cudaMemcpy(s->device_state, s->initial.data(),
                       sizeof(DwState) * environments,
@@ -114,8 +147,8 @@ int dwc1_step(dwc1_scene* s, const float* targets, uint32_t n_ticks,
     return DWC1_NUMERIC;
   const int blocks = (int)((s->E + kThreadsPerBlock - 1) / kThreadsPerBlock);
   dw_step_kernel<<<blocks, kThreadsPerBlock>>>(
-      s->device_state, s->device_targets, n_ticks, s->params, s->device_diag,
-      s->E);
+      s->device_state, s->device_targets, n_ticks, s->params,
+      s->device_scratch, s->device_diag, s->E);
   if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess)
     return DWC1_NUMERIC;
   if (cudaMemcpy(diagnostics, s->device_diag, sizeof(dwc1_diagnostic) * s->E,
@@ -179,18 +212,83 @@ int dwc1_query(const dwc1_scene* s, dwc1_manifold* out) {
   return DWC1_OK;
 }
 
-int dwc1_reset(dwc1_scene* s, const uint8_t* mask) {
+int dwc1_reset_policy(dwc1_scene* s, const uint8_t* mask,
+                      const double* commands) {
   if (!s) return DWC1_INVALID;
-  if (!mask) {
-    return cudaMemcpy(s->device_state, s->initial.data(),
-                      sizeof(DwState) * s->E, cudaMemcpyHostToDevice)
-        == cudaSuccess ? DWC1_OK : DWC1_NUMERIC;
-  }
-  for (uint32_t e = 0; e < s->E; e++)
-    if (mask[e] && cudaMemcpy(s->device_state + e, &s->initial[e],
-                              sizeof(DwState),
-                              cudaMemcpyHostToDevice) != cudaSuccess)
+  if (commands)
+    for (uint32_t e = 0; e < s->E; e++)
+      if (!(commands[e] == commands[e])) return DWC1_INVALID;  // NaN
+  for (uint32_t e = 0; e < s->E; e++) {
+    if (mask && !mask[e]) continue;
+    DwState next = s->initial[e];
+    if (commands) {
+      next.command = commands[e];
+    } else {  // keep the env's previous command (creation default: 0)
+      if (cudaMemcpy(&next.command,
+                     (const char*)(s->device_state + e)
+                         + offsetof(DwState, command),
+                     sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess)
+        return DWC1_NUMERIC;
+    }
+    if (cudaMemcpy(s->device_state + e, &next, sizeof(DwState),
+                   cudaMemcpyHostToDevice) != cudaSuccess)
       return DWC1_NUMERIC;
+  }
+  return DWC1_OK;
+}
+
+int dwc1_reset(dwc1_scene* s, const uint8_t* mask) {
+  return dwc1_reset_policy(s, mask, nullptr);
+}
+
+int dwc1_step_policy(dwc1_scene* s, const float* actions, uint32_t n_ticks,
+                     float* obs, float* reward, uint8_t* done,
+                     dwc1_diagnostic* diagnostics) {
+  if (!s || !actions || !obs || !reward || !done || !diagnostics
+      || n_ticks < 1 || n_ticks > 1000)
+    return DWC1_INVALID;
+  if (!dw_finite(actions, (int)s->E * DW_J)) return DWC1_INVALID;
+  if (cudaMemcpy(s->device_targets, actions, sizeof(float) * s->E * DW_J,
+                 cudaMemcpyHostToDevice) != cudaSuccess)
+    return DWC1_NUMERIC;
+  const int blocks = (int)((s->E + kThreadsPerBlock - 1) / kThreadsPerBlock);
+  dw_step_policy_kernel<<<blocks, kThreadsPerBlock>>>(
+      s->device_state, s->device_targets, n_ticks, s->params,
+      s->device_scratch, s->device_obs, s->device_reward, s->device_done,
+      s->device_diag, s->E);
+  if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess)
+    return DWC1_NUMERIC;
+  if (cudaMemcpy(obs, s->device_obs, sizeof(float) * (size_t)s->E * DWP_OBS,
+                 cudaMemcpyDeviceToHost) != cudaSuccess
+      || cudaMemcpy(reward, s->device_reward, sizeof(float) * s->E,
+                    cudaMemcpyDeviceToHost) != cudaSuccess
+      || cudaMemcpy(done, s->device_done, sizeof(uint8_t) * s->E,
+                    cudaMemcpyDeviceToHost) != cudaSuccess
+      || cudaMemcpy(diagnostics, s->device_diag,
+                    sizeof(dwc1_diagnostic) * s->E,
+                    cudaMemcpyDeviceToHost) != cudaSuccess)
+    return DWC1_NUMERIC;
+  return DWC1_OK;  // per-env faults surface via diagnostics + done flags
+}
+
+int dwc1_observe(const dwc1_scene* s, float* obs) {
+  if (!s || !obs) return DWC1_INVALID;
+  int rc = pull_states(s);
+  if (rc) return rc;
+  for (uint32_t e = 0; e < s->E; e++)
+    dw_policy_observe(&s->host[e], obs + (size_t)e * DWP_OBS);
+  return DWC1_OK;
+}
+
+int dwc1_set_command(dwc1_scene* s, const double* commands) {
+  if (!s || !commands) return DWC1_INVALID;
+  for (uint32_t e = 0; e < s->E; e++) {
+    if (!(commands[e] == commands[e])) return DWC1_INVALID;  // NaN
+    if (cudaMemcpy((char*)(s->device_state + e) + offsetof(DwState, command),
+                   &commands[e], sizeof(double),
+                   cudaMemcpyHostToDevice) != cudaSuccess)
+      return DWC1_NUMERIC;
+  }
   return DWC1_OK;
 }
 

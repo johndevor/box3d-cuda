@@ -25,6 +25,23 @@ optional fast-path convention, so the names below are the convention):
     With the env stepping via tick_block(targets, 10) + one read(), a policy
     step costs 1 kernel launch + 1 state readback instead of 10 + 10.
 
+Device policy path (ABI v3): observation + reward + termination in-kernel,
+removing the full-state readback entirely for training:
+
+    lane.step_policy(actions, n_ticks=10)
+        -> (obs [E,58] f32, reward [E] f32, done [E] bool, diagnostics)
+    lane.reset_policy(mask, seed=..., commands=...) -> obs   (flat.py-exact
+        counter-based command resampling from {0.10, 0.15, 0.20} m/s)
+    lane.observe() -> obs;  lane.set_command(commands) -> obs
+
+    walk/env/flat.py and walk/env/reward.py (v6) are the contract; the
+    in-kernel policy chain runs in f64 mirroring numpy operation for
+    operation, so obs/reward/done are bit-identical to FlatFloorDuckEnv
+    running over the same lane build (verified by
+    experimental/duck_cuda/tests/test_serial_parity.py). Per policy step:
+    1 kernel launch, one tiny H2D (actions) and one tiny D2H
+    (obs+reward+done+diagnostics = 296 B/env); no state readback.
+
 Locally this loads the SERIAL build (libduck_cuda_serial.dylib, plain clang++,
 one env per loop iteration) compiled from the identical physics header the
 real CUDA driver uses; remotely the same wrapper loads libduck_cuda.so built
@@ -48,7 +65,15 @@ import numpy as np
 
 from .native_lane import LaneState
 
-ABI_VERSION = 2  # must match DWC1_ABI_VERSION in duck_cuda.h
+ABI_VERSION = 3  # must match DWC1_ABI_VERSION in duck_cuda.h
+
+OBS = 58
+COMMANDS_MPS = (0.10, 0.15, 0.20)   # flat.py per-episode forward commands
+
+
+def _episode_rng(seed: int, env: int, episode: int) -> np.random.Generator:
+    """flat.py's counter-based RNG, replicated exactly (command sampling)."""
+    return np.random.default_rng([int(seed) & 0xFFFFFFFF, int(env), int(episode)])
 
 
 @dataclasses.dataclass
@@ -101,6 +126,16 @@ class Diagnostic(C.Structure):
         "momentum_residual", "maximum_normal_impulse", "maximum_penetration"]]
 
 
+# numpy view of Diagnostic[E] (packed: 6 x u32 + 6 x f32, no padding); the
+# training hot path gets a structured array instead of E python dicts.
+DIAG_DTYPE = np.dtype([(name, "u4") for name in [
+    "environment", "status", "iterations", "contact_points",
+    "active_limits", "ticks"]] + [(name, "f4") for name in [
+    "joint_residual", "normal_residual", "tangent_residual",
+    "momentum_residual", "maximum_normal_impulse", "maximum_penetration"]])
+assert DIAG_DTYPE.itemsize == C.sizeof(Diagnostic)
+
+
 class Info(C.Structure):
     _fields_ = [(n, C.c_uint32) for n in
                 ["environments", "bodies", "joints", "dofs"]] + \
@@ -145,6 +180,11 @@ def load_library(path: Path):
         "dwc1_step": [C.c_void_p, FP, C.c_uint32, C.POINTER(Diagnostic)],
         "dwc1_read": [C.c_void_p, FP, FP, FP, DP, U64P, FP, U8P, FP,
                       C.POINTER(Manifold), U32P],
+        "dwc1_step_policy": [C.c_void_p, FP, C.c_uint32, FP, FP, U8P,
+                             C.POINTER(Diagnostic)],
+        "dwc1_observe": [C.c_void_p, FP],
+        "dwc1_set_command": [C.c_void_p, DP],
+        "dwc1_reset_policy": [C.c_void_p, U8P, DP],
         "dwc1_abi_version": [],
         "dwc1_reset": [C.c_void_p, U8P],
         "dwc1_set_state": [C.c_void_p, C.c_uint32, FP, FP, FP,
@@ -210,6 +250,9 @@ class CudaDuckLane:
         self.kp = float(info.kp)
         self.kv = float(info.kv)
         self.effort_cap = float(info.effort_cap)
+        # device policy path bookkeeping (mirrors FlatFloorDuckEnv seeding)
+        self._seed = 0
+        self._episode = np.zeros(self.E, np.int64)
 
     # -- stepping ----------------------------------------------------------
     def tick_block(self, targets: np.ndarray, n_ticks: int):
@@ -233,6 +276,72 @@ class CudaDuckLane:
     def tick(self, targets: np.ndarray):
         """One 0.002 s tick of all E envs; returns (rc, diagnostics dicts)."""
         return self.tick_block(targets, 1)
+
+    # -- device policy path (obs + reward + termination in-kernel) ----------
+    def step_policy(self, actions: np.ndarray, n_ticks: int = 10):
+        """One full policy step on device: action -> slew-limited targets ->
+        n_ticks physics -> reward.py v6 -> termination -> 58-dim observation.
+
+        Returns (obs [E,58] f32, reward [E] f32, done [E] bool, diagnostics)
+        where diagnostics is a numpy structured array (DIAG_DTYPE); a nonzero
+        `status` entry means that env hit a solver fault, froze at its last
+        accepted tick and was marked done (the python env raises SolverFault
+        instead). One kernel launch + one small readback per call.
+        """
+        a = np.ascontiguousarray(actions, dtype=np.float32).reshape(self.E, J)
+        obs = np.empty((self.E, OBS), np.float32)
+        reward = np.empty(self.E, np.float32)
+        done = np.empty(self.E, np.uint8)
+        diag = (Diagnostic * self.E)()
+        rc = self._lib.dwc1_step_policy(self._h, _fp(a), int(n_ticks),
+                                        _fp(obs), _fp(reward),
+                                        done.ctypes.data_as(U8P), diag)
+        if rc:
+            raise RuntimeError(f"dwc1_step_policy status={rc}")
+        diagnostics = np.frombuffer(diag, dtype=DIAG_DTYPE).copy()
+        return obs, reward, done.astype(bool), diagnostics
+
+    def observe(self) -> np.ndarray:
+        """Current 58-dim observations (no stepping); reset()-style read."""
+        obs = np.empty((self.E, OBS), np.float32)
+        rc = self._lib.dwc1_observe(self._h, _fp(obs))
+        if rc:
+            raise RuntimeError(f"dwc1_observe status={rc}")
+        return obs
+
+    def set_command(self, commands) -> np.ndarray:
+        """Override every env's commanded forward velocity (m/s)."""
+        c = np.ascontiguousarray(
+            np.broadcast_to(np.asarray(commands, np.float64), (self.E,)))
+        rc = self._lib.dwc1_set_command(self._h, c.ctypes.data_as(DP))
+        if rc:
+            raise RuntimeError(f"dwc1_set_command status={rc}")
+        return self.observe()
+
+    def reset_policy(self, mask: np.ndarray | None = None,
+                     seed: int | None = None, commands=None) -> np.ndarray:
+        """Masked policy reset mirroring FlatFloorDuckEnv.reset(): physics and
+        tracker state back to creation, per-env commands resampled from
+        COMMANDS_MPS with flat.py's exact counter-based (seed, env, episode)
+        RNG (pass `commands` [E] to override). Returns fresh observations."""
+        if seed is not None:
+            self._seed = int(seed)
+        m = np.ones(self.E, bool) if mask is None \
+            else np.asarray(mask, bool).reshape(self.E)
+        cmd = np.zeros(self.E, np.float64)
+        if commands is not None:
+            cmd[:] = np.broadcast_to(np.asarray(commands, np.float64), (self.E,))
+            self._episode[m] += 1
+        else:
+            for e in np.flatnonzero(m):
+                rng = _episode_rng(self._seed, int(e), int(self._episode[e]) + 1)
+                cmd[e] = COMMANDS_MPS[rng.integers(len(COMMANDS_MPS))]
+                self._episode[e] += 1
+        mc = (C.c_uint8 * self.E)(*[1 if x else 0 for x in m])
+        rc = self._lib.dwc1_reset_policy(self._h, mc, cmd.ctypes.data_as(DP))
+        if rc:
+            raise RuntimeError(f"dwc1_reset_policy status={rc}")
+        return self.observe()
 
     # -- reads --------------------------------------------------------------
     def read(self) -> CudaLaneState:

@@ -149,6 +149,10 @@ def emit(native, fixture, cm) -> str:
         "DW_MODEL_CONST float DW_INITIAL_VEL[DW_N] = " + row(vel) + ";",
         "DW_MODEL_CONST float DW_HOME_TARGETS[DW_J] = "
         + row(frame["motor_targets"]) + ";",
+        "// exact f64 home targets: the device policy layer's action->target",
+        "// chain runs in f64 to mirror walk/env/flat.py's HOME bit for bit.",
+        "DW_MODEL_CONST double DW_HOME_TARGETS_F64[DW_J] = {"
+        + ",".join(f"{float(x):.17g}" for x in frame["motor_targets"]) + "};",
         "DW_MODEL_CONST unsigned DW_PAIR_BODY_A[DW_PAIRS] = {6u,15u};",
         "DW_MODEL_CONST unsigned DW_PAIR_BODY_B[DW_PAIRS] = {0u,0u};",
         "DW_MODEL_CONST float DW_PAIR_MU[DW_PAIRS] = " + row(cm.mu[:2]) + ";",

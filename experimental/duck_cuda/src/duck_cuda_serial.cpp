@@ -8,6 +8,7 @@
 #include "cuda_compat.h"
 #include "duck_cuda_kernel.h"
 
+#include <algorithm>
 #include <new>
 #include <vector>
 
@@ -15,6 +16,7 @@ struct dwc1_scene {
   uint32_t E = 0;
   DwParams params{};
   std::vector<DwState> state, initial;
+  std::vector<float> scratch;  // [E, DW_SCRATCH_FLOATS] solver K + response
 };
 
 extern "C" {
@@ -34,6 +36,7 @@ int dwc1_create(uint32_t environments, const float* joint_offsets,
     s->params.tolerance = DW_SOLVE_TOLERANCE;
     s->params.max_iterations = DW_MAX_ITERATIONS;
     s->state.resize(environments);
+    s->scratch.resize((size_t)environments * DW_SCRATCH_FLOATS);
     for (uint32_t e = 0; e < environments; e++)
       dw_init_state(&s->state[e],
                     joint_offsets ? joint_offsets + (size_t)e * DW_J : nullptr);
@@ -63,7 +66,8 @@ int dwc1_step(dwc1_scene* s, const float* targets, uint32_t n_ticks,
     dwc1_diagnostic* d = &diagnostics[e];
     *d = dwc1_diagnostic{};
     d->environment = e;
-    dw_step_env(&s->state[e], targets + (size_t)e * DW_J, n_ticks, &s->params, d);
+    dw_step_env(&s->state[e], targets + (size_t)e * DW_J, n_ticks, &s->params,
+                s->scratch.data() + (size_t)e * DW_SCRATCH_FLOATS, d);
     if (d->status != DWC1_OK && rc == DWC1_OK) rc = (int)d->status;
   }
   return rc;
@@ -116,10 +120,55 @@ int dwc1_query(const dwc1_scene* s, dwc1_manifold* out) {
   return DWC1_OK;
 }
 
-int dwc1_reset(dwc1_scene* s, const uint8_t* mask) {
+int dwc1_reset_policy(dwc1_scene* s, const uint8_t* mask,
+                      const double* commands) {
   if (!s) return DWC1_INVALID;
+  if (commands && !std::all_of(commands, commands + s->E,
+                               [](double c) { return c == c; }))
+    return DWC1_INVALID;
   for (uint32_t e = 0; e < s->E; e++)
-    if (!mask || mask[e]) s->state[e] = s->initial[e];
+    if (!mask || mask[e])
+      dw_policy_reset_env(&s->state[e], &s->initial[e],
+                          commands ? commands + e : nullptr);
+  return DWC1_OK;
+}
+
+int dwc1_reset(dwc1_scene* s, const uint8_t* mask) {
+  return dwc1_reset_policy(s, mask, nullptr);
+}
+
+int dwc1_step_policy(dwc1_scene* s, const float* actions, uint32_t n_ticks,
+                     float* obs, float* reward, uint8_t* done,
+                     dwc1_diagnostic* diagnostics) {
+  if (!s || !actions || !obs || !reward || !done || !diagnostics
+      || n_ticks < 1 || n_ticks > 1000)
+    return DWC1_INVALID;
+  if (!dw_finite(actions, (int)s->E * DW_J)) return DWC1_INVALID;
+  for (uint32_t e = 0; e < s->E; e++) {
+    dwc1_diagnostic* d = &diagnostics[e];
+    *d = dwc1_diagnostic{};
+    d->environment = e;
+    dw_step_policy_env(&s->state[e], actions + (size_t)e * DW_J, n_ticks,
+                       &s->params,
+                       s->scratch.data() + (size_t)e * DW_SCRATCH_FLOATS,
+                       obs + (size_t)e * DWP_OBS, reward + e, done + e, d);
+  }
+  return DWC1_OK;  // per-env faults surface via diagnostics + done flags
+}
+
+int dwc1_observe(const dwc1_scene* s, float* obs) {
+  if (!s || !obs) return DWC1_INVALID;
+  for (uint32_t e = 0; e < s->E; e++)
+    dw_policy_observe(&s->state[e], obs + (size_t)e * DWP_OBS);
+  return DWC1_OK;
+}
+
+int dwc1_set_command(dwc1_scene* s, const double* commands) {
+  if (!s || !commands) return DWC1_INVALID;
+  for (uint32_t e = 0; e < s->E; e++) {
+    if (!(commands[e] == commands[e])) return DWC1_INVALID;  // NaN
+    s->state[e].command = commands[e];
+  }
   return DWC1_OK;
 }
 

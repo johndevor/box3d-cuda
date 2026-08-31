@@ -17,8 +17,11 @@ grows with simulated time and contact activity. The enforced gates:
 
 Also enforced: the generated duck_model.h matches a fresh regeneration from
 the pinned fixtures (drift test), bit-identical determinism between two
-scenes within one build, and FlatFloorDuckEnv holding home for 100 policy
-steps on the serial lane. The throughput test reports serial ticks/s per
+scenes within one build, FlatFloorDuckEnv holding home for 100 policy steps
+on the serial lane, and the device policy path (dwc1_step_policy: in-kernel
+obs + reward.py v6 + termination) matching FlatFloorDuckEnv side by side for
+200 policy steps within obs < 1e-4 / reward < 1e-3 / identical done flags
+(measured: bit-identical). The throughput test reports serial ticks/s per
 core (approximates per-thread GPU cost).
 """
 from __future__ import annotations
@@ -232,6 +235,54 @@ class SerialParityTests(unittest.TestCase):
             finally:
                 a.close()
                 b.close()
+
+    # -- device policy path vs the python env (obs/reward contract) --------------
+    def test_step_policy_matches_python_env(self):
+        # walk/env/flat.py + walk/env/reward.py are the contract: run
+        # FlatFloorDuckEnv (numpy f64 obs/reward over this same serial lane
+        # build) and dwc1_step_policy side by side for 200 deterministic
+        # policy steps with a masked reset in the middle. The device policy
+        # chain runs in f64 mirroring numpy operation for operation, so the
+        # physics trajectories are bit-identical and obs/reward/done should
+        # agree far inside the gates (obs < 1e-4, reward < 1e-3, done equal).
+        from walk.env.flat import FlatFloorDuckEnv
+        E = 4
+        env = FlatFloorDuckEnv(
+            environments=E, seed=0,
+            lane_factory=lambda n, off: CudaDuckLane(n, joint_offsets=off))
+        dev = CudaDuckLane(E)
+        try:
+            obs_py = env.reset()                # episode-2 command draws
+            dev.reset_policy(seed=0)            # episode 1
+            obs_dev = dev.reset_policy()        # episode 2
+            np.testing.assert_array_equal(obs_py, obs_dev, "reset observations")
+            self.assertTrue(np.array_equal(env.command.astype(np.float32),
+                                           obs_dev[:, 51]))
+            rng = np.random.default_rng(0)
+            worst_obs = worst_rew = 0.0
+            resets = 0
+            for t in range(200):
+                a = np.clip(rng.normal(0, 0.4, (E, 14)), -1, 1).astype(np.float32)
+                o_py, r_py, d_py, _info = env.step(a)
+                o_dev, r_dev, d_dev, diag = dev.step_policy(a)
+                self.assertEqual((diag["status"] != 0).sum(), 0, t)
+                worst_obs = max(worst_obs, float(np.abs(o_py - o_dev).max()))
+                worst_rew = max(worst_rew, float(np.abs(r_py - r_dev).max()))
+                np.testing.assert_array_equal(d_py, d_dev, f"done flags @ {t}")
+                if d_py.any() and resets < 3:   # trainer-style masked reset
+                    resets += 1
+                    o_py = env.reset(mask=d_py)
+                    o_dev = dev.reset_policy(mask=d_dev)
+                    self.assertLess(float(np.abs(o_py - o_dev).max()), 1e-4,
+                                    f"post-reset obs @ {t}")
+            self.assertGreater(resets, 0, "action sequence never terminated")
+            self.assertLess(worst_obs, 1e-4, "obs parity gate")
+            self.assertLess(worst_rew, 1e-3, "reward parity gate")
+            print(f"step_policy_parity obs={worst_obs:.3e} reward={worst_rew:.3e} "
+                  f"masked_resets={resets}", file=sys.stderr)
+        finally:
+            env.close()
+            dev.close()
 
     # -- determinism -------------------------------------------------------------
     def test_two_runs_bit_identical(self):

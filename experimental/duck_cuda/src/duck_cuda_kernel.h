@@ -43,6 +43,13 @@
 #define DW_APGD_BUDGET 65536u
 #endif
 
+// Per-env solver scratch (K matrix + response rows), sliced out of ONE global
+// buffer allocated at scene creation: keeping the two largest solver arrays
+// out of per-thread local memory roughly halves the occupancy footprint on
+// device (at E=4096 the hot K slices fit in the 5090's L2). The serial build
+// uses the identical layout from a heap vector; arithmetic is unchanged.
+#define DW_SCRATCH_FLOATS (DW_MAXROWS * DW_MAXROWS + DW_MAXROWS * DW_N)
+
 // ---------------------------------------------------------------- small math
 static DW_HD void dw_add3(const float* a, const float* b, float* o) {
   o[0] = a[0] + b[0]; o[1] = a[1] + b[1]; o[2] = a[2] + b[2];
@@ -112,6 +119,22 @@ typedef struct DwState {
   // (same predicate as the foot_contact read flag). Lets the reward's
   // flicker penalty read per-tick contact with ONE read per policy step.
   uint32_t contact_ticks[DW_PAIRS];
+  // ---- device policy layer (walk/env/flat.py + reward.py v6 contract) ----
+  // The policy chain runs in f64, mirroring the numpy env operation for
+  // operation: this makes the effective PD targets (and hence the physics
+  // trajectory) BIT-IDENTICAL to FlatFloorDuckEnv driving the same lane
+  // build, and the tracker/threshold comparisons decide identically. Cost:
+  // ~300 f64 ops per env per policy step vs ~1M f32 physics ops.
+  double targets[DW_J];        // persistent slew reference (pre-limit-clip)
+  double command;              // commanded forward velocity (m/s)
+  double v_avg, double_support;            // GaitTracker scalars
+  double air_time[2], stance_time[2];      // GaitTracker per foot (L, R)
+  double pre_swing_stance[2], opp_support[2], liftoff_x[2];
+  float prev_action[DW_J];        // obs[28:42] (updated only while live)
+  float prev_state_action[DW_J];  // reward action-rate reference (all envs)
+  int32_t last_foot;              // last qualified footfall (-1 none)
+  uint32_t t;                     // policy steps this episode
+  uint8_t done, prev_contact[2], policy_pad;
 } DwState;
 
 typedef struct DwParams {
@@ -505,12 +528,16 @@ static DW_HD bool dw_disk(float a, float b, float c, float fx, float fy,
 static DW_HD int dw_solve(const float L[DW_N][DW_N], const float M[DW_N][DW_N],
                           const float* smooth, const DwRows* rows,
                           float tolerance, uint32_t max_iterations,
+                          float* scratch /* [DW_SCRATCH_FLOATS] */,
                           float* vout, float* lambda_out,
                           dwc1_diagnostic* diag) {
   const int R = rows->R, C = rows->C;
   static_assert(DW_MAXROWS == DW_JROWS + 3 * DW_PAIRS * DW_MAXPOINTS, "rows");
-  float response[DW_MAXROWS][DW_N];
-  float K[DW_MAXROWS][DW_MAXROWS];
+  // Same fixed-stride layout the former local arrays had; only the storage
+  // moved (global scratch slice), so results stay bit-identical.
+  float (*K)[DW_MAXROWS] = (float (*)[DW_MAXROWS])scratch;
+  float (*response)[DW_N] =
+      (float (*)[DW_N])(scratch + DW_MAXROWS * DW_MAXROWS);
   float lambda[DW_MAXROWS], base[DW_MAXROWS], residual[DW_MAXROWS];
   if (R == 0) {
     for (int k = 0; k < DW_N; k++) vout[k] = smooth[k];
@@ -891,7 +918,8 @@ static DW_HD int dw_solve(const float L[DW_N][DW_N], const float M[DW_N][DW_N],
 // One 0.002 s step of one environment. On any failure the state is left
 // exactly as it was (per-env rollback); diag->status reports the failure.
 static DW_HD void dw_tick(DwState* s, const float* target,
-                          const DwParams* params, dwc1_diagnostic* diag) {
+                          const DwParams* params, float* scratch,
+                          dwc1_diagnostic* diag) {
   const float dt = DW_DT;
   diag->contact_points = 0;
   diag->active_limits = 0;
@@ -1012,7 +1040,7 @@ static DW_HD void dw_tick(DwState* s, const float* target,
   // dense coupled solve
   float vnew[DW_N], lambda[DW_MAXROWS];
   int rc = dw_solve(L, e.M, smooth, &rows, params->tolerance,
-                    params->max_iterations, vnew, lambda, diag);
+                    params->max_iterations, scratch, vnew, lambda, diag);
   if (rc != DWC1_OK) { diag->status = (uint32_t)rc; return; }
   // integrate (av1_integrate_root + hinge Euler), then commit atomically
   float qnew[DW_Q];
@@ -1065,11 +1093,12 @@ static DW_HD void dw_tick(DwState* s, const float* target,
 // last accepted tick) and keeps its failure diag. The per-foot contact tick
 // counters cover exactly this call's accepted ticks.
 static DW_HD void dw_step_env(DwState* s, const float* target, uint32_t n_ticks,
-                              const DwParams* params, dwc1_diagnostic* diag) {
+                              const DwParams* params, float* scratch,
+                              dwc1_diagnostic* diag) {
   diag->ticks = 0;
   for (int pair = 0; pair < DW_PAIRS; pair++) s->contact_ticks[pair] = 0;
   for (uint32_t t = 0; t < n_ticks; t++) {
-    dw_tick(s, target, params, diag);
+    dw_tick(s, target, params, scratch, diag);
     if (diag->status != DWC1_OK) return;
     diag->ticks++;
   }
@@ -1084,6 +1113,8 @@ static DW_HD void dw_init_state(DwState* s, const float* joint_offsets) {
     for (int j = 0; j < DW_J; j++)
       s->q[7 + j] = dw_clampf(s->q[7 + j] + joint_offsets[j],
                               DW_LIMIT_LOWER[j], DW_LIMIT_UPPER[j]);
+  for (int j = 0; j < DW_J; j++) s->targets[j] = DW_HOME_TARGETS_F64[j];
+  s->last_foot = -1;
 }
 
 // Light FK for reads: body poses and velocities only (no mass/bias/jacobian).
@@ -1153,6 +1184,253 @@ static DW_HD void dw_fill_info(uint32_t environments, dwc1_info* info) {
     // constant referenced so model drift in either is caught at compile time.
     (void)DW_HOME_TARGETS[j];
   }
+}
+
+// ==================== device policy layer ==================================
+// Verbatim f64 port of walk/env/flat.py (action->target slew chain,
+// 58-dim observation, termination) and walk/env/reward.py v6 (EMA velocity
+// tracking, alive, lateral/yaw, action-rate, torque, phase-gated qualified
+// steps with placement/opposite-support/stance gates, chatter, flicker via
+// the device contact-tick counters, clearance, phase-match, double-support,
+// alternation/same-foot). Those two files are the contract; the parity test
+// runs FlatFloorDuckEnv and this path side by side.
+#define DWP_OBS 58
+#define DWP_PI 3.141592653589793
+#define DWP_CONTROL_DT 0.02
+#define DWP_ACTION_SCALE 0.25
+#define DWP_MAX_TARGET_INCREMENT (5.24 * 0.02)   // flat.py f64 expression
+#define DWP_HORIZON 400u
+#define DWP_COS_MAX_TILT 0.70710678118654757     // tilt > 45deg  <=>  up < cos
+// reward.py v6 weights/constants (f64 literals identical to the python file)
+#define DWP_W_TRACK 1.0
+#define DWP_TRACK_SIGMA_SQ 0.01
+#define DWP_TRACK_EMA_COEF (0.02 / 0.4)          // dt / TRACK_EMA_S
+#define DWP_W_ALIVE 0.5
+#define DWP_W_LATERAL 0.5
+#define DWP_W_ACTION_RATE 0.01
+#define DWP_W_TORQUE 2e-4
+#define DWP_W_AIR_TIME 1.5
+#define DWP_AIR_TIME_MIN 0.08
+#define DWP_AIR_TIME_MAX 0.40
+#define DWP_PLACEMENT_MIN_M 0.030
+#define DWP_OPP_SUPPORT_FRAC 0.90
+#define DWP_W_CHATTER 0.2
+#define DWP_CHATTER_MAX_S 0.06
+#define DWP_W_FLICKER 0.3
+#define DWP_TICKS_FULL 10u
+#define DWP_STANCE_MIN_S 0.06
+#define DWP_W_CLEARANCE 0.1
+#define DWP_CLEARANCE_M 0.010
+#define DWP_W_DOUBLE_SUPPORT 0.5
+#define DWP_DOUBLE_SUPPORT_GRACE 0.25
+#define DWP_W_ALTERNATE 0.5
+#define DWP_W_SAME_FOOT 2.0
+#define DWP_W_PHASE 0.5
+
+// flat.py phase clock, exact numpy association: ((2.0*pi)*PHASE_HZ)*t*0.02.
+static DW_HD double dw_policy_phase(uint32_t t) {
+  return ((2.0 * DWP_PI) * 2.5) * (double)t * 0.02;
+}
+
+// native_lane.quat_to_rot in f64 (body->world rotation from xyzw quat).
+static DW_HD void dw_quat_rot_f64(const float* q, double R[3][3]) {
+  double x = q[0], y = q[1], z = q[2], w = q[3];
+  R[0][0] = 1.0 - 2.0 * (y * y + z * z);
+  R[0][1] = 2.0 * (x * y - z * w);
+  R[0][2] = 2.0 * (x * z + y * w);
+  R[1][0] = 2.0 * (x * y + z * w);
+  R[1][1] = 1.0 - 2.0 * (x * x + z * z);
+  R[1][2] = 2.0 * (y * z - x * w);
+  R[2][0] = 2.0 * (x * z - y * w);
+  R[2][1] = 2.0 * (y * z + x * w);
+  R[2][2] = 1.0 - 2.0 * (x * x + y * y);
+}
+
+// flat.py _observe(): the 58-dim observation at the CURRENT state (uses the
+// post-increment step counter, exactly like the python env).
+static DW_HD void dw_policy_observe(const DwState* s, float* obs) {
+  double R[3][3];
+  dw_quat_rot_f64(s->q + 3, R);
+  for (int j = 0; j < DW_J; j++) {
+    obs[j] = (float)((double)s->q[7 + j] - DW_HOME_TARGETS_F64[j]);
+    obs[14 + j] = (float)(0.05 * (double)s->v[6 + j]);
+    obs[28 + j] = s->prev_action[j];
+  }
+  for (int i = 0; i < 3; i++) {
+    obs[42 + i] = (float)(-R[2][i]);
+    double wv = 0, lv = 0;                      // einsum("eji,ej->ei"): R^T v
+    for (int j = 0; j < 3; j++) {
+      wv += R[j][i] * (double)s->v[3 + j];
+      lv += R[j][i] * (double)s->v[j];
+    }
+    obs[45 + i] = (float)wv;
+    obs[48 + i] = (float)lv;
+  }
+  obs[51] = (float)s->command;
+  obs[52] = 0.0f;
+  obs[53] = 0.0f;
+  obs[54] = s->cache[0].count > 0 ? 1.0f : 0.0f;
+  obs[55] = s->cache[1].count > 0 ? 1.0f : 0.0f;
+  double phase = dw_policy_phase(s->t);
+  obs[56] = (float)sin(phase);
+  obs[57] = (float)cos(phase);
+}
+
+// reward.py v6 reward(): updates the tracker fields in place (for every env,
+// live or done, exactly like the python env) and returns the f32 reward.
+// `a` is the clipped f64 action, `eff` the f64 effective targets (the torque
+// estimate uses the pre-cast f64 values like flat.py's _torque).
+static DW_HD float dw_policy_reward(DwState* s, const double* a,
+                                    const double* eff, const float sole[2],
+                                    const float foot_x[2]) {
+  const double dt = DWP_CONTROL_DT;
+  bool contact[2] = {s->cache[0].count > 0, s->cache[1].count > 0};
+  bool prevc[2] = {s->prev_contact[0] != 0, s->prev_contact[1] != 0};
+  double vx = (double)s->v[0], vy = (double)s->v[1], wz = (double)s->v[5];
+  // 1. EMA forward-velocity tracking
+  s->v_avg += DWP_TRACK_EMA_COEF * (vx - s->v_avg);
+  double d1 = s->v_avg - s->command;
+  double r = DWP_W_TRACK * exp(-(d1 * d1) / DWP_TRACK_SIGMA_SQ);
+  // 2. alive
+  r += DWP_W_ALIVE;
+  // 3. lateral / yaw
+  r -= DWP_W_LATERAL * (vy * vy + wz * wz);
+  // 4. action rate (vs the previous step's action, all-env memory)
+  double ar = 0;
+  for (int j = 0; j < DW_J; j++) {
+    double d = a[j] - (double)s->prev_state_action[j];
+    ar += d * d;
+  }
+  r -= DWP_W_ACTION_RATE * ar;
+  // 5. torque (boundary PD estimate at the post-step state)
+  double tq = 0;
+  for (int j = 0; j < DW_J; j++) {
+    double m = (double)DW_KP * (eff[j] - (double)s->q[7 + j])
+             - (double)DW_KV * (double)s->v[6 + j];
+    m = fmin((double)DW_EFFORT_CAP, fmax(-(double)DW_EFFORT_CAP, m));
+    tq += m * m;
+  }
+  r -= DWP_W_TORQUE * tq;
+  // 6. qualified steps (evaluator-mirroring gates) + chatter
+  double phase = dw_policy_phase(s->t);       // pre-increment step counter
+  bool stance_left = sin(phase) >= 0.0;
+  bool touchdown[2], liftoff[2], qualified[2];
+  int nq = 0, nchat = 0;
+  for (int f = 0; f < 2; f++) {
+    touchdown[f] = !prevc[f] && contact[f];
+    liftoff[f] = prevc[f] && !contact[f];
+    bool duration_ok = s->air_time[f] >= DWP_AIR_TIME_MIN
+                    && s->air_time[f] <= DWP_AIR_TIME_MAX;
+    bool placement_ok =
+        ((double)foot_x[f] - s->liftoff_x[f]) >= DWP_PLACEMENT_MIN_M;
+    bool opp_ok = s->opp_support[f]
+               >= DWP_OPP_SUPPORT_FRAC * fmax(s->air_time[f], dt);
+    bool stance_ok = s->pre_swing_stance[f] >= DWP_STANCE_MIN_S;
+    bool phase_ok = f == 0 ? stance_left : !stance_left;
+    qualified[f] = touchdown[f] && duration_ok && placement_ok && opp_ok
+                && stance_ok && phase_ok;
+    if (qualified[f]) nq++;
+    if (touchdown[f] && s->air_time[f] < DWP_CHATTER_MAX_S) nchat++;
+  }
+  r += DWP_W_AIR_TIME * nq;
+  r -= DWP_W_CHATTER * nchat;
+  // per-foot sequential updates (foot 0 then 1, exactly like the python loop:
+  // foot 1's alternation check sees foot 0's last_foot update)
+  for (int f = 0; f < 2; f++) {
+    if (qualified[f] && s->last_foot == 1 - f) r += DWP_W_ALTERNATE;
+    if (qualified[f] && s->last_foot == f) r -= DWP_W_SAME_FOOT;
+    if (qualified[f]) s->last_foot = f;
+    if (liftoff[f]) s->liftoff_x[f] = (double)foot_x[f];
+    if (liftoff[f]) s->opp_support[f] = 0.0;
+    if (!contact[f]) s->opp_support[f] += (contact[1 - f] ? 1.0 : 0.0) * dt;
+    if (liftoff[f]) s->pre_swing_stance[f] = s->stance_time[f];
+  }
+  for (int f = 0; f < 2; f++)
+    s->stance_time[f] = contact[f] ? s->stance_time[f] + dt : 0.0;
+  // 6c. flicker: stance at both boundaries but partial tick contact
+  int nflick = 0;
+  for (int f = 0; f < 2; f++)
+    if (prevc[f] && contact[f] && s->contact_ticks[f] < DWP_TICKS_FULL) nflick++;
+  r -= DWP_W_FLICKER * nflick;
+  for (int f = 0; f < 2; f++)
+    s->air_time[f] = contact[f] ? 0.0 : s->air_time[f] + dt;
+  // 7. clearance
+  int ncl = 0;
+  for (int f = 0; f < 2; f++)
+    if (!contact[f] && (double)sole[f] >= DWP_CLEARANCE_M) ncl++;
+  r += DWP_W_CLEARANCE * ncl;
+  // 8b. phase-locked stance while commanded
+  double match = (double)(contact[0] == stance_left)
+               + (double)(contact[1] == !stance_left);
+  if (fabs(s->command) > 0.0) r += DWP_W_PHASE * match;
+  // 8. double support beyond the grace while commanded
+  bool both = contact[0] && contact[1];
+  s->double_support = both ? s->double_support + dt : 0.0;
+  if (fabs(s->command) > 0.0 && s->double_support > DWP_DOUBLE_SUPPORT_GRACE)
+    r -= DWP_W_DOUBLE_SUPPORT;
+  return (float)r;
+}
+
+// flat.py step() on device: action -> slew-limited targets -> n_ticks physics
+// -> reward -> termination -> observation. A solver fault (flat.py raises
+// SolverFault) marks the environment done with its state frozen at the last
+// accepted tick; the diagnostic carries the failure.
+static DW_HD void dw_step_policy_env(DwState* s, const float* action,
+                                     uint32_t n_ticks, const DwParams* params,
+                                     float* scratch, float* obs,
+                                     float* reward_out, uint8_t* done_out,
+                                     dwc1_diagnostic* diag) {
+  const bool live = s->done == 0;
+  double a[DW_J], eff_d[DW_J];
+  float eff[DW_J];
+  for (int j = 0; j < DW_J; j++)
+    a[j] = fmin(1.0, fmax(-1.0, (double)action[j]));
+  if (live)
+    for (int j = 0; j < DW_J; j++) {
+      double requested = DW_HOME_TARGETS_F64[j] + DWP_ACTION_SCALE * a[j];
+      double lo = s->targets[j] - DWP_MAX_TARGET_INCREMENT;
+      double hi = s->targets[j] + DWP_MAX_TARGET_INCREMENT;
+      s->targets[j] = fmin(hi, fmax(lo, requested));
+    }
+  for (int j = 0; j < DW_J; j++) {
+    eff_d[j] = fmin((double)DW_LIMIT_UPPER[j],
+                    fmax((double)DW_LIMIT_LOWER[j], s->targets[j]));
+    eff[j] = (float)eff_d[j];
+  }
+  dw_step_env(s, eff, n_ticks, params, scratch, diag);
+  if (diag->status != DWC1_OK) s->done = 1;
+  float bodies[DW_B][13], sole[2];
+  dw_body_states(s->q, s->v, bodies);
+  dw_sole_heights(bodies, sole);
+  float foot_x[2] = {bodies[DW_PAIR_BODY_A[0]][0], bodies[DW_PAIR_BODY_A[1]][0]};
+  float r = dw_policy_reward(s, a, eff_d, sole, foot_x);
+  if (live) s->t += 1;
+  bool finite = dw_finite(s->q, DW_Q) && dw_finite(s->v, DW_N);
+  double up = 1.0 - 2.0 * ((double)s->q[3] * (double)s->q[3]
+                           + (double)s->q[4] * (double)s->q[4]);
+  bool fell = ((double)s->q[2] < 0.7 * (double)DW_INITIAL_QPOS[2])
+           || (up < DWP_COS_MAX_TILT) || !finite;
+  if (live && (fell || s->t >= DWP_HORIZON)) s->done = 1;
+  *reward_out = live ? r : 0.0f;
+  for (int j = 0; j < DW_J; j++) {
+    s->prev_state_action[j] = (float)a[j];         // all-env reward memory
+    if (live) s->prev_action[j] = (float)a[j];     // live-only obs memory
+  }
+  for (int p = 0; p < DW_PAIRS; p++)
+    s->prev_contact[p] = s->cache[p].count > 0 ? 1 : 0;
+  dw_policy_observe(s, obs);
+  *done_out = s->done;
+}
+
+// Masked policy reset: physics + policy/tracker state back to the creation
+// state; the command is taken from `command` (host resamples it exactly like
+// flat.py's counter-based _episode_rng, which is not reproducible in-kernel)
+// or kept when the caller passes none.
+static DW_HD void dw_policy_reset_env(DwState* s, const DwState* initial,
+                                      const double* command) {
+  double keep = s->command;
+  *s = *initial;
+  s->command = command ? *command : keep;
 }
 
 #endif  // DUCK_CUDA_KERNEL_H

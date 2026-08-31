@@ -27,7 +27,9 @@ extern "C" {
 // Bumped whenever an exported signature or output layout changes.
 // v2: dwc1_read gained the trailing contact_ticks output; dwc1_step now
 //     resets and accumulates per-foot contact tick counters.
-#define DWC1_ABI_VERSION 2
+// v3: device-side policy path (walk/env/flat.py + reward.py v6 in-kernel):
+//     dwc1_step_policy, dwc1_observe, dwc1_set_command, dwc1_reset_policy.
+#define DWC1_ABI_VERSION 3
 int dwc1_abi_version(void);
 
 enum {
@@ -98,6 +100,41 @@ int dwc1_read(const dwc1_scene*, float* qpos, float* velocity, float* warm,
               double* time, uint64_t* count, float* body_state,
               uint8_t* foot_contact, float* sole_height, dwc1_manifold* cache,
               uint32_t* contact_ticks);
+
+// ---- device-side policy path (obs + reward + termination in-kernel) -------
+// One policy step entirely on device: clip(actions,+-1) -> targets =
+// clip(HOME + 0.25*a, previous targets +- 0.1048) (persistent per-env slew
+// reference, frozen while done) -> joint-limit clip -> n_ticks physics ->
+// reward.py v6 (tracker state lives in the env state) -> termination (root
+// height < 0.7*home, tilt > 45 deg, nonfinite, 400-step horizon) -> 58-dim
+// observation. The policy chain runs in f64 mirroring the python env exactly
+// (walk/env/flat.py and walk/env/reward.py are the contract). Done
+// environments keep stepping physics with frozen targets, return reward 0
+// and stay done until reset (no auto-reset), like FlatFloorDuckEnv. A solver
+// fault (where the python env raises SolverFault) freezes the env at its
+// last accepted tick, marks it done and reports via its diagnostic; the call
+// still returns DWC1_OK so training batches survive per-env faults.
+//   actions [E,14] f32 in [-1,1]; obs [E,58] f32; reward [E] f32;
+//   done [E] u8; diagnostics [E].
+int dwc1_step_policy(dwc1_scene*, const float* actions, uint32_t n_ticks,
+                     float* obs, float* reward, uint8_t* done,
+                     dwc1_diagnostic* diagnostics);
+
+// The 58-dim observation of the current state (no stepping): what
+// FlatFloorDuckEnv.reset()/set_command() return.
+int dwc1_observe(const dwc1_scene*, float* obs /* [E,58] */);
+
+// Commanded forward velocity (m/s) for every env, f64 to match the python
+// command values exactly.
+int dwc1_set_command(dwc1_scene*, const double* commands /* [E] */);
+
+// Masked policy reset: physics AND policy/tracker state back to the creation
+// state; commands[e] (f64, [E]) is applied to selected envs -- the caller
+// resamples it like flat.py's _episode_rng (counter-based numpy PCG64, not
+// reproducible in-kernel; walk/env/cuda_lane.py implements the exact
+// sampling). NULL commands keeps each selected env's previous command.
+int dwc1_reset_policy(dwc1_scene*, const uint8_t* mask,
+                      const double* commands);
 
 // Current-pose contact geometry with zero impulses (mirrors bcv1_query).
 int dwc1_query(const dwc1_scene*, dwc1_manifold* out /* [E,2] */);
