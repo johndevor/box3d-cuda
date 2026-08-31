@@ -1,0 +1,106 @@
+// SPDX-License-Identifier: MIT
+// Batched fp32 duck worlds: one flat-floor Open Duck (plain-14) per lane,
+// E independent environments, one CUDA thread per environment (or a plain
+// loop in the serial parity build). The f64 CPU lane (integrated_duck_v1)
+// is the physics oracle.
+//
+// PARITY CONTRACT vs the f64 CPU lane (verified by tests/test_serial_parity.py)
+// -----------------------------------------------------------------------------
+// All state and arithmetic are float32; divergence from the f64 oracle grows
+// with simulated time and with contact activity. The gates are:
+//  (a) home-hold, 500 ticks (1 s): |root position - CPU| < 2 mm,
+//      tilt difference < 1 deg;
+//  (b) seeded random actions (clip 0.5, 10-tick holds), 300 ticks: bounded
+//      per-tick divergence, no NaN, unit quaternions, ground penetration
+//      <= 5 mm;
+//  (c) all recorded fault-corpus states step 10 ticks without fault/NaN.
+// Solver certificates are fp32-scaled: impulse tolerance 1e-6 (CPU: 1e-8),
+// momentum residual gate 2e-4 absolute (CPU: 1e-8). Determinism holds within
+// a build: identical inputs give bit-identical trajectories.
+#ifndef DUCK_CUDA_H
+#define DUCK_CUDA_H
+#include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+enum {
+  DWC1_OK = 0,
+  DWC1_INVALID = 1,
+  DWC1_DYNAMICS = 2,
+  DWC1_NO_CONVERGENCE = 3,
+  DWC1_ALLOCATION = 4,
+  DWC1_NUMERIC = 5
+};
+
+typedef struct dwc1_point {
+  uint64_t feature;
+  float point[3], depth, normal_impulse, tangent_impulse[2];
+} dwc1_point;
+
+typedef struct dwc1_manifold {
+  uint32_t count;
+  float normal[3], tangent1[3], tangent2[3];
+  dwc1_point points[4];
+} dwc1_manifold;
+
+// Mirrors idv1_diagnostic field-for-field where meaningful; float residuals.
+typedef struct dwc1_diagnostic {
+  uint32_t environment, status, iterations, contact_points, active_limits, ticks;
+  float joint_residual, normal_residual, tangent_residual, momentum_residual;
+  float maximum_normal_impulse, maximum_penetration;
+} dwc1_diagnostic;
+
+typedef struct dwc1_info {
+  uint32_t environments, bodies, joints, dofs;
+  float dt, kp, kv, effort_cap, home_root_height;
+  float home_qpos[21];            // root xyz + quat xyzw + 14 joint angles
+  float joint_lower[14], joint_upper[14];
+} dwc1_info;
+
+typedef struct dwc1_scene dwc1_scene;
+
+// joint_offsets: optional [E,14] perturbations added to the home joint pose
+// (clipped to the joint limits), matching NativeDuckLane(joint_offsets=...).
+int dwc1_create(uint32_t environments, const float* joint_offsets,
+                dwc1_scene** out);
+void dwc1_destroy(dwc1_scene*);
+int dwc1_info_get(const dwc1_scene*, dwc1_info*);
+
+// Hold `targets` [E,14] for n_ticks ticks of 0.002 s. The PD torque is
+// recomputed every tick from the current q/qdot exactly like the CPU lane:
+// clip(kp*(clip(target,limits)-q) - kv*qdot, +-cap). An environment whose
+// solve fails keeps its pre-tick state, freezes for the remaining ticks and
+// reports the failure in its diagnostic; other environments are unaffected.
+// Returns DWC1_OK when every environment completed all ticks.
+int dwc1_step(dwc1_scene*, const float* targets, uint32_t n_ticks,
+              dwc1_diagnostic* diagnostics /* [E] */);
+
+// All outputs optional (NULL skips). Host copies; the CUDA build keeps the
+// authoritative state resident on the device and copies once per call.
+//   qpos [E,21], velocity [E,20], warm [E,42], time [E] (seconds, count*dt),
+//   count [E], body_state [E,16,13] (p3 q_xyzw4 v3 omega3, principal COM),
+//   foot_contact [E,2] (solve-cache manifold count > 0; left, right),
+//   sole_height [E,2] (min world z over the 18 sole vertices), cache [E,2].
+int dwc1_read(const dwc1_scene*, float* qpos, float* velocity, float* warm,
+              double* time, uint64_t* count, float* body_state,
+              uint8_t* foot_contact, float* sole_height, dwc1_manifold* cache);
+
+// Current-pose contact geometry with zero impulses (mirrors bcv1_query).
+int dwc1_query(const dwc1_scene*, dwc1_manifold* out /* [E,2] */);
+
+// NULL mask selects all; any nonzero byte selects. Restores the creation
+// state (including per-env joint offsets), zero warm start, empty cache.
+int dwc1_reset(dwc1_scene*, const uint8_t* mask);
+
+// Full single-env state injection (fault-corpus replay / forensics).
+// warm42 is the CPU lane layout: friction rows [0,14), lower [14,28),
+// upper [28,42). cache2 may be NULL (empty cache). Quaternion is normalized.
+int dwc1_set_state(dwc1_scene*, uint32_t environment, const float* qpos21,
+                   const float* velocity20, const float* warm42,
+                   const dwc1_manifold* cache2, uint64_t count);
+
+#ifdef __cplusplus
+}
+#endif
+#endif
