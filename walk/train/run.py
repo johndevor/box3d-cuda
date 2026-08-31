@@ -33,6 +33,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from walk.env.contract import SolverFault
+
 from walk.train.ppo import PPOConfig, compute_gae, make_nets, ppo_update
 from walk.train.vec import VecEnv, derive_seed, load_factory
 
@@ -355,13 +357,24 @@ def train(cfg: TrainConfig) -> list[dict]:
                     )
 
                 if cfg.eval_every > 0 and u % cfg.eval_every == 0:
-                    ev = evaluate(eval_env, actor, cfg.eval_steps, derive_seed(cfg.seed, 0xE7A1, u))
-                    ev_line = {"kind": "eval", "update": u, **ev}
+                    # The held-out env hits the same native solver as workers; a
+                    # fault must skip this eval pass, not kill the training run.
+                    try:
+                        ev = evaluate(eval_env, actor, cfg.eval_steps, derive_seed(cfg.seed, 0xE7A1, u))
+                    except SolverFault as fault:
+                        ev = None
+                        ev_line = {"kind": "eval", "update": u, "skipped": "solver_fault",
+                                   "fault": str(fault)}
+                        eval_env.reset(seed=derive_seed(cfg.seed, 0xE7A2, u))
+                    else:
+                        ev_line = {"kind": "eval", "update": u, **ev}
                     mf.write(json.dumps(ev_line) + "\n")
                     mf.flush()
                     metrics.append(ev_line)
-                    if not cfg.quiet:
+                    if not cfg.quiet and ev is not None:
                         print(f"[eval u{u}] return={ev['eval_return_mean']:+.4f} len={ev['eval_len_mean']:.1f}")
+                    elif not cfg.quiet:
+                        print(f"[eval u{u}] skipped: solver fault")
 
                 if u % cfg.checkpoint_every == 0 or u == cfg.updates:
                     ck = out / f"ckpt_{u:06d}.pt"
