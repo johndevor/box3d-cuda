@@ -166,6 +166,73 @@ class SerialParityTests(unittest.TestCase):
         finally:
             lane.close()
 
+    # -- fast path: one dwc1_step call per policy step ---------------------------
+    def test_tick_block_bit_identical_to_tick_loop(self):
+        # tick_block(t, 10) must produce exactly the state of 10x tick(t):
+        # dwc1_step loops ticks inside one call (one kernel launch on device),
+        # so the arithmetic per tick is the same code path either way.
+        a, b = CudaDuckLane(2), CudaDuckLane(2)
+        try:
+            targets = _random_targets(a, 12, seed=21)
+            for s in range(12):
+                batch = np.tile(targets[s], (2, 1))
+                rc, diag = a.tick_block(batch, 10)
+                self.assertEqual(rc, 0, (s, diag))
+                self.assertTrue(all(d["ticks"] == 10 for d in diag))
+                for _ in range(10):
+                    self.assertEqual(b.tick(batch)[0], 0, s)
+            sa, sb = a.read(), b.read()
+            for name in ["q", "v", "body_state", "sole_height", "foot_contact",
+                         "count"]:
+                self.assertEqual(getattr(sa, name).tobytes(),
+                                 getattr(sb, name).tobytes(), name)
+            for e in range(2):
+                da, db = a.state_dump(e), b.state_dump(e)
+                # contact_ticks legitimately differ: the block call counted
+                # all 10 ticks, the loop lane's counter covers only its most
+                # recent 1-tick step call. Everything else is bit-identical.
+                da.pop("contact_ticks")
+                db.pop("contact_ticks")
+                self.assertEqual(json.dumps(da, sort_keys=True),
+                                 json.dumps(db, sort_keys=True), e)
+        finally:
+            a.close()
+            b.close()
+
+    def test_contact_ticks_match_per_tick_accumulation(self):
+        # read().contact_ticks after tick_block(t, 10) must equal what the
+        # slow path accumulates by reading foot_contact after every tick.
+        # Covers the settling phase (feet start above the floor: partial
+        # counts), steady standing (10/10), and a random-action sequence.
+        for seed, label in [(None, "home_hold"), (99, "random_action")]:
+            a, b = CudaDuckLane(3), CudaDuckLane(3)
+            try:
+                if seed is None:
+                    targets = np.tile(a.home_joint_q, (20, 1))
+                else:
+                    targets = _random_targets(a, 20, seed=seed)
+                saw_partial = saw_full = False
+                for s in range(20):
+                    batch = np.tile(targets[s], (3, 1))
+                    rc, diag = a.tick_block(batch, 10)
+                    self.assertEqual(rc, 0, (label, s, diag))
+                    accumulated = np.zeros((3, 2), np.int32)
+                    for _ in range(10):
+                        self.assertEqual(b.tick(batch)[0], 0, (label, s))
+                        accumulated += b.read().foot_contact
+                    ticks = a.read().contact_ticks
+                    np.testing.assert_array_equal(ticks, accumulated,
+                                                  f"{label} step {s}")
+                    saw_partial |= bool((ticks % 10 != 0).any())
+                    saw_full |= bool((ticks == 10).any())
+                self.assertTrue(saw_full, label)
+                if label == "home_hold":
+                    self.assertTrue(saw_partial,
+                                    "settling should yield partial counts")
+            finally:
+                a.close()
+                b.close()
+
     # -- determinism -------------------------------------------------------------
     def test_two_runs_bit_identical(self):
         a, b = CudaDuckLane(2), CudaDuckLane(2)

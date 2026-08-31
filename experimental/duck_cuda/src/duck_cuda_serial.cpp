@@ -19,6 +19,8 @@ struct dwc1_scene {
 
 extern "C" {
 
+int dwc1_abi_version(void) { return DWC1_ABI_VERSION; }
+
 int dwc1_create(uint32_t environments, const float* joint_offsets,
                 dwc1_scene** out) {
   if (!out || environments < 1 || environments > 65536) return DWC1_INVALID;
@@ -69,10 +71,14 @@ int dwc1_step(dwc1_scene* s, const float* targets, uint32_t n_ticks,
 
 int dwc1_read(const dwc1_scene* s, float* qpos, float* velocity, float* warm,
               double* time, uint64_t* count, float* body_state,
-              uint8_t* foot_contact, float* sole_height, dwc1_manifold* cache) {
+              uint8_t* foot_contact, float* sole_height, dwc1_manifold* cache,
+              uint32_t* contact_ticks) {
   if (!s) return DWC1_INVALID;
   for (uint32_t e = 0; e < s->E; e++) {
     const DwState* x = &s->state[e];
+    if (contact_ticks)
+      for (int p = 0; p < DW_PAIRS; p++)
+        contact_ticks[(size_t)e * DW_PAIRS + p] = x->contact_ticks[p];
     if (qpos) for (int k = 0; k < DW_Q; k++) qpos[(size_t)e * DW_Q + k] = x->q[k];
     if (velocity) for (int k = 0; k < DW_N; k++) velocity[(size_t)e * DW_N + k] = x->v[k];
     if (warm) for (int k = 0; k < DW_JROWS; k++) warm[(size_t)e * DW_JROWS + k] = x->warm[k];

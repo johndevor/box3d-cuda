@@ -24,6 +24,12 @@
 extern "C" {
 #endif
 
+// Bumped whenever an exported signature or output layout changes.
+// v2: dwc1_read gained the trailing contact_ticks output; dwc1_step now
+//     resets and accumulates per-foot contact tick counters.
+#define DWC1_ABI_VERSION 2
+int dwc1_abi_version(void);
+
 enum {
   DWC1_OK = 0,
   DWC1_INVALID = 1,
@@ -67,11 +73,15 @@ int dwc1_create(uint32_t environments, const float* joint_offsets,
 void dwc1_destroy(dwc1_scene*);
 int dwc1_info_get(const dwc1_scene*, dwc1_info*);
 
-// Hold `targets` [E,14] for n_ticks ticks of 0.002 s. The PD torque is
-// recomputed every tick from the current q/qdot exactly like the CPU lane:
-// clip(kp*(clip(target,limits)-q) - kv*qdot, +-cap). An environment whose
-// solve fails keeps its pre-tick state, freezes for the remaining ticks and
-// reports the failure in its diagnostic; other environments are unaffected.
+// Hold `targets` [E,14] for n_ticks ticks of 0.002 s, all inside ONE device
+// kernel launch. The PD torque is recomputed every tick from the current
+// q/qdot exactly like the CPU lane: clip(kp*(clip(target,limits)-q) -
+// kv*qdot, +-cap). An environment whose solve fails keeps its pre-tick
+// state, freezes for the remaining ticks and reports the failure in its
+// diagnostic; other environments are unaffected. Per-foot contact tick
+// counters are zeroed at the start of the call and incremented once per
+// accepted tick whose solve manifold has contact points, so one dwc1_read
+// after the call replaces a per-tick read loop.
 // Returns DWC1_OK when every environment completed all ticks.
 int dwc1_step(dwc1_scene*, const float* targets, uint32_t n_ticks,
               dwc1_diagnostic* diagnostics /* [E] */);
@@ -81,10 +91,13 @@ int dwc1_step(dwc1_scene*, const float* targets, uint32_t n_ticks,
 //   qpos [E,21], velocity [E,20], warm [E,42], time [E] (seconds, count*dt),
 //   count [E], body_state [E,16,13] (p3 q_xyzw4 v3 omega3, principal COM),
 //   foot_contact [E,2] (solve-cache manifold count > 0; left, right),
-//   sole_height [E,2] (min world z over the 18 sole vertices), cache [E,2].
+//   sole_height [E,2] (min world z over the 18 sole vertices), cache [E,2],
+//   contact_ticks [E,2] (per-foot accepted contact ticks of the most recent
+//   dwc1_step call; left, right).
 int dwc1_read(const dwc1_scene*, float* qpos, float* velocity, float* warm,
               double* time, uint64_t* count, float* body_state,
-              uint8_t* foot_contact, float* sole_height, dwc1_manifold* cache);
+              uint8_t* foot_contact, float* sole_height, dwc1_manifold* cache,
+              uint32_t* contact_ticks);
 
 // Current-pose contact geometry with zero impulses (mirrors bcv1_query).
 int dwc1_query(const dwc1_scene*, dwc1_manifold* out /* [E,2] */);

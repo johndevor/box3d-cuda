@@ -107,6 +107,11 @@ typedef struct DwState {
   float warm[DW_JROWS];        // joint warm forces: friction/lower/upper slots
   dwc1_manifold cache[DW_PAIRS];  // previous solve manifolds (warm start)
   uint64_t count;              // accepted ticks
+  // Per-foot contact tick counters: zeroed at the start of every dwc1_step
+  // call, +1 per accepted tick whose solve manifold has contact points
+  // (same predicate as the foot_contact read flag). Lets the reward's
+  // flicker penalty read per-tick contact with ONE read per policy step.
+  uint32_t contact_ticks[DW_PAIRS];
 } DwState;
 
 typedef struct DwParams {
@@ -1047,16 +1052,22 @@ static DW_HD void dw_tick(DwState* s, const float* target,
   for (int k = 0; k < DW_Q; k++) s->q[k] = qnew[k];
   for (int k = 0; k < DW_N; k++) s->v[k] = vnew[k];
   for (int k = 0; k < DW_JROWS; k++) s->warm[k] = warmnew[k];
-  for (int pair = 0; pair < DW_PAIRS; pair++) s->cache[pair] = manifolds[pair];
+  for (int pair = 0; pair < DW_PAIRS; pair++) {
+    s->cache[pair] = manifolds[pair];
+    if (manifolds[pair].count > 0) s->contact_ticks[pair]++;
+  }
   s->count++;
   diag->status = DWC1_OK;
 }
 
-// n_ticks with the targets held; a failing environment freezes (state and
-// cache untouched from its last accepted tick) and keeps its failure diag.
+// n_ticks with the targets held, all inside ONE call (one kernel launch on
+// device): a failing environment freezes (state and cache untouched from its
+// last accepted tick) and keeps its failure diag. The per-foot contact tick
+// counters cover exactly this call's accepted ticks.
 static DW_HD void dw_step_env(DwState* s, const float* target, uint32_t n_ticks,
                               const DwParams* params, dwc1_diagnostic* diag) {
   diag->ticks = 0;
+  for (int pair = 0; pair < DW_PAIRS; pair++) s->contact_ticks[pair] = 0;
   for (uint32_t t = 0; t < n_ticks; t++) {
     dw_tick(s, target, params, diag);
     if (diag->status != DWC1_OK) return;

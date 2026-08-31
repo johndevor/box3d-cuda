@@ -11,6 +11,20 @@ NativeDuckLane, so FlatFloorDuckEnv(lane_factory=...) runs unchanged on it:
     lane.state_dump(e)   -> JSON-serialisable full state of env e
     lane.close()
 
+Fast path beyond the documented protocol (native_lane.py documents no
+optional fast-path convention, so the names below are the convention):
+
+    lane.tick_block(targets, n_ticks) -> (rc, diagnostics per env)
+        ONE dwc1_step call = one device kernel launch covering all n_ticks
+        (PD recomputed per tick from current q/qdot, targets held), and
+    lane.read().contact_ticks  (CudaLaneState, [E, 2] int32)
+        per-foot count of accepted contact ticks during the most recent
+        step call -- the per-tick foot-contact accumulation the reward's
+        flicker penalty needs, without a device->host read per tick.
+
+    With the env stepping via tick_block(targets, 10) + one read(), a policy
+    step costs 1 kernel launch + 1 state readback instead of 10 + 10.
+
 Locally this loads the SERIAL build (libduck_cuda_serial.dylib, plain clang++,
 one env per loop iteration) compiled from the identical physics header the
 real CUDA driver uses; remotely the same wrapper loads libduck_cuda.so built
@@ -22,6 +36,7 @@ experimental/duck_cuda/tests/test_serial_parity.py.
 from __future__ import annotations
 
 import ctypes as C
+import dataclasses
 import hashlib
 import os
 import shutil
@@ -32,6 +47,14 @@ from pathlib import Path
 import numpy as np
 
 from .native_lane import LaneState
+
+ABI_VERSION = 2  # must match DWC1_ABI_VERSION in duck_cuda.h
+
+
+@dataclasses.dataclass
+class CudaLaneState(LaneState):
+    """LaneState plus the per-foot contact tick counters of the last step."""
+    contact_ticks: np.ndarray = None  # [E, 2] int32, (left, right)
 
 ROOT = Path(__file__).resolve().parents[2]
 DUCK_CUDA = ROOT / "experimental" / "duck_cuda"
@@ -55,6 +78,7 @@ FOOT_BODIES = (LEFT_FOOT_BODY, RIGHT_FOOT_BODY)
 F = C.c_float
 FP = C.POINTER(F)
 U8P = C.POINTER(C.c_uint8)
+U32P = C.POINTER(C.c_uint32)
 U64P = C.POINTER(C.c_uint64)
 DP = C.POINTER(C.c_double)
 
@@ -120,7 +144,8 @@ def load_library(path: Path):
         "dwc1_info_get": [C.c_void_p, C.POINTER(Info)],
         "dwc1_step": [C.c_void_p, FP, C.c_uint32, C.POINTER(Diagnostic)],
         "dwc1_read": [C.c_void_p, FP, FP, FP, DP, U64P, FP, U8P, FP,
-                      C.POINTER(Manifold)],
+                      C.POINTER(Manifold), U32P],
+        "dwc1_abi_version": [],
         "dwc1_reset": [C.c_void_p, U8P],
         "dwc1_set_state": [C.c_void_p, C.c_uint32, FP, FP, FP,
                            C.POINTER(Manifold), C.c_uint64],
@@ -155,6 +180,11 @@ class CudaDuckLane:
         path = library_path or os.environ.get("DUCK_CUDA_LIBRARY")
         self.library_path = Path(path) if path else build_library()
         self._lib = load_library(self.library_path)
+        abi = int(self._lib.dwc1_abi_version())
+        if abi != ABI_VERSION:
+            raise RuntimeError(
+                f"{self.library_path} exports dwc1 ABI v{abi}; "
+                f"this wrapper requires v{ABI_VERSION} (rebuild the library)")
         self.E = int(environments)
         self.J, self.B, self.P = J, B, P
         offsets = None
@@ -182,11 +212,16 @@ class CudaDuckLane:
         self.effort_cap = float(info.effort_cap)
 
     # -- stepping ----------------------------------------------------------
-    def tick(self, targets: np.ndarray):
-        """One 0.002 s tick of all E envs; returns (rc, diagnostics dicts)."""
+    def tick_block(self, targets: np.ndarray, n_ticks: int):
+        """n_ticks 0.002 s ticks of all E envs holding `targets`, in ONE
+        dwc1_step call (one device kernel launch); (rc, diagnostics dicts).
+
+        Per-foot contact tick counters (read().contact_ticks) are zeroed at
+        the start of the call and count this call's accepted contact ticks.
+        """
         t = np.ascontiguousarray(targets, dtype=np.float32).reshape(self.E, J)
         diag = (Diagnostic * self.E)()
-        rc = self._lib.dwc1_step(self._h, _fp(t), 1, diag)
+        rc = self._lib.dwc1_step(self._h, _fp(t), int(n_ticks), diag)
         out = []
         for d in diag:
             row = {name: getattr(d, name) for name, _ in Diagnostic._fields_}
@@ -195,8 +230,12 @@ class CudaDuckLane:
             out.append(row)
         return rc, out
 
+    def tick(self, targets: np.ndarray):
+        """One 0.002 s tick of all E envs; returns (rc, diagnostics dicts)."""
+        return self.tick_block(targets, 1)
+
     # -- reads --------------------------------------------------------------
-    def read(self) -> LaneState:
+    def read(self) -> CudaLaneState:
         q = np.zeros((self.E, Q), np.float32)
         v = np.zeros((self.E, N), np.float32)
         t = np.zeros(self.E, np.float64)
@@ -204,19 +243,22 @@ class CudaDuckLane:
         body = np.zeros((self.E, B, 13), np.float32)
         contact = np.zeros((self.E, P), np.uint8)
         sole = np.zeros((self.E, P), np.float32)
+        ticks = np.zeros((self.E, P), np.uint32)
         rc = self._lib.dwc1_read(
             self._h, _fp(q), _fp(v), None, t.ctypes.data_as(DP),
             count.ctypes.data_as(U64P), _fp(body),
-            contact.ctypes.data_as(U8P), _fp(sole), None)
+            contact.ctypes.data_as(U8P), _fp(sole), None,
+            ticks.ctypes.data_as(U32P))
         if rc:
             raise RuntimeError(f"dwc1_read status={rc}")
         feet = body[:, list(FOOT_BODIES), :].astype(np.float64)
-        return LaneState(q=q.astype(np.float64), v=v.astype(np.float64),
-                         time=t, count=count,
-                         body_state=body.astype(np.float64),
-                         foot_contact=contact.astype(bool),
-                         foot_pos=feet[:, :, :3].copy(),
-                         sole_height=sole.astype(np.float64))
+        return CudaLaneState(q=q.astype(np.float64), v=v.astype(np.float64),
+                             time=t, count=count,
+                             body_state=body.astype(np.float64),
+                             foot_contact=contact.astype(bool),
+                             foot_pos=feet[:, :, :3].copy(),
+                             sole_height=sole.astype(np.float64),
+                             contact_ticks=ticks.astype(np.int32))
 
     # -- snapshot / reset ----------------------------------------------------
     def restore(self, mask: np.ndarray | None = None) -> None:
@@ -265,11 +307,13 @@ class CudaDuckLane:
         t = np.zeros(self.E, np.float64)
         count = np.zeros(self.E, np.uint64)
         body = np.zeros((self.E, B, 13), np.float32)
+        ticks = np.zeros((self.E, P), np.uint32)
         cache = (Manifold * (self.E * P))()
         rc = self._lib.dwc1_read(self._h, _fp(q), _fp(v), _fp(w),
                                  t.ctypes.data_as(DP),
                                  count.ctypes.data_as(U64P), _fp(body),
-                                 None, None, cache)
+                                 None, None, cache,
+                                 ticks.ctypes.data_as(U32P))
         if rc:
             raise RuntimeError(f"dwc1_read status={rc}")
         geometry = (Manifold * (self.E * P))()
@@ -281,6 +325,7 @@ class CudaDuckLane:
             "velocity": v[e].astype(float).tolist(),
             "warm_force": w[e].astype(float).tolist(),
             "time_s": float(t[e]), "step_count": int(count[e]),
+            "contact_ticks": [int(x) for x in ticks[e]],
             "bodies": [[float(x) for x in body[e, b]] for b in range(B)],
             "pre_contact_cache": [_manifold_json(cache[e * P + p])
                                   for p in range(P)],

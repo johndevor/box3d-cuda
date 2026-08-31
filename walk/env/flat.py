@@ -155,18 +155,29 @@ class FlatFloorDuckEnv(DuckEnvBatch):
         # per-tick foot contact: 2 ms flickers are invisible at the 20 ms
         # policy boundary, but the evaluator's 40 ms continuity windows see
         # them; the reward needs the tick-resolution count to shape them away.
-        contact_ticks = np.zeros((self.E, 2), np.int32)
-        for tick in range(TICKS_PER_STEP):
-            rc, diagnostics = self._lane.tick(self._effective)
+        # Lanes with a native tick_block (CUDA) count contact ticks on device:
+        # one launch + one readback per policy step instead of ten.
+        if on_tick is None and hasattr(self._lane, "tick_block"):
+            rc, diagnostics = self._lane.tick_block(self._effective, TICKS_PER_STEP)
             bad = [d for d in diagnostics if d["native_status"] != 0]
             if rc or bad:
-                self._raise_fault(rc, diagnostics, bad, tick, a)
-            iterations = np.maximum(iterations,
-                                    [d["iterations"] for d in diagnostics])
+                self._raise_fault(rc, diagnostics, bad, 0, a)
+            iterations = np.asarray([d["iterations"] for d in diagnostics], np.int32)
             mid = self._lane.read()
-            contact_ticks += mid.foot_contact
-            if on_tick is not None:
-                on_tick(mid)
+            contact_ticks = np.asarray(mid.contact_ticks, np.int32).copy()
+        else:
+            contact_ticks = np.zeros((self.E, 2), np.int32)
+            for tick in range(TICKS_PER_STEP):
+                rc, diagnostics = self._lane.tick(self._effective)
+                bad = [d for d in diagnostics if d["native_status"] != 0]
+                if rc or bad:
+                    self._raise_fault(rc, diagnostics, bad, tick, a)
+                iterations = np.maximum(iterations,
+                                        [d["iterations"] for d in diagnostics])
+                mid = self._lane.read()
+                contact_ticks += mid.foot_contact
+                if on_tick is not None:
+                    on_tick(mid)
 
         state = mid
         finite = state.finite()
