@@ -46,9 +46,10 @@ CLEARANCE_M = 0.010      # matches the strict evaluator's sole-clearance bound.
 W_DOUBLE_SUPPORT = 0.5   # penalty per step once both feet stay grounded too long.
 DOUBLE_SUPPORT_GRACE = 0.25  # s of continuous double support tolerated at |cmd|>0.
 W_ALTERNATE = 0.5        # extra bonus when a qualified touchdown switches feet.
-W_SAME_FOOT = 0.5        # penalty when a qualified touchdown REPEATS the last
-                         # foot: at u2000 both feet stepped but double-steps
-                         # (L,L,R,R,...) were free and broke strict alternation.
+W_SAME_FOOT = 2.0        # penalty when a qualified touchdown REPEATS the last
+                         # foot. At 0.5 a repeat still netted +1.0 with the step
+                         # bonus (u2400: symmetric gait, repeats persisted); at
+                         # 2.0 a repeat nets -0.5 vs +2.0 for alternating.
 W_PHASE = 0.3            # per foot whose stance matches the observed 1.25 Hz
                          # phase clock (left: sin>=0, right: sin<0); breaks the
                          # one-legged-limp optimum where alternation never fires.
