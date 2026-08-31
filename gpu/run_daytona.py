@@ -327,7 +327,9 @@ class DaytonaProvider:
             ),
             spot=spec.resources.spot,
             ttl_minutes=spec.resources.ttl_minutes,
-            auto_delete_interval=spec.resources.ttl_minutes,
+            # provider requires GPU sandboxes to be ephemeral: 0 = delete on stop;
+            # ttl_minutes remains the hard wall bound
+            auto_delete_interval=0,
             labels=dict(LAUNCHER_LABEL, spec=spec.name),
         )
         try:
