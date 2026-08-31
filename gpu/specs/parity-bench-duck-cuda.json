@@ -23,7 +23,7 @@
     },
     {
       "name": "serial-build",
-      "command": "set -o pipefail; g++ -std=c++17 -O2 -fPIC -shared -Iexperimental/duck_cuda/include experimental/duck_cuda/src/duck_cuda_serial.cpp -o libduck_cuda_serial.so 2>&1 | tee serial-build.log",
+      "command": "set -o pipefail; g++ -std=c++17 -O2 -ffp-contract=off -fPIC -shared -Iexperimental/duck_cuda/include experimental/duck_cuda/src/duck_cuda_serial.cpp -o libduck_cuda_serial.so 2>&1 | tee serial-build.log",
       "timeout_s": 300,
       "artifacts": [
         "serial-build.log"

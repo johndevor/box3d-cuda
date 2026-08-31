@@ -46,12 +46,29 @@ def main():
     rng = np.random.default_rng(917)
     acts = [np.zeros(14)] * 500 + list(np.clip(rng.normal(0, 0.5, (300, 14)), -1, 1))
 
-    sg = run(gpu, acts)
-    ss = run(ser, acts)
-    dq = max(float(np.abs(a.q - b.q).max()) for a, b in zip(sg, ss))
-    dv = max(float(np.abs(a.v - b.v).max()) for a, b in zip(sg, ss))
-    gate("gpu_vs_serial_max_q_diff", dq, 1e-3)
-    gate("gpu_vs_serial_max_v_diff", dv, 5e-2)
+    # Windowed numerics gate: chaotic contact dynamics amplify fp32 rounding
+    # exponentially, so free-running long-horizon agreement is not a numerics
+    # test. Every WINDOW ticks both lanes are resynced to the serial state
+    # (zeroed warm start on both sides) and per-window drift is bounded.
+    WINDOW = 100
+    wq = wv = 0.0
+    sg = []
+    for w0 in range(0, len(acts), WINDOW):
+        chunk = acts[w0:w0 + WINDOW]
+        s_states = run(ser, chunk)
+        g_states = run(gpu, chunk)
+        sg.extend(g_states)
+        wq = max(wq, max(float(np.abs(a.q - b.q).max())
+                         for a, b in zip(g_states, s_states)))
+        wv = max(wv, max(float(np.abs(a.v - b.v).max())
+                         for a, b in zip(g_states, s_states)))
+        sync = s_states[-1]
+        zero_w = np.zeros(42, np.float32)
+        for e in range(E):
+            ser.set_state(e, sync.q[e], sync.v[e], zero_w)
+            gpu.set_state(e, sync.q[e], sync.v[e], zero_w)
+    gate("windowed_max_q_diff_100t", wq, 2e-4)
+    gate("windowed_max_v_diff_100t", wv, 2e-2)
     pen = max(float((-s.sole_height).max(initial=0.0)) for s in sg)
     gate("gpu_max_penetration_m", pen, 5e-3)
     finite = all(bool(s.finite().all()) for s in sg)
@@ -59,11 +76,11 @@ def main():
     if not finite:
         FAIL.append("gpu_all_finite")
 
-    # determinism: second GPU run bit-identical
-    gpu2 = CudaDuckLane(E, library_path=os.environ["DUCK_CUDA_LIBRARY"])
-    sg2 = run(gpu2, acts)
+    # determinism: two fresh free-running GPU lanes must agree bit-for-bit
+    ga = run(CudaDuckLane(E, library_path=os.environ["DUCK_CUDA_LIBRARY"]), acts)
+    gb = run(CudaDuckLane(E, library_path=os.environ["DUCK_CUDA_LIBRARY"]), acts)
     det = all(np.array_equal(a.q, b.q) and np.array_equal(a.v, b.v)
-              for a, b in zip(sg, sg2))
+              for a, b in zip(ga, gb))
     GATES["gpu_determinism_bitwise"] = {"pass": bool(det)}
     if not det:
         FAIL.append("gpu_determinism_bitwise")
