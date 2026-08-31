@@ -256,7 +256,10 @@ def train(cfg: TrainConfig) -> list[dict]:
     # Held-out env instance in the learner process, for preflight + eval.
     eval_env = None
     if (cfg.preflight_steps > 0 and not cfg.resume) or cfg.eval_every > 0:
-        eval_kwargs = dict(cfg.env_kwargs)
+        # The held-out instance takes the worker slot one past the fleet so
+        # "$WORKER"-seeded envs never share a stream with training shards.
+        eval_kwargs = {k: (cfg.workers if v == "$WORKER" else v)
+                       for k, v in cfg.env_kwargs.items()}
         eval_kwargs[cfg.env_count_key] = cfg.eval_envs
         eval_env = load_factory(cfg.env)(**eval_kwargs)
 
