@@ -4,6 +4,20 @@ This standalone repository is an early, measured port of selected Box3D ideas to
 thousands of small independent reinforcement-learning worlds. It is not a
 drop-in replacement for Box3D yet.
 
+## Experimental robot walking and cube-grid track
+
+The `duck-grid-walk` development history is now integrated alongside the
+existing engine, without replacing the frozen native ABI. It adds a floating
+14-joint Open Duck CPU articulation/contact solver, a bounded cube-grid world,
+an experimental float32 CUDA/serial lane, PPO environments and strict gait
+evaluation. Start with [the experimental track guide](docs/experimental-duck.md).
+
+These are separate implementations and evidence levels: local serial tests
+are **not GPU validation**, and a training update is **not accepted walking**.
+The cube-grid lane currently caps each environment at 1,024 cubes; it does not
+establish 200k simultaneously active rigid bodies. Existing Stage 0–7 results
+below refer to their own pinned workloads, not to this new robot lane.
+
 The Python package preserves the original `box3d_cuda` API and lazily builds
 its PyTorch extension. A separate versioned native C ABI has no PyTorch
 dependency. ABI v1 intentionally exposes only the accepted Stage-0 sphere

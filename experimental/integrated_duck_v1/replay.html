@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Open Duck · Native contact evidence</title>
+<style>
+:root{color-scheme:dark;font:14px system-ui;background:#0b121d;color:#e2eff7}*{box-sizing:border-box}body{margin:0;padding:24px;max-width:1640px;margin:auto}h1{font-size:29px;letter-spacing:-1px;margin:7px 0}p{color:#9dafc4;line-height:1.5}.eyebrow{text-transform:uppercase;letter-spacing:2px;font-size:11px;color:#75dccc}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.panel{border:1px solid #2b4059;border-radius:12px;background:#122032;overflow:hidden}.head{padding:16px;display:flex;justify-content:space-between;gap:10px}h2{margin:0;font-size:17px}.head small{display:block;color:#93acc2;margin-top:5px}.tag{color:#b9d0e7;font-size:11px;max-width:170px;text-align:right}canvas{width:100%;height:430px;display:block;touch-action:none;cursor:grab;background:#132234}.stats{padding:15px;display:flex;justify-content:space-between;border-top:1px solid #263d55;color:#b5c9d9}.controls{margin:17px 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap}button{background:#1a3047;border:1px solid #355271;color:#e8f2ff;border-radius:6px;padding:9px 12px;cursor:pointer}button:disabled{opacity:.3}input[type=range]{flex:1;min-width:190px;accent-color:#7ce0c9}.note{background:#132636;border-left:3px solid #6ed2bf;padding:14px 17px;line-height:1.6}.status{padding:10px 14px;border-radius:6px;background:#243b4c;margin:16px 0}.failure{color:#ffb8b3;background:#3b2834}.foot{font-size:11px;color:#8da5bb;overflow-wrap:anywhere;margin-top:14px}pre{white-space:pre-wrap}#error{color:#ffb9a9;display:none}@media(max-width:850px){.grid{grid-template-columns:1fr}canvas{height:340px}}@media(min-width:851px) and (max-height:850px){canvas{height:330px}body{padding:18px}}
+</style>
+<div class="eyebrow">Open-source physics · exact recorded source CAD</div>
+<h1>One robot. Two recorded physics backends.</h1>
+<p>The native candidate joins full-body inertia, joints and real foot contacts before integrating motion once.</p>
+<div id="status" class="status">Checking evidence identity…</div><p id="error" role="alert"></p>
+<main class="grid">
+<section class="panel"><div class="head"><div><h2>Retained reference</h2><small>MuJoCo CPU · prior zero-action recording</small></div><span class="tag">REFERENCE · NOT RERUN</span></div><canvas id="reference" aria-label="Retained MuJoCo robot recording"></canvas><div class="stats"><span id="ref-time">—</span><span id="ref-pen">—</span></div></section>
+<section class="panel"><div class="head"><div><h2>New native coupled solver</h2><small>Host C++ CPU · same source model / home targets</small></div><span class="tag">RECORDED NATIVE PHYSICS<br>NOT CUDA / NOT A POLICY</span></div><canvas id="native" aria-label="New recorded native robot physics"></canvas><div class="stats"><span id="native-time">—</span><span id="native-pen">—</span></div></section>
+</main>
+<div class="controls"><button id="play" disabled>▶ Replay</button><button id="first" disabled>First</button><button id="prev" disabled>←</button><input type="range" id="scrub" min="0" max="0" value="0" step="1" disabled aria-label="Recorded native checkpoint"><button id="next" disabled>→</button><button id="last" disabled>Last</button><span id="frame">0 / 0</span><button id="side" disabled>Side</button><button id="top" disabled>Top</button><button id="reset" disabled>Reset view</button><label><input type="checkbox" id="feet" checked> Collision feet</label></div>
+<div class="note">These are discrete <b>recorded physics states</b>, not animation targets. Drag either view to orbit both. The viewer does not simulate or interpolate. Only the two foot meshes collide; other CAD is visual. Passing numerical health checks does <b>not</b> establish learned standing or walking. The old reference is a comparison—not proof that the two solvers are equivalent.</div>
+<div class="foot" id="metrics"></div><details class="foot"><summary>Evidence identities</summary><pre id="identity"></pre></details>
+<script>
+'use strict';
+const $=id=>document.getElementById(id),s={data:null,frame:0,az:-.94,el:.32,zoom:1,timer:null},controls=['play','first','last','prev','next','scrub','side','top','reset'];
+const dot=(a,b)=>a.reduce((z,x,i)=>z+x*b[i],0),sub=(a,b)=>a.map((x,i)=>x-b[i]),cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+function rotate(q,p){const v=q.slice(1),t=cross(v,p).map(x=>2*x),c=cross(v,t);return p.map((x,i)=>x+q[0]*t[i]+c[i]);}
+function world(pose,p){return rotate(pose[1],p).map((x,i)=>x+pose[0][i]);}
+function stop(){clearInterval(s.timer);s.timer=null;$('play').textContent='▶ Replay';}
+function draw(id,f){
+ const c=$(id),ctx=c.getContext('2d'),r=c.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,2);c.width=r.width*dpr;c.height=r.height*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);let w=r.width,h=r.height;ctx.fillStyle='#132234';ctx.fillRect(0,0,w,h);
+ const ca=Math.cos(s.az),sa=Math.sin(s.az),ce=Math.cos(s.el),se=Math.sin(s.el),eye=[ca*ce,sa*ce,se],right=[-sa,ca,0],up=[-ca*se,-sa*se,ce],centre=[-.02,0,.175],scale=Math.min(w/.63,h/.49)*s.zoom;
+ const project=p=>{const v=sub(p,centre);return[w*.5+dot(v,right)*scale,h*.53-dot(v,up)*scale,dot(v,eye)];};
+ const line=(a,b,color,width=1)=>{a=project(a);b=project(b);ctx.strokeStyle=color;ctx.lineWidth=width;ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();};
+ for(let i=-8;i<=8;i++){line([i*.05,-.4,0],[i*.05,.4,0],'#476a8055',.7);line([-.4,i*.05,0],[.4,i*.05,0],'#476a8055',.7);}
+ const triangles=[];
+ for(const g of s.data.geometry){if(g.mesh==='foot_bottom_tpu'&&!g.collision)continue;for(const t of g.triangles){const ps=t.map(p=>world(f.poses[g.body],p)),pr=ps.map(project),n=cross(sub(ps[1],ps[0]),sub(ps[2],ps[0])),light=.45+.55*Math.abs(dot(n,[.32,-.45,.834]))/(Math.hypot(...n)||1),color=g.collision&&$('feet').checked?[.28,.89,.78]:g.rgba.slice(0,3);triangles.push({pr,z:pr.reduce((z,p)=>z+p[2],0)/3,color:color.map(x=>Math.round(255*Math.min(1,x*light)))});}}
+ triangles.sort((a,b)=>a.z-b.z);for(const t of triangles){ctx.beginPath();t.pr.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));ctx.closePath();ctx.fillStyle=`rgb(${t.color})`;ctx.fill();ctx.strokeStyle='#10182444';ctx.lineWidth=.3;ctx.stroke();}
+ for(const x of f.contact_details){const p=project(x.position);ctx.beginPath();ctx.arc(p[0],p[1],3,0,2*Math.PI);ctx.fillStyle='#ff9b8f';ctx.fill();}
+ ctx.fillStyle='#9bb7cd';ctx.font='11px system-ui';ctx.fillText('Grid 50 mm · Z up · recorded poses',14,22);
+}
+function render(){if(!s.data)return;const d=s.data,n=d.frames[s.frame],ref=d.reference_frames[Math.min(500,Math.round(n.time_s/.02))];draw('reference',ref);draw('native',n);$('scrub').value=s.frame;$('frame').textContent=`${s.frame} / ${d.frames.length-1}`;$('ref-time').textContent=ref.time_s.toFixed(3)+' s';$('native-time').textContent=n.time_s.toFixed(3)+' s';$('ref-pen').textContent=(ref.metrics.penetration_m*1000).toFixed(3)+' mm penetration';$('native-pen').textContent=(n.metrics.penetration_m*1000).toFixed(3)+' mm penetration';}
+function select(i){s.frame=Math.max(0,Math.min(s.data.frames.length-1,i));render();}
+$('scrub').oninput=()=>{stop();select(Number($('scrub').value));};$('prev').onclick=()=>{stop();select(s.frame-1);};$('next').onclick=()=>{stop();select(s.frame+1);};
+$('first').onclick=()=>{stop();select(0);};$('last').onclick=()=>{stop();select(s.data.frames.length-1);};
+$('scrub').onkeydown=e=>{const keys={Home:0,End:s.data.frames.length-1,ArrowLeft:s.frame-1,ArrowRight:s.frame+1,PageUp:s.frame+50,PageDown:s.frame-50};if(Object.hasOwn(keys,e.key)){e.preventDefault();stop();select(keys[e.key]);}};
+$('play').onclick=()=>{if(s.timer)return stop();if(s.frame===s.data.frames.length-1)select(0);$('play').textContent='Ⅱ Pause';s.timer=setInterval(()=>{if(s.frame===s.data.frames.length-1)stop();else select(s.frame+1);},40);};
+$('side').onclick=()=>{s.az=-Math.PI/2;s.el=.10;render();};$('top').onclick=()=>{s.az=-Math.PI/2;s.el=1.25;render();};$('reset').onclick=()=>{s.az=-.94;s.el=.32;s.zoom=1;render();};$('feet').onchange=render;
+for(const id of ['reference','native']){const c=$(id);let last=null;c.onpointerdown=e=>{last=[e.clientX,e.clientY];c.setPointerCapture(e.pointerId);};c.onpointermove=e=>{if(!last)return;s.az-=(e.clientX-last[0])*.008;s.el=Math.max(-.15,Math.min(1.45,s.el+(e.clientY-last[1])*.006));last=[e.clientX,e.clientY];render();};c.onpointerup=c.onpointercancel=()=>last=null;c.addEventListener('wheel',e=>{e.preventDefault();s.zoom=Math.max(.6,Math.min(2.2,s.zoom*Math.exp(-e.deltaY*.001)));render();},{passive:false});}
+window.onresize=render;
+(async()=>{try{const r=await fetch('replay.json',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const bytes=await r.arrayBuffer(),digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))).map(x=>x.toString(16).padStart(2,'0')).join('');if(digest!=='{{DATA_SHA}}')throw Error('Evidence checksum mismatch');const d=JSON.parse(new TextDecoder().decode(bytes));
+ if(d.schema!=='box3d.native-duck-recorded-replay/1'||d.cuda_execution!==false||d.viewer_simulates_physics!==false||d.policy_executed!==false||!d.frames.length||d.native_cad_max_difference>1e-6)throw Error('Evidence contract mismatch');
+ for(const f of d.frames)if(f.poses.length!==16||f.poses.some(p=>![...p[0],...p[1]].every(Number.isFinite)))throw Error('Invalid recorded pose');s.data=d;$('scrub').max=d.frames.length-1;controls.forEach(id=>$(id).disabled=false);
+ const passed=d.native_status==='passed-bounded-native-cpu-health-only';$('status').className='status'+(passed?'':' failure');$('status').textContent=(passed?'Native candidate completed its numerical-health gate':'Native attempt REJECTED')+' · '+d.simulated_seconds.toFixed(3)+' seconds recorded'+(d.native_failure?' · '+d.native_failure:'');
+ $('metrics').textContent=`Recorded native maximum tilt ${d.maximum_tilt_deg.toFixed(3)}° · horizontal drift ${(d.maximum_drift_m*1000).toFixed(3)} mm · CAD/native pose verification ${d.native_cad_max_difference.toExponential(2)} (visualization tolerance1e-6; physics gates unchanged).`;
+ $('identity').textContent=JSON.stringify({native_result:d.record_sha256,native_library:d.library_sha256,reference:d.reference_sha256,source:d.source_commit,record_sha256:digest},null,2);render();
+ }catch(e){stop();$('error').style.display='block';$('error').textContent='Replay unavailable: '+e.message;$('status').textContent='Evidence unavailable; no fallback animation';controls.forEach(id=>$(id).disabled=true);s.data=null;}})();
+</script></html>
