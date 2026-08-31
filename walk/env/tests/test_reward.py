@@ -25,11 +25,15 @@ def make_state(E=1, vx=0.0, vy=0.0, wz=0.0, contact=((True, True),),
 
 class TestSmoothTerms(unittest.TestCase):
     def test_velocity_tracking_and_alive(self):
+        # preset the rolling average to steady state so the term arithmetic
+        # is exact (the EMA converges to vx during real walking)
         tracker = rw.GaitTracker(1)
+        tracker.v_avg[:] = 0.15
         prev, cur = make_state(), make_state(vx=0.15)
         r = rw.reward(prev, cur, np.zeros((1, 14)), np.array([0.15]), tracker)
         self.assertAlmostEqual(float(r[0]), rw.W_TRACK + rw.W_ALIVE, places=5)
         tracker = rw.GaitTracker(1)
+        tracker.v_avg[:] = 0.05
         r_off = rw.reward(prev, make_state(vx=0.05), np.zeros((1, 14)),
                           np.array([0.15]), tracker)
         expected = rw.W_TRACK * np.exp(-0.01 / rw.TRACK_SIGMA_SQ) + rw.W_ALIVE
@@ -59,6 +63,7 @@ class TestSmoothTerms(unittest.TestCase):
 class TestGaitShaping(unittest.TestCase):
     def steps(self, tracker, sequence, cmd=0.15):
         """sequence: list of (contact_pair, sole_pair); returns rewards."""
+        tracker.v_avg[:] = cmd          # steady-state rolling average
         out = []
         prev = make_state(contact=(sequence[0][0],), sole=(sequence[0][1],))
         for contact, sole in sequence[1:]:
