@@ -173,8 +173,11 @@ def reward(prev_state: dict, state: dict, action: np.ndarray, command: np.ndarra
     # matching its half of the observed gait clock (left stance sin>=0).
     # Absent phase (older callers/tests) skips the term.
     if phase is not None:
-        match = (contact[:, 0] == stance_left).astype(np.float64) \
-            + (contact[:, 1] == ~stance_left).astype(np.float64)
+        # signed: mismatched contact PAYS -W_PHASE, so planting one foot
+        # through both clock windows nets zero instead of half pay (the
+        # standing subsidy that funded every limp attractor).
+        match = np.where(contact[:, 0] == stance_left, 1.0, -1.0) \
+            + np.where(contact[:, 1] == ~stance_left, 1.0, -1.0)
         r += W_PHASE * match * (np.abs(cmd) > 0)
 
     # 8. double-support penalty beyond the duty grace while commanded to move
