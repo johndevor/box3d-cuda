@@ -20,7 +20,7 @@ Secrets discipline (enforced here):
 
 Budget policy (hard):
   * One sandbox at a time (checked via launcher label before create).
-  * Total host wall clock cap: 1500 s per invocation.
+  * Total host wall clock cap: 3300 s per invocation.
   * Per-job remote timeouts come from the spec, clipped to remaining budget.
   * Deletion is always attempted in a finally block and VERIFIED by listing
     sandboxes afterward; a deletion receipt is written into the run dir.
@@ -53,7 +53,7 @@ DOPPLER_INVOCATION = (
     "--spec gpu/specs/<name>.json [--dry-run]"
 )
 
-WALL_CLOCK_CAP_S = 1500
+WALL_CLOCK_CAP_S = 3300  # fits one 40-min training leg + provision/build/transfer
 LAUNCHER_LABEL = {"launcher": "duck-grid-walk-gpu"}
 REMOTE_WORKDIR = "/tmp/duckwork"
 REMOTE_TAR = "/tmp/duck-payload.tar"
