@@ -34,9 +34,10 @@ SIM_DT = 0.002
 TICKS_PER_STEP = 10
 ACTION_SCALE = 0.25
 MAX_TARGET_INCREMENT = 5.24 * CONTROL_DT          # 0.1048 rad per policy step
-PHASE_HZ_PER_MPS = 2.5 / 0.15   # speed-proportional gait clock: stride rate
-                                # scales with commanded speed (0.15 m/s keeps
-                                # the proven 2.5 Hz; 0.10 -> 1.67, 0.20 -> 3.33)
+PHASE_HZ_PER_MPS = 10.0   # speed-proportional gait clock. At 16.67 the clock
+                          # demanded EXACTLY the evaluator's 30 mm minimum per
+                          # step (knife-edge: half of natural steps disqualify);
+                          # 10.0 asks ~50 mm steps, within the observed 40-58 mm.
 COMMANDS_MPS = (0.10, 0.15, 0.20)                  # per-episode forward commands
 HORIZON_STEPS = 400                                # 8 s at 0.02 s per step
 MIN_HEIGHT_FRACTION = 0.7                          # of the HOME root height
