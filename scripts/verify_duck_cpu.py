@@ -20,6 +20,8 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--without-training',action='store_true')
+    parser.add_argument('--correctness-only',action='store_true',
+                        help='report hardware-dependent capacity timing without enforcing its target')
     args=parser.parse_args();out=args.output
     if not out.is_absolute() or out.exists():parser.error('fresh absolute --output required')
     out.mkdir(parents=True)
@@ -38,8 +40,10 @@ def main():
     suffix='.dylib' if sys.platform=='darwin' else '.so'
     lib=str(out/'native'/('libintegrated_duck'+suffix))
     env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1',PYTEST_DISABLE_PLUGIN_AUTOLOAD='1')
+    env['BOX3D_CAPACITY_TIMING_MODE']='report-only' if args.correctness_only else 'enforce'
     for key in ['AV1_LIBRARY','AV2_LIBRARY','CONTACT_V1_LIBRARY','BOX3D_CONTACT_V1_LIBRARY','COUPLED_IMPULSE_LIBRARY','INTEGRATED_DUCK_LIBRARY','BOX3D_JOINT_V1_LIBRARY']:env[key]=lib
     result={'schema':'box3d.duck.cpu-integration/1','cuda_execution':False,'provider_access':False,
+            'capacity_timing_enforced':not args.correctness_only,
             'python':sys.version,'platform':platform.platform(),'commands':[],'status':'running'}
     start=time.monotonic();code=0
     for name,command,bound in jobs:

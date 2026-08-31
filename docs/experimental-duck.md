@@ -34,6 +34,10 @@ python -B scripts/verify_duck_cpu.py --output /absolute/fresh/check-directory
 ```
 
 `--without-training` omits trainer tests/PyTorch-dependent walking discovery.
+The default also enforces the original 10 ms/capacity-tick benchmark.
+Shared Linux CI uses `--correctness-only`: all physics/capacity assertions
+remain enforced, while measured timing and a missed-target flag are retained
+as hardware-dependent telemetry. This mode cannot establish a performance pass.
 The runner records commands, stdout/stderr hashes and outcomes, stops at the
 first failure, and has a ten-minute total cap. Runtime-only native builds go
 under ignored `build/`; do not load historical checked-in binaries.

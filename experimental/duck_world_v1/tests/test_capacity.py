@@ -5,9 +5,13 @@ are never approached.
 Run: .venv/bin/python -B experimental/duck_world_v1/tests/test_capacity.py
 """
 import sys
+import json
+import math
+import os
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT/'walk/env'))
@@ -38,6 +42,20 @@ class CapacityTests(unittest.TestCase):
             max_points = max(max_points, d[0]['contact_points'])
         return (time.monotonic()-start)/timed*1e3, max_dofs, max_awake, max_points
 
+    def check_timing(self, ms):
+        # The original 10 ms benchmark remains enforced by default. Shared
+        # correctness CI explicitly reports it without claiming performance.
+        mode = os.environ.get('BOX3D_CAPACITY_TIMING_MODE', 'enforce')
+        self.assertIn(mode, ('enforce', 'report-only'))
+        self.assertTrue(math.isfinite(ms) and ms > 0)
+        result = {'benchmark': 'capacity_tick', 'milliseconds': ms,
+                  'limit_ms': 10.0, 'within_target': ms < 10.0,
+                  'enforced': mode == 'enforce'}
+        print(json.dumps(result), file=sys.stderr, flush=True)
+        if mode == 'enforce':
+            self.assertLess(ms, 10., 'under 10 ms/tick single-threaded')
+        return result
+
     def test_static_225_cubes(self):
         # jitter 0: long holds on stepped tops intermittently hit the known
         # civ1 redundant-normal stall at 1e-8 (workstream A owns that repair);
@@ -48,7 +66,7 @@ class CapacityTests(unittest.TestCase):
         s, cm = w.duck_grid_scene(self.lib, 1, grid)
         self.addCleanup(s.close)
         ms, max_dofs, max_awake, max_points = self.timed_hold(s, 200, 300)
-        self.assertLess(ms, 10., 'under 10 ms/tick single-threaded')
+        self.check_timing(ms)
         self.assertEqual(max_dofs, 20, 'static grid: duck island only')
         self.assertEqual(max_awake, 0)
         self.assertLess(max_points, 512)
@@ -60,7 +78,7 @@ class CapacityTests(unittest.TestCase):
         self.addCleanup(s.close)
         solve = dict(tolerance=1e-6, jtol=1e-6)
         ms, max_dofs, max_awake, max_points = self.timed_hold(s, 500, 300, **solve)
-        self.assertLess(ms, 10., 'under 10 ms/tick single-threaded')
+        self.check_timing(ms)
         # only load-bearing cubes near the feet churn awake; islands stay small
         self.assertLessEqual(max_dofs, 20+6*10, 'duck island stays small')
         self.assertLessEqual(max_awake, 20)
@@ -68,6 +86,25 @@ class CapacityTests(unittest.TestCase):
         x = s.read()
         self.assertGreaterEqual(int((x.cube_awake[0] == 0).sum()), 200,
                                 'at least 200 cubes sleeping under hold')
+
+
+class TimingModeTests(unittest.TestCase):
+    def test_original_target_is_enforced_by_default(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(AssertionError):
+                CapacityTests().check_timing(13.8)
+
+    def test_report_mode_preserves_missed_target(self):
+        with patch.dict(os.environ, {'BOX3D_CAPACITY_TIMING_MODE': 'report-only'}):
+            result = CapacityTests().check_timing(13.8)
+            self.assertFalse(result['within_target'])
+            self.assertFalse(result['enforced'])
+            self.assertEqual(result['limit_ms'], 10.0)
+
+    def test_unknown_mode_rejected(self):
+        with patch.dict(os.environ, {'BOX3D_CAPACITY_TIMING_MODE': 'ignore'}):
+            with self.assertRaises(AssertionError):
+                CapacityTests().check_timing(1.0)
 
 
 if __name__ == '__main__':
