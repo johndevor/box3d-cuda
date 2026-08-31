@@ -531,7 +531,15 @@ def execute_run(spec, repo_root, run_dir, provider, redactor, deadline,
             except Exception as e:  # still verify below
                 receipt["delete_error"] = redactor.redact(str(e))
             try:
-                receipt["verified_gone"] = bool(provider.sandbox_gone(handle.sandbox_id))
+                # the listing is eventually-consistent: poll up to 30 s before
+                # declaring the deletion unverified
+                gone = False
+                for _ in range(10):
+                    gone = bool(provider.sandbox_gone(handle.sandbox_id))
+                    if gone:
+                        break
+                    time.sleep(3)
+                receipt["verified_gone"] = gone
             except Exception as e:
                 receipt["delete_error"] = (receipt["delete_error"] or "") + \
                     f" | verification listing failed: {redactor.redact(str(e))}"
