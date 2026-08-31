@@ -30,8 +30,9 @@ removing the full-state readback entirely for training:
 
     lane.step_policy(actions, n_ticks=10)
         -> (obs [E,58] f32, reward [E] f32, done [E] bool, diagnostics)
-    lane.reset_policy(mask, seed=..., commands=...) -> obs   (flat.py-exact
-        counter-based command resampling from {0.10, 0.15, 0.20} m/s)
+    lane.reset_policy(mask, seed=..., commands=..., phase_offsets=...) -> obs
+        (flat.py-exact counter-based per-episode resampling: command from
+        {0.10, 0.15, 0.20} m/s, then the v10 gait-phase offset 2*pi*random())
     lane.observe() -> obs;  lane.set_command(commands) -> obs
 
     walk/env/flat.py and walk/env/reward.py are the contract; the
@@ -55,6 +56,7 @@ from __future__ import annotations
 import ctypes as C
 import dataclasses
 import hashlib
+import math
 import os
 import shutil
 import subprocess
@@ -65,7 +67,7 @@ import numpy as np
 
 from .native_lane import LaneState
 
-ABI_VERSION = 3  # must match DWC1_ABI_VERSION in duck_cuda.h
+ABI_VERSION = 4  # must match DWC1_ABI_VERSION in duck_cuda.h
 
 OBS = 58
 COMMANDS_MPS = (0.10, 0.15, 0.20)   # flat.py per-episode forward commands
@@ -184,7 +186,7 @@ def load_library(path: Path):
                              C.POINTER(Diagnostic)],
         "dwc1_observe": [C.c_void_p, FP],
         "dwc1_set_command": [C.c_void_p, DP],
-        "dwc1_reset_policy": [C.c_void_p, U8P, DP],
+        "dwc1_reset_policy": [C.c_void_p, U8P, DP, DP],
         "dwc1_abi_version": [],
         "dwc1_reset": [C.c_void_p, U8P],
         "dwc1_set_state": [C.c_void_p, C.c_uint32, FP, FP, FP,
@@ -319,26 +321,33 @@ class CudaDuckLane:
         return self.observe()
 
     def reset_policy(self, mask: np.ndarray | None = None,
-                     seed: int | None = None, commands=None) -> np.ndarray:
+                     seed: int | None = None, commands=None,
+                     phase_offsets=None) -> np.ndarray:
         """Masked policy reset mirroring FlatFloorDuckEnv.reset(): physics and
-        tracker state back to creation, per-env commands resampled from
-        COMMANDS_MPS with flat.py's exact counter-based (seed, env, episode)
-        RNG (pass `commands` [E] to override). Returns fresh observations."""
+        tracker state back to creation; per-env command AND per-episode gait
+        phase offset resampled with flat.py's exact counter-based (seed, env,
+        episode) RNG -- one stream per episode, command drawn first, then
+        phase0 = 2*pi*rng.random() (v10). Pass `commands`/`phase_offsets` [E]
+        to override the drawn values. Returns fresh observations."""
         if seed is not None:
             self._seed = int(seed)
         m = np.ones(self.E, bool) if mask is None \
             else np.asarray(mask, bool).reshape(self.E)
         cmd = np.zeros(self.E, np.float64)
+        ph0 = np.zeros(self.E, np.float64)
+        for e in np.flatnonzero(m):
+            rng = _episode_rng(self._seed, int(e), int(self._episode[e]) + 1)
+            cmd[e] = COMMANDS_MPS[rng.integers(len(COMMANDS_MPS))]
+            ph0[e] = 2.0 * math.pi * rng.random()
+            self._episode[e] += 1
         if commands is not None:
             cmd[:] = np.broadcast_to(np.asarray(commands, np.float64), (self.E,))
-            self._episode[m] += 1
-        else:
-            for e in np.flatnonzero(m):
-                rng = _episode_rng(self._seed, int(e), int(self._episode[e]) + 1)
-                cmd[e] = COMMANDS_MPS[rng.integers(len(COMMANDS_MPS))]
-                self._episode[e] += 1
+        if phase_offsets is not None:
+            ph0[:] = np.broadcast_to(
+                np.asarray(phase_offsets, np.float64), (self.E,))
         mc = (C.c_uint8 * self.E)(*[1 if x else 0 for x in m])
-        rc = self._lib.dwc1_reset_policy(self._h, mc, cmd.ctypes.data_as(DP))
+        rc = self._lib.dwc1_reset_policy(self._h, mc, cmd.ctypes.data_as(DP),
+                                         ph0.ctypes.data_as(DP))
         if rc:
             raise RuntimeError(f"dwc1_reset_policy status={rc}")
         return self.observe()

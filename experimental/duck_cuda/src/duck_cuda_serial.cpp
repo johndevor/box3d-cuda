@@ -121,20 +121,22 @@ int dwc1_query(const dwc1_scene* s, dwc1_manifold* out) {
 }
 
 int dwc1_reset_policy(dwc1_scene* s, const uint8_t* mask,
-                      const double* commands) {
+                      const double* commands, const double* phase_offsets) {
   if (!s) return DWC1_INVALID;
-  if (commands && !std::all_of(commands, commands + s->E,
-                               [](double c) { return c == c; }))
-    return DWC1_INVALID;
+  auto finite_all = [&](const double* p) {
+    return !p || std::all_of(p, p + s->E, [](double c) { return c == c; });
+  };
+  if (!finite_all(commands) || !finite_all(phase_offsets)) return DWC1_INVALID;
   for (uint32_t e = 0; e < s->E; e++)
     if (!mask || mask[e])
       dw_policy_reset_env(&s->state[e], &s->initial[e],
-                          commands ? commands + e : nullptr);
+                          commands ? commands + e : nullptr,
+                          phase_offsets ? phase_offsets + e : nullptr);
   return DWC1_OK;
 }
 
 int dwc1_reset(dwc1_scene* s, const uint8_t* mask) {
-  return dwc1_reset_policy(s, mask, nullptr);
+  return dwc1_reset_policy(s, mask, nullptr, nullptr);
 }
 
 int dwc1_step_policy(dwc1_scene* s, const float* actions, uint32_t n_ticks,

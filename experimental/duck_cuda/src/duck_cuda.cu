@@ -213,11 +213,13 @@ int dwc1_query(const dwc1_scene* s, dwc1_manifold* out) {
 }
 
 int dwc1_reset_policy(dwc1_scene* s, const uint8_t* mask,
-                      const double* commands) {
+                      const double* commands, const double* phase_offsets) {
   if (!s) return DWC1_INVALID;
-  if (commands)
-    for (uint32_t e = 0; e < s->E; e++)
-      if (!(commands[e] == commands[e])) return DWC1_INVALID;  // NaN
+  for (uint32_t e = 0; e < s->E; e++) {
+    if (commands && !(commands[e] == commands[e])) return DWC1_INVALID;
+    if (phase_offsets && !(phase_offsets[e] == phase_offsets[e]))
+      return DWC1_INVALID;
+  }
   for (uint32_t e = 0; e < s->E; e++) {
     if (mask && !mask[e]) continue;
     DwState next = s->initial[e];
@@ -230,6 +232,15 @@ int dwc1_reset_policy(dwc1_scene* s, const uint8_t* mask,
                      sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess)
         return DWC1_NUMERIC;
     }
+    if (phase_offsets) {
+      next.phase0 = phase_offsets[e];
+    } else {  // keep the env's previous phase offset (creation default: 0)
+      if (cudaMemcpy(&next.phase0,
+                     (const char*)(s->device_state + e)
+                         + offsetof(DwState, phase0),
+                     sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess)
+        return DWC1_NUMERIC;
+    }
     if (cudaMemcpy(s->device_state + e, &next, sizeof(DwState),
                    cudaMemcpyHostToDevice) != cudaSuccess)
       return DWC1_NUMERIC;
@@ -238,7 +249,7 @@ int dwc1_reset_policy(dwc1_scene* s, const uint8_t* mask,
 }
 
 int dwc1_reset(dwc1_scene* s, const uint8_t* mask) {
-  return dwc1_reset_policy(s, mask, nullptr);
+  return dwc1_reset_policy(s, mask, nullptr, nullptr);
 }
 
 int dwc1_step_policy(dwc1_scene* s, const float* actions, uint32_t n_ticks,

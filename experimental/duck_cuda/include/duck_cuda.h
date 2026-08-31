@@ -29,7 +29,9 @@ extern "C" {
 //     resets and accumulates per-foot contact tick counters.
 // v3: device-side policy path (walk/env/flat.py + reward.py in-kernel):
 //     dwc1_step_policy, dwc1_observe, dwc1_set_command, dwc1_reset_policy.
-#define DWC1_ABI_VERSION 3
+// v4: per-episode gait-phase offsets (flat.py v10): dwc1_reset_policy gained
+//     the trailing phase_offsets input.
+#define DWC1_ABI_VERSION 4
 int dwc1_abi_version(void);
 
 enum {
@@ -129,12 +131,13 @@ int dwc1_observe(const dwc1_scene*, float* obs /* [E,58] */);
 int dwc1_set_command(dwc1_scene*, const double* commands /* [E] */);
 
 // Masked policy reset: physics AND policy/tracker state back to the creation
-// state; commands[e] (f64, [E]) is applied to selected envs -- the caller
-// resamples it like flat.py's _episode_rng (counter-based numpy PCG64, not
-// reproducible in-kernel; walk/env/cuda_lane.py implements the exact
-// sampling). NULL commands keeps each selected env's previous command.
+// state; commands[e] and phase_offsets[e] (f64, [E]) are applied to selected
+// envs -- the caller resamples them like flat.py's _episode_rng (counter-based
+// numpy PCG64, not reproducible in-kernel; per episode the command is drawn
+// FIRST, then phase0 = 2*pi*rng.random() -- walk/env/cuda_lane.py implements
+// the exact stream). NULL keeps each selected env's previous value.
 int dwc1_reset_policy(dwc1_scene*, const uint8_t* mask,
-                      const double* commands);
+                      const double* commands, const double* phase_offsets);
 
 // Current-pose contact geometry with zero impulses (mirrors bcv1_query).
 int dwc1_query(const dwc1_scene*, dwc1_manifold* out /* [E,2] */);

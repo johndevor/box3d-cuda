@@ -127,6 +127,7 @@ typedef struct DwState {
   // ~300 f64 ops per env per policy step vs ~1M f32 physics ops.
   double targets[DW_J];        // persistent slew reference (pre-limit-clip)
   double command;              // commanded forward velocity (m/s)
+  double phase0;               // per-episode gait-phase offset (flat.py v10)
   double v_avg, double_support;            // GaitTracker scalars
   double air_time[2], stance_time[2];      // GaitTracker per foot (L, R)
   double pre_swing_stance[2], opp_support[2], liftoff_x[2];
@@ -1227,12 +1228,14 @@ static DW_HD void dw_fill_info(uint32_t environments, dwc1_info* info) {
 #define DWP_W_SAME_FOOT 2.0
 #define DWP_W_PHASE 0.5
 
-// flat.py v8 speed-proportional phase clock, exact numpy association:
-// ((2.0*pi) * (PHASE_HZ_PER_MPS*command)) * t * CONTROL_DT with
-// PHASE_HZ_PER_MPS = 2.5/0.15 (both divisions/products IEEE f64, identical
-// to the python module: 0.15 m/s keeps the proven 2.5 Hz).
-static DW_HD double dw_policy_phase(uint32_t t, double command) {
-  return ((2.0 * DWP_PI) * ((2.5 / 0.15) * command)) * (double)t * 0.02;
+// flat.py v10 gait clock, exact numpy association: the per-episode random
+// offset (resampled at reset, host-side RNG) plus the v8 speed-proportional
+// term phase0 + ((2.0*pi) * (PHASE_HZ_PER_MPS*command)) * t * CONTROL_DT,
+// with PHASE_HZ_PER_MPS = 2.5/0.15 (all IEEE f64, identical to the python
+// module: 0.15 m/s keeps the proven 2.5 Hz).
+static DW_HD double dw_policy_phase(double phase0, uint32_t t, double command) {
+  return phase0
+       + ((2.0 * DWP_PI) * ((2.5 / 0.15) * command)) * (double)t * 0.02;
 }
 
 // native_lane.quat_to_rot in f64 (body->world rotation from xyzw quat).
@@ -1274,7 +1277,7 @@ static DW_HD void dw_policy_observe(const DwState* s, float* obs) {
   obs[53] = 0.0f;
   obs[54] = s->cache[0].count > 0 ? 1.0f : 0.0f;
   obs[55] = s->cache[1].count > 0 ? 1.0f : 0.0f;
-  double phase = dw_policy_phase(s->t, s->command);
+  double phase = dw_policy_phase(s->phase0, s->t, s->command);
   obs[56] = (float)sin(phase);
   obs[57] = (float)cos(phase);
 }
@@ -1315,7 +1318,7 @@ static DW_HD float dw_policy_reward(DwState* s, const double* a,
   }
   r -= DWP_W_TORQUE * tq;
   // 6. qualified steps (evaluator-mirroring gates) + chatter
-  double phase = dw_policy_phase(s->t, s->command);  // pre-increment counter
+  double phase = dw_policy_phase(s->phase0, s->t, s->command);  // pre-incr t
   bool stance_left = sin(phase) >= 0.0;
   bool touchdown[2], liftoff[2], qualified[2];
   int nq = 0, nchat = 0;
@@ -1433,14 +1436,17 @@ static DW_HD void dw_step_policy_env(DwState* s, const float* action,
 }
 
 // Masked policy reset: physics + policy/tracker state back to the creation
-// state; the command is taken from `command` (host resamples it exactly like
-// flat.py's counter-based _episode_rng, which is not reproducible in-kernel)
-// or kept when the caller passes none.
+// state; the command and per-episode phase offset are taken from the host
+// (resampled exactly like flat.py's counter-based _episode_rng -- command
+// drawn first, then phase0 = 2*pi*rng.random() -- which is not reproducible
+// in-kernel) or kept when the caller passes none.
 static DW_HD void dw_policy_reset_env(DwState* s, const DwState* initial,
-                                      const double* command) {
-  double keep = s->command;
+                                      const double* command,
+                                      const double* phase0) {
+  double keep_command = s->command, keep_phase0 = s->phase0;
   *s = *initial;
-  s->command = command ? *command : keep;
+  s->command = command ? *command : keep_command;
+  s->phase0 = phase0 ? *phase0 : keep_phase0;
 }
 
 #endif  // DUCK_CUDA_KERNEL_H
