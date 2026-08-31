@@ -1,0 +1,777 @@
+// SPDX-License-Identifier: MIT
+#include <torch/extension.h>
+#include <cmath>
+
+torch::Tensor box3d_step_cuda(
+    torch::Tensor state,
+    torch::Tensor inverse_mass,
+    torch::Tensor radius,
+    double dt,
+    int64_t substeps,
+    double gravity_y,
+    double restitution,
+    double friction);
+
+torch::Tensor box3d_articulation_response_cuda(
+    torch::Tensor base_joint_xy,
+    torch::Tensor second_joint_xy,
+    torch::Tensor link_centers_xy,
+    torch::Tensor contact_point_xy,
+    torch::Tensor normal_xy,
+    torch::Tensor properties);
+
+std::vector<torch::Tensor> box3d_gripper_step_cuda(
+    torch::Tensor cube_state,
+    torch::Tensor finger_positions,
+    torch::Tensor finger_velocity,
+    double dt,
+    int64_t substeps,
+    double gravity_y,
+    double restitution,
+    double friction,
+    double slop,
+    double position_correction,
+    double cube_half_x,
+    double cube_half_y,
+    double cube_half_z,
+    double finger_half_x,
+    double finger_half_y,
+    double finger_half_z);
+
+std::vector<torch::Tensor> box3d_obb_step_cuda(
+    torch::Tensor state,
+    torch::Tensor inverse_mass,
+    torch::Tensor half_extents,
+    torch::Tensor inverse_inertia,
+    double dt,
+    int64_t substeps,
+    double gravity_y,
+    double restitution,
+    double friction,
+    double slop,
+    double angular_damping,
+    int64_t solver_iterations);
+
+std::vector<torch::Tensor> box3d_sat_step_cuda(
+    torch::Tensor state,
+    torch::Tensor inverse_mass,
+    torch::Tensor half_extents,
+    torch::Tensor inverse_inertia,
+    torch::Tensor pair_indices,
+    double dt,
+    int64_t substeps,
+    double gravity_y,
+    double restitution,
+    double friction,
+    double slop,
+    double position_correction,
+    double angular_damping,
+    int64_t solver_iterations,
+    double sat_epsilon);
+
+std::vector<torch::Tensor> box3d_manifold_step_cuda(
+    torch::Tensor state,
+    torch::Tensor inverse_mass,
+    torch::Tensor half_extents,
+    torch::Tensor inverse_inertia,
+    torch::Tensor pair_indices,
+    torch::Tensor cache_feature_ids,
+    torch::Tensor cache_impulses,
+    double dt,
+    int64_t substeps,
+    double gravity_y,
+    double restitution,
+    double friction,
+    double slop,
+    double position_correction,
+    double angular_damping,
+    int64_t solver_iterations,
+    double sat_epsilon);
+
+std::vector<torch::Tensor> box3d_joint_step_cuda(
+    torch::Tensor state,
+    torch::Tensor inverse_mass,
+    torch::Tensor inverse_inertia,
+    torch::Tensor joint_indices,
+    torch::Tensor joint_types,
+    torch::Tensor parent_anchor_local,
+    torch::Tensor child_anchor_local,
+    torch::Tensor axis_parent,
+    torch::Tensor reference_quaternion,
+    torch::Tensor lower_limit,
+    torch::Tensor upper_limit,
+    torch::Tensor damping,
+    torch::Tensor motor_enabled,
+    torch::Tensor motor_target_velocity,
+    torch::Tensor motor_target_position,
+    torch::Tensor stiffness,
+    torch::Tensor maximum_effort,
+    torch::Tensor warm_start_cache,
+    double warm_start_factor,
+    double dt,
+    int64_t substeps,
+    double gravity_y,
+    int64_t solver_iterations,
+    double position_correction,
+    double position_slop,
+    double angular_slop,
+    double maximum_linear_repair_m,
+    double maximum_angular_repair_rad);
+
+std::vector<torch::Tensor> box3d_coupled_step_cuda(
+    torch::Tensor state, torch::Tensor inverse_mass, torch::Tensor half_extents,
+    torch::Tensor inverse_inertia, torch::Tensor joint_indices, torch::Tensor joint_types,
+    torch::Tensor parent_anchor, torch::Tensor child_anchor, torch::Tensor axis_parent,
+    torch::Tensor reference_quaternion, torch::Tensor lower_limit, torch::Tensor upper_limit,
+    torch::Tensor damping, torch::Tensor motor_enabled, torch::Tensor target_velocity,
+    torch::Tensor target_position, torch::Tensor stiffness, torch::Tensor maximum_effort,
+    torch::Tensor joint_cache, torch::Tensor contact_pairs, torch::Tensor contact_feature_ids,
+    torch::Tensor contact_impulse_cache, double warm_start_factor, double dt, int64_t substeps,
+    double gravity_y, double restitution, double friction, double contact_generation_distance,
+    double contact_slop,
+    double position_correction, double angular_damping, int64_t solver_iterations,
+    double sat_epsilon, double joint_position_slop, double angular_slop,
+    double maximum_linear_repair, double maximum_angular_repair,
+    bool articulation_projection, double contact_warm_start_factor);
+
+std::vector<torch::Tensor> box3d_ray_cast_cuda(
+    torch::Tensor state,
+    torch::Tensor half_extents,
+    torch::Tensor body_enabled,
+    torch::Tensor ray_origins,
+    torch::Tensor ray_directions,
+    torch::Tensor maximum_distance);
+
+std::vector<torch::Tensor> box3d_camera_rays_cuda(
+    torch::Tensor state,
+    torch::Tensor parent_body,
+    torch::Tensor position_parent,
+    torch::Tensor quaternion_parent_from_camera,
+    torch::Tensor intrinsics,
+    torch::Tensor pixel_camera,
+    torch::Tensor pixel_xy);
+
+std::vector<torch::Tensor> box3d_camera_depth_cuda(
+    torch::Tensor distance,
+    torch::Tensor body_index,
+    torch::Tensor forward_cosine);
+
+torch::Tensor box3d_step(
+    torch::Tensor state,
+    torch::Tensor inverse_mass,
+    torch::Tensor radius,
+    double dt,
+    int64_t substeps,
+    double gravity_y,
+    double restitution,
+    double friction) {
+  TORCH_CHECK(state.is_cuda(), "state must be CUDA");
+  TORCH_CHECK(inverse_mass.is_cuda() && radius.is_cuda(), "material tensors must be CUDA");
+  TORCH_CHECK(state.scalar_type() == torch::kFloat32, "state must be float32");
+  TORCH_CHECK(inverse_mass.scalar_type() == torch::kFloat32, "inverse_mass must be float32");
+  TORCH_CHECK(radius.scalar_type() == torch::kFloat32, "radius must be float32");
+  TORCH_CHECK(state.dim() == 3 && state.size(2) == 13, "state must have shape [worlds,bodies,13]");
+  TORCH_CHECK(inverse_mass.sizes() == state.sizes().slice(0, 2), "inverse_mass shape mismatch");
+  TORCH_CHECK(radius.sizes() == state.sizes().slice(0, 2), "radius shape mismatch");
+  TORCH_CHECK(substeps > 0 && dt > 0.0, "dt and substeps must be positive");
+  return box3d_step_cuda(
+      state.contiguous(), inverse_mass.contiguous(), radius.contiguous(), dt,
+      substeps, gravity_y, restitution, friction);
+}
+
+torch::Tensor box3d_articulation_response(
+    torch::Tensor base_joint_xy,
+    torch::Tensor second_joint_xy,
+    torch::Tensor link_centers_xy,
+    torch::Tensor contact_point_xy,
+    torch::Tensor normal_xy,
+    torch::Tensor properties) {
+  const std::vector<torch::Tensor> tensors = {
+      base_joint_xy, second_joint_xy, link_centers_xy,
+      contact_point_xy, normal_xy, properties};
+  const auto device = base_joint_xy.device();
+  for (const auto &tensor : tensors) {
+    TORCH_CHECK(tensor.is_cuda() && tensor.device() == device,
+                "all articulation response tensors must share one CUDA device");
+    TORCH_CHECK(tensor.scalar_type() == torch::kFloat32,
+                "all articulation response tensors must be float32");
+  }
+  TORCH_CHECK(base_joint_xy.dim() == 2 && base_joint_xy.size(0) > 0 &&
+              base_joint_xy.size(0) <= 1048576 && base_joint_xy.size(1) == 2,
+              "base_joint_xy must have shape [1..1048576,2]");
+  const int64_t worlds = base_joint_xy.size(0);
+  TORCH_CHECK(second_joint_xy.sizes() == torch::IntArrayRef({worlds, 2}),
+              "second_joint_xy must have shape [worlds,2]");
+  TORCH_CHECK(link_centers_xy.sizes() == torch::IntArrayRef({worlds, 2, 2}),
+              "link_centers_xy must have shape [worlds,2,2]");
+  TORCH_CHECK(contact_point_xy.sizes() == torch::IntArrayRef({worlds, 2}) &&
+              normal_xy.sizes() == torch::IntArrayRef({worlds, 2}),
+              "contact point and normal must have shape [worlds,2]");
+  TORCH_CHECK(properties.sizes() == torch::IntArrayRef({worlds, 7}),
+              "properties must have shape [worlds,7]");
+  return box3d_articulation_response_cuda(
+      base_joint_xy.contiguous(), second_joint_xy.contiguous(),
+      link_centers_xy.contiguous(), contact_point_xy.contiguous(),
+      normal_xy.contiguous(), properties.contiguous());
+}
+
+std::vector<torch::Tensor> box3d_gripper_step(
+    torch::Tensor cube_state,
+    torch::Tensor finger_positions,
+    torch::Tensor finger_velocity,
+    double dt,
+    int64_t substeps,
+    double gravity_y,
+    double restitution,
+    double friction,
+    double slop,
+    double position_correction,
+    double cube_half_x,
+    double cube_half_y,
+    double cube_half_z,
+    double finger_half_x,
+    double finger_half_y,
+    double finger_half_z) {
+  TORCH_CHECK(cube_state.is_cuda(), "cube_state must be CUDA");
+  TORCH_CHECK(finger_positions.is_cuda() && finger_velocity.is_cuda(), "finger tensors must be CUDA");
+  TORCH_CHECK(cube_state.scalar_type() == torch::kFloat32, "cube_state must be float32");
+  TORCH_CHECK(finger_positions.scalar_type() == torch::kFloat32, "finger_positions must be float32");
+  TORCH_CHECK(finger_velocity.scalar_type() == torch::kFloat32, "finger_velocity must be float32");
+  TORCH_CHECK(cube_state.dim() == 2 && cube_state.size(1) == 13, "cube_state must have shape [worlds,13]");
+  TORCH_CHECK(finger_positions.dim() == 3 && finger_positions.size(0) == cube_state.size(0) &&
+              finger_positions.size(1) == 2 && finger_positions.size(2) == 3,
+              "finger_positions must have shape [worlds,2,3]");
+  TORCH_CHECK(finger_velocity.dim() == 2 && finger_velocity.size(0) == 2 && finger_velocity.size(1) == 3,
+              "finger_velocity must have shape [2,3]");
+  TORCH_CHECK(substeps > 0 && dt > 0.0, "dt and substeps must be positive");
+  return box3d_gripper_step_cuda(
+      cube_state.contiguous(), finger_positions.contiguous(), finger_velocity.contiguous(),
+      dt, substeps, gravity_y, restitution, friction, slop, position_correction,
+      cube_half_x, cube_half_y, cube_half_z, finger_half_x, finger_half_y, finger_half_z);
+}
+
+std::vector<torch::Tensor> box3d_obb_step(
+    torch::Tensor state,
+    torch::Tensor inverse_mass,
+    torch::Tensor half_extents,
+    torch::Tensor inverse_inertia,
+    double dt,
+    int64_t substeps,
+    double gravity_y,
+    double restitution,
+    double friction,
+    double slop,
+    double angular_damping,
+    int64_t solver_iterations) {
+  TORCH_CHECK(state.is_cuda(), "state must be CUDA");
+  TORCH_CHECK(inverse_mass.is_cuda() && half_extents.is_cuda() && inverse_inertia.is_cuda(),
+              "material tensors must be CUDA");
+  TORCH_CHECK(state.scalar_type() == torch::kFloat32 &&
+              inverse_mass.scalar_type() == torch::kFloat32 &&
+              half_extents.scalar_type() == torch::kFloat32 &&
+              inverse_inertia.scalar_type() == torch::kFloat32,
+              "all tensors must be float32");
+  TORCH_CHECK(state.dim() == 3 && state.size(2) == 13, "state must have shape [worlds,bodies,13]");
+  TORCH_CHECK(inverse_mass.sizes() == state.sizes().slice(0, 2), "inverse_mass shape mismatch");
+  TORCH_CHECK(half_extents.dim() == 3 && half_extents.size(0) == state.size(0) &&
+              half_extents.size(1) == state.size(1) && half_extents.size(2) == 3,
+              "half_extents must have shape [worlds,bodies,3]");
+  TORCH_CHECK(inverse_inertia.sizes() == half_extents.sizes(), "inverse_inertia shape mismatch");
+  TORCH_CHECK(dt > 0.0 && substeps > 0 && solver_iterations > 0, "invalid step configuration");
+  return box3d_obb_step_cuda(
+      state.contiguous(), inverse_mass.contiguous(), half_extents.contiguous(),
+      inverse_inertia.contiguous(), dt, substeps, gravity_y, restitution,
+      friction, slop, angular_damping, solver_iterations);
+}
+
+std::vector<torch::Tensor> box3d_sat_step(
+    torch::Tensor state,
+    torch::Tensor inverse_mass,
+    torch::Tensor half_extents,
+    torch::Tensor inverse_inertia,
+    torch::Tensor pair_indices,
+    double dt,
+    int64_t substeps,
+    double gravity_y,
+    double restitution,
+    double friction,
+    double slop,
+    double position_correction,
+    double angular_damping,
+    int64_t solver_iterations,
+    double sat_epsilon) {
+  TORCH_CHECK(state.is_cuda(), "state must be CUDA");
+  TORCH_CHECK(inverse_mass.is_cuda() && half_extents.is_cuda() && inverse_inertia.is_cuda() &&
+              pair_indices.is_cuda(), "all SAT tensors must be CUDA");
+  TORCH_CHECK(state.device() == inverse_mass.device() && state.device() == half_extents.device() &&
+              state.device() == inverse_inertia.device() && state.device() == pair_indices.device(),
+              "all SAT tensors must be on the same CUDA device");
+  TORCH_CHECK(state.scalar_type() == torch::kFloat32 &&
+              inverse_mass.scalar_type() == torch::kFloat32 &&
+              half_extents.scalar_type() == torch::kFloat32 &&
+              inverse_inertia.scalar_type() == torch::kFloat32,
+              "state and SAT material tensors must be float32");
+  TORCH_CHECK(pair_indices.scalar_type() == torch::kInt64, "pair_indices must be int64");
+  TORCH_CHECK(state.dim() == 3 && state.size(2) == 13,
+              "state must have shape [worlds,bodies,13]");
+  TORCH_CHECK(state.size(0) > 0 && state.size(1) >= 2 && state.size(1) <= 32,
+              "SAT requires positive worlds and between 2 and 32 bodies per fixed-small world");
+  TORCH_CHECK(inverse_mass.sizes() == state.sizes().slice(0, 2), "inverse_mass shape mismatch");
+  TORCH_CHECK(half_extents.dim() == 3 && half_extents.size(0) == state.size(0) &&
+              half_extents.size(1) == state.size(1) && half_extents.size(2) == 3,
+              "half_extents must have shape [worlds,bodies,3]");
+  TORCH_CHECK(inverse_inertia.sizes() == half_extents.sizes(), "inverse_inertia shape mismatch");
+  TORCH_CHECK(pair_indices.dim() == 2 && pair_indices.size(1) == 2 &&
+              pair_indices.size(0) > 0 && pair_indices.size(0) <= 64,
+              "pair_indices must have shape [pairs,2] with between 1 and 64 pairs");
+  TORCH_CHECK(std::isfinite(dt) && dt > 0.0 && dt <= 1.0,
+              "dt must be finite and in (0,1]");
+  TORCH_CHECK(substeps > 0 && substeps <= 64, "substeps must be in [1,64]");
+  TORCH_CHECK(std::isfinite(gravity_y) && std::abs(gravity_y) <= 1000.0,
+              "gravity_y must be finite and bounded");
+  TORCH_CHECK(std::isfinite(restitution) && restitution >= 0.0 && restitution <= 1.0,
+              "restitution must be finite and in [0,1]");
+  TORCH_CHECK(std::isfinite(friction) && friction >= 0.0 && friction <= 10.0,
+              "friction must be finite and in [0,10]");
+  TORCH_CHECK(std::isfinite(slop) && slop >= 0.0 && slop <= 0.1,
+              "position_slop must be finite and in [0,0.1]");
+  TORCH_CHECK(std::isfinite(position_correction) && position_correction >= 0.0 &&
+              position_correction <= 1.0,
+              "position_correction must be finite and in [0,1]");
+  TORCH_CHECK(std::isfinite(angular_damping) && angular_damping >= 0.0 &&
+              angular_damping <= 100.0,
+              "angular_damping must be finite and in [0,100]");
+  TORCH_CHECK(solver_iterations > 0 && solver_iterations <= 64,
+              "solver_iterations must be in [1,64]");
+  TORCH_CHECK(std::isfinite(sat_epsilon) && sat_epsilon > 0.0 && sat_epsilon <= 0.01,
+              "sat_epsilon must be finite and in (0,0.01]");
+  return box3d_sat_step_cuda(
+      state.contiguous(), inverse_mass.contiguous(), half_extents.contiguous(),
+      inverse_inertia.contiguous(), pair_indices.contiguous(), dt, substeps,
+      gravity_y, restitution, friction, slop, position_correction,
+      angular_damping, solver_iterations, sat_epsilon);
+}
+
+std::vector<torch::Tensor> box3d_manifold_step(
+    torch::Tensor state,
+    torch::Tensor inverse_mass,
+    torch::Tensor half_extents,
+    torch::Tensor inverse_inertia,
+    torch::Tensor pair_indices,
+    torch::Tensor cache_feature_ids,
+    torch::Tensor cache_impulses,
+    double dt,
+    int64_t substeps,
+    double gravity_y,
+    double restitution,
+    double friction,
+    double slop,
+    double position_correction,
+    double angular_damping,
+    int64_t solver_iterations,
+    double sat_epsilon) {
+  TORCH_CHECK(state.is_cuda() && inverse_mass.is_cuda() && half_extents.is_cuda() &&
+              inverse_inertia.is_cuda() && pair_indices.is_cuda() &&
+              cache_feature_ids.is_cuda() && cache_impulses.is_cuda(),
+              "all manifold tensors must be CUDA");
+  TORCH_CHECK(state.device() == inverse_mass.device() && state.device() == half_extents.device() &&
+              state.device() == inverse_inertia.device() && state.device() == pair_indices.device() &&
+              state.device() == cache_feature_ids.device() && state.device() == cache_impulses.device(),
+              "all manifold tensors must be on the same CUDA device");
+  TORCH_CHECK(state.scalar_type() == torch::kFloat32 &&
+              inverse_mass.scalar_type() == torch::kFloat32 &&
+              half_extents.scalar_type() == torch::kFloat32 &&
+              inverse_inertia.scalar_type() == torch::kFloat32 &&
+              cache_impulses.scalar_type() == torch::kFloat32,
+              "manifold state, material, and impulse tensors must be float32");
+  TORCH_CHECK(pair_indices.scalar_type() == torch::kInt64 &&
+              cache_feature_ids.scalar_type() == torch::kInt64,
+              "manifold pair indices and feature IDs must be int64");
+  TORCH_CHECK(state.dim() == 3 && state.size(2) == 13 && state.size(0) > 0 &&
+              state.size(1) >= 2 && state.size(1) <= 32,
+              "state must have shape [worlds,2..32,13]");
+  TORCH_CHECK(inverse_mass.sizes() == state.sizes().slice(0, 2), "inverse_mass shape mismatch");
+  TORCH_CHECK(half_extents.dim() == 3 && half_extents.size(0) == state.size(0) &&
+              half_extents.size(1) == state.size(1) && half_extents.size(2) == 3,
+              "half_extents must have shape [worlds,bodies,3]");
+  TORCH_CHECK(inverse_inertia.sizes() == half_extents.sizes(), "inverse_inertia shape mismatch");
+  TORCH_CHECK(pair_indices.dim() == 2 && pair_indices.size(1) == 2 &&
+              pair_indices.size(0) > 0 && pair_indices.size(0) <= 16,
+              "pair_indices must have shape [1..16,2]");
+  TORCH_CHECK(cache_feature_ids.dim() == 3 && cache_feature_ids.size(0) == state.size(0) &&
+              cache_feature_ids.size(1) == pair_indices.size(0) && cache_feature_ids.size(2) == 4,
+              "cache_feature_ids must have shape [worlds,pairs,4]");
+  TORCH_CHECK(cache_impulses.dim() == 4 && cache_impulses.size(0) == state.size(0) &&
+              cache_impulses.size(1) == pair_indices.size(0) && cache_impulses.size(2) == 4 &&
+              cache_impulses.size(3) == 3,
+              "cache_impulses must have shape [worlds,pairs,4,3]");
+  TORCH_CHECK(std::isfinite(dt) && dt > 0.0 && dt <= 1.0,
+              "dt must be finite and in (0,1]");
+  TORCH_CHECK(substeps > 0 && substeps <= 64 && solver_iterations > 0 && solver_iterations <= 64,
+              "substeps and solver_iterations must be in [1,64]");
+  TORCH_CHECK(std::isfinite(gravity_y) && std::abs(gravity_y) <= 1000.0,
+              "gravity_y must be finite and bounded");
+  TORCH_CHECK(std::isfinite(restitution) && restitution >= 0.0 && restitution <= 1.0,
+              "restitution must be finite and in [0,1]");
+  TORCH_CHECK(std::isfinite(friction) && friction >= 0.0 && friction <= 10.0,
+              "friction must be finite and in [0,10]");
+  TORCH_CHECK(std::isfinite(slop) && slop >= 0.0 && slop <= 0.1,
+              "position_slop must be finite and in [0,0.1]");
+  TORCH_CHECK(std::isfinite(position_correction) && position_correction >= 0.0 &&
+              position_correction <= 1.0,
+              "position_correction must be finite and in [0,1]");
+  TORCH_CHECK(std::isfinite(angular_damping) && angular_damping >= 0.0 &&
+              angular_damping <= 100.0,
+              "angular_damping must be finite and in [0,100]");
+  TORCH_CHECK(std::isfinite(sat_epsilon) && sat_epsilon > 0.0 && sat_epsilon <= 0.01,
+              "sat_epsilon must be finite and in (0,0.01]");
+  return box3d_manifold_step_cuda(
+      state.contiguous(), inverse_mass.contiguous(), half_extents.contiguous(),
+      inverse_inertia.contiguous(), pair_indices.contiguous(),
+      cache_feature_ids.contiguous(), cache_impulses.contiguous(), dt, substeps,
+      gravity_y, restitution, friction, slop, position_correction,
+      angular_damping, solver_iterations, sat_epsilon);
+}
+
+std::vector<torch::Tensor> box3d_joint_step(
+    torch::Tensor state,
+    torch::Tensor inverse_mass,
+    torch::Tensor inverse_inertia,
+    torch::Tensor joint_indices,
+    torch::Tensor joint_types,
+    torch::Tensor parent_anchor_local,
+    torch::Tensor child_anchor_local,
+    torch::Tensor axis_parent,
+    torch::Tensor reference_quaternion,
+    torch::Tensor lower_limit,
+    torch::Tensor upper_limit,
+    torch::Tensor damping,
+    torch::Tensor motor_enabled,
+    torch::Tensor motor_target_velocity,
+    torch::Tensor motor_target_position,
+    torch::Tensor stiffness,
+    torch::Tensor maximum_effort,
+    torch::Tensor warm_start_cache,
+    double warm_start_factor,
+    double dt,
+    int64_t substeps,
+    double gravity_y,
+    int64_t solver_iterations,
+    double position_correction,
+    double position_slop,
+    double angular_slop,
+    double maximum_linear_repair_m,
+    double maximum_angular_repair_rad) {
+  TORCH_CHECK(state.is_cuda() && inverse_mass.is_cuda() && inverse_inertia.is_cuda() &&
+              joint_indices.is_cuda() && joint_types.is_cuda() && parent_anchor_local.is_cuda() &&
+              child_anchor_local.is_cuda() && axis_parent.is_cuda() && reference_quaternion.is_cuda() &&
+              lower_limit.is_cuda() && upper_limit.is_cuda() && damping.is_cuda() &&
+              motor_enabled.is_cuda() && motor_target_velocity.is_cuda() &&
+              motor_target_position.is_cuda() && stiffness.is_cuda() && maximum_effort.is_cuda() &&
+              warm_start_cache.is_cuda(),
+              "all joint tensors must be CUDA");
+  const auto device = state.device();
+  TORCH_CHECK(inverse_mass.device() == device && inverse_inertia.device() == device &&
+              joint_indices.device() == device && joint_types.device() == device &&
+              parent_anchor_local.device() == device && child_anchor_local.device() == device &&
+              axis_parent.device() == device && reference_quaternion.device() == device &&
+              lower_limit.device() == device && upper_limit.device() == device && damping.device() == device &&
+              motor_enabled.device() == device && motor_target_velocity.device() == device &&
+              motor_target_position.device() == device && stiffness.device() == device &&
+              maximum_effort.device() == device && warm_start_cache.device() == device,
+              "all joint tensors must share one CUDA device");
+  TORCH_CHECK(state.scalar_type() == torch::kFloat32 && inverse_mass.scalar_type() == torch::kFloat32 &&
+              inverse_inertia.scalar_type() == torch::kFloat32 && parent_anchor_local.scalar_type() == torch::kFloat32 &&
+              child_anchor_local.scalar_type() == torch::kFloat32 && axis_parent.scalar_type() == torch::kFloat32 &&
+              reference_quaternion.scalar_type() == torch::kFloat32 && lower_limit.scalar_type() == torch::kFloat32 &&
+              upper_limit.scalar_type() == torch::kFloat32 && damping.scalar_type() == torch::kFloat32 &&
+              motor_target_velocity.scalar_type() == torch::kFloat32 &&
+              motor_target_position.scalar_type() == torch::kFloat32 && stiffness.scalar_type() == torch::kFloat32 &&
+              maximum_effort.scalar_type() == torch::kFloat32 &&
+              warm_start_cache.scalar_type() == torch::kFloat32,
+              "joint state, topology, and control tensors must be float32");
+  TORCH_CHECK(joint_indices.scalar_type() == torch::kInt64 && joint_types.scalar_type() == torch::kInt64,
+              "joint indices and types must be int64");
+  TORCH_CHECK(motor_enabled.scalar_type() == torch::kUInt8, "motor_enabled must be uint8");
+  TORCH_CHECK(state.dim() == 3 && state.size(0) > 0 && state.size(1) >= 2 &&
+              state.size(1) <= 32 && state.size(2) == 13,
+              "state must have shape [worlds,2..32,13]");
+  const int64_t worlds = state.size(0), bodies = state.size(1);
+  TORCH_CHECK(inverse_mass.dim() == 2 && inverse_mass.size(0) == worlds && inverse_mass.size(1) == bodies,
+              "inverse_mass shape mismatch");
+  TORCH_CHECK(inverse_inertia.dim() == 3 && inverse_inertia.size(0) == worlds &&
+              inverse_inertia.size(1) == bodies && inverse_inertia.size(2) == 3,
+              "inverse_inertia must have shape [worlds,bodies,3]");
+  TORCH_CHECK(joint_indices.dim() == 2 && joint_indices.size(1) == 2 &&
+              joint_indices.size(0) > 0 && joint_indices.size(0) <= 16,
+              "joint_indices must have shape [1..16,2]");
+  const int64_t joints = joint_indices.size(0);
+  TORCH_CHECK(joint_types.dim() == 1 && joint_types.size(0) == joints &&
+              parent_anchor_local.sizes() == torch::IntArrayRef({joints, 3}) &&
+              child_anchor_local.sizes() == torch::IntArrayRef({joints, 3}) &&
+              axis_parent.sizes() == torch::IntArrayRef({joints, 3}) &&
+              reference_quaternion.sizes() == torch::IntArrayRef({joints, 4}),
+              "joint topology row shapes mismatch");
+  TORCH_CHECK(lower_limit.sizes() == torch::IntArrayRef({joints}) &&
+              upper_limit.sizes() == torch::IntArrayRef({joints}) &&
+              damping.sizes() == torch::IntArrayRef({joints}) &&
+              stiffness.sizes() == torch::IntArrayRef({joints}) &&
+              motor_enabled.sizes() == torch::IntArrayRef({joints}),
+              "joint scalar topology shapes mismatch");
+  TORCH_CHECK(motor_target_velocity.sizes() == torch::IntArrayRef({worlds, joints}) &&
+              motor_target_position.sizes() == torch::IntArrayRef({worlds, joints}) &&
+              maximum_effort.sizes() == torch::IntArrayRef({worlds, joints}),
+              "joint controls must have shape [worlds,joints]");
+  TORCH_CHECK(warm_start_cache.sizes() == torch::IntArrayRef({worlds, joints, 8}),
+              "warm_start_cache must have shape [worlds,joints,8]");
+  TORCH_CHECK(std::isfinite(dt) && dt > 0.0 && dt <= 1.0 && substeps > 0 && substeps <= 64 &&
+              solver_iterations > 0 && solver_iterations <= 64, "invalid joint step configuration");
+  TORCH_CHECK(std::isfinite(gravity_y) && std::abs(gravity_y) <= 1000.0,
+              "gravity_y must be finite and bounded");
+  TORCH_CHECK(std::isfinite(position_correction) && position_correction >= 0.0 && position_correction <= 1.0 &&
+              std::isfinite(position_slop) && position_slop >= 0.0 &&
+              std::isfinite(angular_slop) && angular_slop >= 0.0 &&
+              std::isfinite(maximum_linear_repair_m) && maximum_linear_repair_m >= 0.0 &&
+              std::isfinite(maximum_angular_repair_rad) && maximum_angular_repair_rad >= 0.0,
+              "joint repair parameters must be finite and bounded");
+  TORCH_CHECK(std::isfinite(warm_start_factor) && warm_start_factor >= 0.0 &&
+              warm_start_factor <= 1.0,
+              "warm_start_factor must be finite and in [0,1]");
+  return box3d_joint_step_cuda(
+      state.contiguous(), inverse_mass.contiguous(), inverse_inertia.contiguous(),
+      joint_indices.contiguous(), joint_types.contiguous(), parent_anchor_local.contiguous(),
+      child_anchor_local.contiguous(), axis_parent.contiguous(), reference_quaternion.contiguous(),
+      lower_limit.contiguous(), upper_limit.contiguous(), damping.contiguous(),
+      motor_enabled.contiguous(), motor_target_velocity.contiguous(),
+      motor_target_position.contiguous(), stiffness.contiguous(), maximum_effort.contiguous(),
+      warm_start_cache.contiguous(), warm_start_factor, dt, substeps, gravity_y,
+      solver_iterations, position_correction, position_slop,
+      angular_slop, maximum_linear_repair_m, maximum_angular_repair_rad);
+}
+
+std::vector<torch::Tensor> box3d_coupled_step(
+    torch::Tensor state, torch::Tensor inverse_mass, torch::Tensor half_extents,
+    torch::Tensor inverse_inertia, torch::Tensor joint_indices, torch::Tensor joint_types,
+    torch::Tensor parent_anchor, torch::Tensor child_anchor, torch::Tensor axis_parent,
+    torch::Tensor reference_quaternion, torch::Tensor lower_limit, torch::Tensor upper_limit,
+    torch::Tensor damping, torch::Tensor motor_enabled, torch::Tensor target_velocity,
+    torch::Tensor target_position, torch::Tensor stiffness, torch::Tensor maximum_effort,
+    torch::Tensor joint_cache, torch::Tensor contact_pairs, torch::Tensor contact_feature_ids,
+    torch::Tensor contact_impulse_cache, double warm_start_factor, double dt, int64_t substeps,
+    double gravity_y, double restitution, double friction, double contact_generation_distance,
+    double contact_slop,
+    double position_correction, double angular_damping, int64_t solver_iterations,
+    double sat_epsilon, double joint_position_slop, double angular_slop,
+    double maximum_linear_repair, double maximum_angular_repair,
+    bool articulation_projection, double contact_warm_start_factor) {
+  const auto device = state.device();
+  const std::vector<torch::Tensor> tensors = {
+      state,inverse_mass,half_extents,inverse_inertia,joint_indices,joint_types,
+      parent_anchor,child_anchor,axis_parent,reference_quaternion,lower_limit,upper_limit,
+      damping,motor_enabled,target_velocity,target_position,stiffness,maximum_effort,
+      joint_cache,contact_pairs,contact_feature_ids,contact_impulse_cache};
+  for (const auto &tensor : tensors) {
+    TORCH_CHECK(tensor.is_cuda() && tensor.device() == device,
+                "all coupled tensors must share one CUDA device");
+  }
+  TORCH_CHECK(state.scalar_type()==torch::kFloat32 && inverse_mass.scalar_type()==torch::kFloat32 &&
+              half_extents.scalar_type()==torch::kFloat32 && inverse_inertia.scalar_type()==torch::kFloat32 &&
+              parent_anchor.scalar_type()==torch::kFloat32 && child_anchor.scalar_type()==torch::kFloat32 &&
+              axis_parent.scalar_type()==torch::kFloat32 && reference_quaternion.scalar_type()==torch::kFloat32 &&
+              lower_limit.scalar_type()==torch::kFloat32 && upper_limit.scalar_type()==torch::kFloat32 &&
+              damping.scalar_type()==torch::kFloat32 && target_velocity.scalar_type()==torch::kFloat32 &&
+              target_position.scalar_type()==torch::kFloat32 && stiffness.scalar_type()==torch::kFloat32 &&
+              maximum_effort.scalar_type()==torch::kFloat32 && joint_cache.scalar_type()==torch::kFloat32 &&
+              contact_impulse_cache.scalar_type()==torch::kFloat32,
+              "coupled floating tensors must be float32");
+  TORCH_CHECK(joint_indices.scalar_type()==torch::kInt64 && joint_types.scalar_type()==torch::kInt64 &&
+              contact_pairs.scalar_type()==torch::kInt64 && contact_feature_ids.scalar_type()==torch::kInt64,
+              "coupled indices and feature IDs must be int64");
+  TORCH_CHECK(motor_enabled.scalar_type()==torch::kUInt8, "motor_enabled must be uint8");
+  TORCH_CHECK(state.dim()==3 && state.size(0)>0 && state.size(1)>=3 && state.size(1)<=32 && state.size(2)==13,
+              "coupled state must have shape [worlds,3..32,13]");
+  const int64_t worlds=state.size(0), bodies=state.size(1);
+  TORCH_CHECK(inverse_mass.sizes()==torch::IntArrayRef({worlds,bodies}) &&
+              half_extents.sizes()==torch::IntArrayRef({worlds,bodies,3}) &&
+              inverse_inertia.sizes()==torch::IntArrayRef({worlds,bodies,3}),
+              "coupled body tensor shapes mismatch");
+  TORCH_CHECK(joint_indices.dim()==2 && joint_indices.size(0)>0 && joint_indices.size(0)<=16 && joint_indices.size(1)==2,
+              "joint_indices must have shape [1..16,2]");
+  const int64_t joints=joint_indices.size(0);
+  TORCH_CHECK(joint_types.sizes()==torch::IntArrayRef({joints}) &&
+              parent_anchor.sizes()==torch::IntArrayRef({joints,3}) && child_anchor.sizes()==torch::IntArrayRef({joints,3}) &&
+              axis_parent.sizes()==torch::IntArrayRef({joints,3}) && reference_quaternion.sizes()==torch::IntArrayRef({joints,4}) &&
+              lower_limit.sizes()==torch::IntArrayRef({joints}) && upper_limit.sizes()==torch::IntArrayRef({joints}) &&
+              damping.sizes()==torch::IntArrayRef({joints}) && motor_enabled.sizes()==torch::IntArrayRef({joints}) &&
+              stiffness.sizes()==torch::IntArrayRef({joints}), "coupled joint topology shapes mismatch");
+  TORCH_CHECK(target_velocity.sizes()==torch::IntArrayRef({worlds,joints}) &&
+              target_position.sizes()==torch::IntArrayRef({worlds,joints}) &&
+              maximum_effort.sizes()==torch::IntArrayRef({worlds,joints}) &&
+              joint_cache.sizes()==torch::IntArrayRef({worlds,joints,8}),
+              "coupled controls and joint cache shapes mismatch");
+  TORCH_CHECK(contact_pairs.dim()==2 && contact_pairs.size(0)>0 && contact_pairs.size(0)<=16 && contact_pairs.size(1)==2,
+              "contact_pairs must have shape [1..16,2]");
+  const int64_t pairs=contact_pairs.size(0);
+  TORCH_CHECK(contact_feature_ids.sizes()==torch::IntArrayRef({worlds,pairs,4}) &&
+              contact_impulse_cache.sizes()==torch::IntArrayRef({worlds,pairs,4,3}),
+              "coupled contact cache shapes mismatch");
+  TORCH_CHECK(std::isfinite(dt)&&dt>0&&dt<=1&&substeps>0&&substeps<=64&&
+              solver_iterations>0&&solver_iterations<=64&&std::isfinite(gravity_y)&&
+              std::isfinite(restitution)&&restitution>=0&&restitution<=1&&
+              std::isfinite(friction)&&friction>=0&&friction<=10&&
+              std::isfinite(contact_generation_distance)&&contact_generation_distance>=0&&
+              std::isfinite(warm_start_factor)&&warm_start_factor>=0&&warm_start_factor<=1&&
+              std::isfinite(contact_warm_start_factor)&&contact_warm_start_factor>=0&&contact_warm_start_factor<=1,
+              "invalid coupled solver configuration");
+  return box3d_coupled_step_cuda(
+      state.contiguous(),inverse_mass.contiguous(),half_extents.contiguous(),inverse_inertia.contiguous(),
+      joint_indices.contiguous(),joint_types.contiguous(),parent_anchor.contiguous(),child_anchor.contiguous(),
+      axis_parent.contiguous(),reference_quaternion.contiguous(),lower_limit.contiguous(),upper_limit.contiguous(),
+      damping.contiguous(),motor_enabled.contiguous(),target_velocity.contiguous(),target_position.contiguous(),
+      stiffness.contiguous(),maximum_effort.contiguous(),joint_cache.contiguous(),contact_pairs.contiguous(),
+      contact_feature_ids.contiguous(),contact_impulse_cache.contiguous(),warm_start_factor,dt,substeps,gravity_y,
+      restitution,friction,contact_generation_distance,contact_slop,position_correction,angular_damping,solver_iterations,sat_epsilon,
+      joint_position_slop,angular_slop,maximum_linear_repair,maximum_angular_repair,
+      articulation_projection,contact_warm_start_factor);
+}
+
+std::vector<torch::Tensor> box3d_ray_cast(
+    torch::Tensor state,
+    torch::Tensor half_extents,
+    torch::Tensor body_enabled,
+    torch::Tensor ray_origins,
+    torch::Tensor ray_directions,
+    torch::Tensor maximum_distance) {
+  TORCH_CHECK(state.is_cuda() && half_extents.is_cuda() && body_enabled.is_cuda() &&
+              ray_origins.is_cuda() && ray_directions.is_cuda() && maximum_distance.is_cuda(),
+              "all ray tensors must be CUDA");
+  const auto device = state.device();
+  TORCH_CHECK(half_extents.device() == device && body_enabled.device() == device &&
+              ray_origins.device() == device && ray_directions.device() == device &&
+              maximum_distance.device() == device,
+              "all ray tensors must share one CUDA device");
+  TORCH_CHECK(state.scalar_type() == torch::kFloat32 &&
+              half_extents.scalar_type() == torch::kFloat32 &&
+              ray_origins.scalar_type() == torch::kFloat32 &&
+              ray_directions.scalar_type() == torch::kFloat32 &&
+              maximum_distance.scalar_type() == torch::kFloat32,
+              "ray state, geometry, and query tensors must be float32");
+  TORCH_CHECK(body_enabled.scalar_type() == torch::kUInt8,
+              "body_enabled must be uint8");
+  TORCH_CHECK(state.dim() == 3 && state.size(0) > 0 && state.size(1) >= 1 &&
+              state.size(1) <= 32 && state.size(2) == 13,
+              "state must have shape [worlds,1..32,13]");
+  const int64_t worlds = state.size(0), bodies = state.size(1);
+  TORCH_CHECK(half_extents.sizes() == torch::IntArrayRef({worlds, bodies, 3}),
+              "half_extents must have shape [worlds,bodies,3]");
+  TORCH_CHECK(body_enabled.sizes() == torch::IntArrayRef({worlds, bodies}),
+              "body_enabled must have shape [worlds,bodies]");
+  TORCH_CHECK(ray_origins.dim() == 3 && ray_origins.size(0) == worlds &&
+              ray_origins.size(1) > 0 && ray_origins.size(2) == 3,
+              "ray_origins must have shape [worlds,rays,3]");
+  const int64_t rays = ray_origins.size(1);
+  TORCH_CHECK(ray_directions.sizes() == torch::IntArrayRef({worlds, rays, 3}),
+              "ray_directions must have shape [worlds,rays,3]");
+  TORCH_CHECK(maximum_distance.sizes() == torch::IntArrayRef({worlds, rays}),
+              "maximum_distance must have shape [worlds,rays]");
+  TORCH_CHECK(rays <= 262144 && worlds <= 1048576 / rays,
+              "ray batch is too large");
+  return box3d_ray_cast_cuda(
+      state.contiguous(), half_extents.contiguous(), body_enabled.contiguous(),
+      ray_origins.contiguous(), ray_directions.contiguous(),
+      maximum_distance.contiguous());
+}
+
+std::vector<torch::Tensor> box3d_camera_rays(
+    torch::Tensor state,
+    torch::Tensor parent_body,
+    torch::Tensor position_parent,
+    torch::Tensor quaternion_parent_from_camera,
+    torch::Tensor intrinsics,
+    torch::Tensor pixel_camera,
+    torch::Tensor pixel_xy) {
+  const auto device = state.device();
+  const std::vector<torch::Tensor> tensors = {
+      state, parent_body, position_parent, quaternion_parent_from_camera,
+      intrinsics, pixel_camera, pixel_xy};
+  for (const auto& tensor : tensors) {
+    TORCH_CHECK(tensor.is_cuda() && tensor.device() == device,
+                "all camera tensors must share one CUDA device");
+  }
+  TORCH_CHECK(state.scalar_type() == torch::kFloat32 &&
+              position_parent.scalar_type() == torch::kFloat32 &&
+              quaternion_parent_from_camera.scalar_type() == torch::kFloat32 &&
+              intrinsics.scalar_type() == torch::kFloat32,
+              "camera state, poses, and intrinsics must be float32");
+  TORCH_CHECK(parent_body.scalar_type() == torch::kInt64 &&
+              pixel_camera.scalar_type() == torch::kInt64 &&
+              pixel_xy.scalar_type() == torch::kInt64,
+              "camera topology and pixel coordinates must be int64");
+  TORCH_CHECK(state.dim() == 3 && state.size(0) > 0 && state.size(1) >= 1 &&
+              state.size(1) <= 32 && state.size(2) == 13,
+              "camera state must have shape [worlds,1..32,13]");
+  const int64_t worlds = state.size(0);
+  const int64_t cameras = parent_body.numel();
+  TORCH_CHECK(parent_body.dim() == 1 && cameras >= 1 && cameras <= 64,
+              "parent_body must have shape [1..64]");
+  TORCH_CHECK(position_parent.sizes() == torch::IntArrayRef({cameras, 3}) &&
+              quaternion_parent_from_camera.sizes() ==
+                  torch::IntArrayRef({cameras, 4}) &&
+              intrinsics.sizes() == torch::IntArrayRef({cameras, 5}),
+              "camera pose/intrinsic shapes mismatch");
+  TORCH_CHECK(pixel_camera.dim() == 1 && pixel_camera.numel() >= 1 &&
+              pixel_camera.numel() <= 262144,
+              "pixel_camera must have shape [1..262144]");
+  const int64_t rays = pixel_camera.numel();
+  TORCH_CHECK(pixel_xy.sizes() == torch::IntArrayRef({rays, 2}),
+              "pixel_xy must have shape [rays,2]");
+  TORCH_CHECK(worlds <= 1048576 / rays,
+              "camera ray batch exceeds 1,048,576 total rays");
+  return box3d_camera_rays_cuda(
+      state.contiguous(), parent_body.contiguous(),
+      position_parent.contiguous(),
+      quaternion_parent_from_camera.contiguous(), intrinsics.contiguous(),
+      pixel_camera.contiguous(), pixel_xy.contiguous());
+}
+
+std::vector<torch::Tensor> box3d_camera_depth(
+    torch::Tensor distance,
+    torch::Tensor body_index,
+    torch::Tensor forward_cosine) {
+  TORCH_CHECK(distance.is_cuda() && body_index.is_cuda() &&
+              forward_cosine.is_cuda(),
+              "all camera depth tensors must be CUDA");
+  TORCH_CHECK(distance.device() == body_index.device() &&
+              distance.device() == forward_cosine.device(),
+              "all camera depth tensors must share one CUDA device");
+  TORCH_CHECK(distance.scalar_type() == torch::kFloat32 &&
+              forward_cosine.scalar_type() == torch::kFloat32 &&
+              body_index.scalar_type() == torch::kInt64,
+              "camera distance/cosine must be float32 and body index int64");
+  TORCH_CHECK(distance.dim() == 2 && distance.size(0) > 0 &&
+              distance.size(1) > 0 && distance.numel() <= 1048576,
+              "camera distances must have shape [worlds,rays]");
+  TORCH_CHECK(body_index.sizes() == distance.sizes() &&
+              forward_cosine.sizes() == distance.sizes(),
+              "camera depth tensor shapes must match");
+  return box3d_camera_depth_cuda(
+      distance.contiguous(), body_index.contiguous(),
+      forward_cosine.contiguous());
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
+  module.def("step", &box3d_step, "Box3D-derived fixed-world CUDA step");
+  module.def("articulation_response", &box3d_articulation_response,
+             "Isolated planar two-link contact-response CUDA micro");
+  module.def("gripper_step", &box3d_gripper_step, "Physical parallel-jaw box grasp CUDA step");
+  module.def("obb_step", &box3d_obb_step, "Oriented box plane-contact CUDA step");
+  module.def("sat_step", &box3d_sat_step, "Oriented box pair SAT contact CUDA step");
+  module.def("manifold_step", &box3d_manifold_step, "Persistent clipped OBB manifold CUDA step");
+  module.def("joint_step", &box3d_joint_step, "Fixed-topology articulated joint CUDA step");
+  module.def("coupled_step", &box3d_coupled_step, "Coupled articulated-joint and persistent-contact CUDA step");
+  module.def("ray_cast", &box3d_ray_cast, "Batched nearest-hit OBB ray query");
+  module.def("camera_rays", &box3d_camera_rays,
+             "Batched calibrated body-attached CUDA camera rays");
+  module.def("camera_depth", &box3d_camera_depth,
+             "Batched optical-axis CUDA depth from ray hits");
+}
