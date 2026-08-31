@@ -31,7 +31,7 @@
     "disk_gib": 20,
     "gpu": 1,
     "gpu_types": ["RTX-5090"],
-    "spot": true,
+    "spot": false,
     "ttl_minutes": 25,
     "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
   }
