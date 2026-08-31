@@ -38,6 +38,9 @@ def main():
     ap.add_argument("--seed", type=int, default=4242)
     ap.add_argument("--library", default=None)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--grid", default=None,
+                    help="JSON grid spec: render duck on a cube grid, e.g. "
+                         "'{\"nx\":8,\"nz\":8,\"cube_size\":0.06,\"spacing\":0.06,\"height_jitter\":0.005}'")
     a = ap.parse_args()
 
     ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
@@ -49,8 +52,13 @@ def main():
     def policy(obs):
         return actor.deterministic(torch.from_numpy(np.ascontiguousarray(obs))).numpy()
 
-    env = FlatFloorDuckEnv(environments=1, seed=a.seed, perturbation_rad=0.0,
-                           library_path=a.library)
+    if a.grid:
+        from walk.env.grid import CubeGridDuckEnv
+        env = CubeGridDuckEnv(environments=1, seed=a.seed, perturbation_rad=0.0,
+                              grid=json.loads(a.grid), library_path=a.library)
+    else:
+        env = FlatFloorDuckEnv(environments=1, seed=a.seed, perturbation_rad=0.0,
+                               library_path=a.library)
     ticks = []
 
     def on_tick(state):
@@ -97,17 +105,41 @@ def main():
     if drift > 0.06:
         raise SystemExit(f"FK/root mismatch {drift:.3f} m - convention error")
 
+    extra_geometry, extra_body = [], None
+    if a.grid:
+        cubes = np.asarray(env._lane.state_dump(0)["cube_pose"], float)
+        half = float(json.loads(a.grid).get("cube_size", 0.06)) / 2.0
+        cube_body_index = 16  # one synthetic identity-pose body for all cubes
+        extra_body = {"name": "cube_grid", "parent": -1}
+        # 12 triangles per cube, world-space vertices (static grid: pose fixed)
+        F = [(0,1,2),(0,2,3),(4,6,5),(4,7,6),(0,4,5),(0,5,1),
+             (3,2,6),(3,6,7),(1,5,6),(1,6,2),(0,3,7),(0,7,4)]
+        for cx, cy, cz in cubes[:, :3]:
+            V = [[cx+sx*half, cy+sy*half, cz+sz*half]
+                 for sz in (-1, 1) for sx, sy in ((-1,-1),(1,-1),(1,1),(-1,1))]
+            tris = [[[round(v, 5) for v in V[i]] for i in f] for f in F]
+            extra_geometry.append({"name": "cube", "body": cube_body_index,
+                                   "mesh": "cube", "collision": True,
+                                   "rgba": [0.55, 0.44, 0.30, 1.0],
+                                   "triangles": tris})
+        identity = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]]
+        for f in frames:
+            f["poses"].append(identity)
+
     data = {"schema": "duckgridwalk.walk-cad-view/v1",
             "checkpoint": str(a.checkpoint), "update": ck.get("update"),
             "command_mps": a.command, "frame_dt_s": 0.002 * a.every,
             "physics_backend": "Box3D integrated duck CPU lane (idv1/civ1)",
             "asset_notice": base_view["asset_notice"],
-            "bodies": base_view["bodies"], "geometry": base_view["geometry"],
+            "bodies": base_view["bodies"] + ([extra_body] if extra_body else []),
+            "geometry": base_view["geometry"] + extra_geometry,
+            "grid": json.loads(a.grid) if a.grid else None,
             "frames": frames}
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     html = TEMPLATE.replace("__DATA__", json.dumps(data, separators=(",", ":")))
-    name = f"walk-u{ck.get('update')}-cmd{a.command:.2f}.html"
+    tag = "-grid" if a.grid else ""
+    name = f"walk-u{ck.get('update')}-cmd{a.command:.2f}{tag}.html"
     (out / name).write_text(html)
     print(out / name)
 
