@@ -68,7 +68,7 @@ class FlatFloorDuckEnv(DuckEnvBatch):
         self._library_path = library_path
         self._lane_factory = lane_factory or (
             lambda E, offsets: native_lane.NativeDuckLane(
-                E, joint_offsets=offsets, library_path=library_path))
+                E, joint_offsets=offsets, library_path=self._library_path))
         self._build_lane()
         self._tracker = reward_mod.GaitTracker(self.E)
         self._episode = np.zeros(self.E, np.int64)   # per-env episode counter
@@ -87,6 +87,10 @@ class FlatFloorDuckEnv(DuckEnvBatch):
                 -self._perturbation, self._perturbation, ACT)
             for e in range(self.E)]) if self._perturbation else None
         self._lane = self._lane_factory(self.E, offsets)
+        # Pin the resolved dylib for this process: later lane rebuilds (fault
+        # recovery, reseed) must never recompile from possibly-edited source.
+        if self._library_path is None:
+            self._library_path = self._lane.library_path
         self._min_height = MIN_HEIGHT_FRACTION * self._lane.home_root_height
 
     def _clip_limits(self, targets: np.ndarray) -> np.ndarray:
