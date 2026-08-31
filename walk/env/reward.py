@@ -36,6 +36,9 @@ CLEARANCE_M = 0.010      # matches the strict evaluator's sole-clearance bound.
 W_DOUBLE_SUPPORT = 0.5   # penalty per step once both feet stay grounded too long.
 DOUBLE_SUPPORT_GRACE = 0.25  # s of continuous double support tolerated at |cmd|>0.
 W_ALTERNATE = 0.5        # extra bonus when a qualified touchdown switches feet.
+W_PHASE = 0.3            # per foot whose stance matches the observed 1.25 Hz
+                         # phase clock (left: sin>=0, right: sin<0); breaks the
+                         # one-legged-limp optimum where alternation never fires.
 
 
 class GaitTracker:
@@ -95,6 +98,16 @@ def reward(prev_state: dict, state: dict, action: np.ndarray, command: np.ndarra
 
     # 7. foot-clearance bonus: swing foot whose whole sole clears >= 10 mm
     r += W_CLEARANCE * ((~contact) & (sole >= CLEARANCE_M)).sum(1)
+
+    # 8b. phase-locked stance: while commanded, each foot is rewarded for
+    # matching its half of the observed gait clock (left stance sin>=0).
+    # Absent phase (older callers/tests) skips the term.
+    phase = state.get("phase")
+    if phase is not None:
+        stance_left = np.sin(np.asarray(phase, np.float64)) >= 0.0
+        match = (contact[:, 0] == stance_left).astype(np.float64) \
+            + (contact[:, 1] == ~stance_left).astype(np.float64)
+        r += W_PHASE * match * (np.abs(cmd) > 0)
 
     # 8. double-support penalty beyond the duty grace while commanded to move
     both = contact.all(1)

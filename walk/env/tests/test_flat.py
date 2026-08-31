@@ -128,12 +128,45 @@ class TestTermination(unittest.TestCase):
 
 
 class TestSolverFaultPath(unittest.TestCase):
-    def test_perturbed_reset_faults_are_persisted_and_raised(self):
-        """Until the workstream-A civ1 repair lands, any reset perturbation
-        stalls the solver during foot settling; the env must persist the
-        failing env's state and raise SolverFault (never return post-fault
-        observations). This pins deliverable 2 against the real lane."""
+    def test_repaired_solver_survives_perturbed_reset(self):
+        """The workstream-A civ1 repair landed: the reset perturbation that
+        formerly stalled during foot settling (seed 1) must now hold 60
+        zero-action steps without any fault at the strict tolerance."""
         env = FlatFloorDuckEnv(environments=2, seed=1, perturbation_rad=0.02)
+        try:
+            action = np.zeros((2, ACT), np.float32)
+            for _ in range(60):
+                _, _, done, _ = env.step(action)
+            self.assertFalse(done.any())
+        finally:
+            env.close()
+
+    def test_injected_faults_are_persisted_and_raised(self):
+        """Fault handling pinned independently of solver quality: a lane whose
+        tick reports a nonzero rc must persist the failing env's state and
+        raise SolverFault (never return post-fault observations)."""
+        from walk.env import native_lane
+
+        class FaultingLane(native_lane.NativeDuckLane):
+            calls = 0
+
+            def tick(self, targets):
+                type(self).calls += 1
+                if type(self).calls > 5:
+                    diags = [dict(environment=e, phase=3, native_status=3,
+                                  iterations=4096, contact_points=2,
+                                  active_limits=0, joint_residual=1e-6,
+                                  normal_residual=1e-6, tangent_residual=1e-6,
+                                  momentum_residual=1e-9,
+                                  maximum_normal_impulse=1.0,
+                                  maximum_penetration=1e-4)
+                             for e in range(self.E)]
+                    return 5, diags
+                return super().tick(targets)
+
+        env = FlatFloorDuckEnv(
+            environments=2, seed=1, perturbation_rad=0.0,
+            lane_factory=lambda E, offsets: FaultingLane(E, joint_offsets=offsets))
         try:
             action = np.zeros((2, ACT), np.float32)
             with self.assertRaises(SolverFault) as caught:

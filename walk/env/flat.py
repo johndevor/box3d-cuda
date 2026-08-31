@@ -202,7 +202,9 @@ class FlatFloorDuckEnv(DuckEnvBatch):
                 "foot_contact": state.foot_contact.copy(),
                 "sole_height": state.sole_height.copy(),
                 "action": np.asarray(action).copy(),
-                "torque": np.asarray(torque).copy()}
+                "torque": np.asarray(torque).copy(),
+                # same clock the policy observes in obs[:, 56:58]
+                "phase": 2.0 * math.pi * PHASE_HZ * self._t * CONTROL_DT}
 
     def _observe(self, state: native_lane.LaneState) -> np.ndarray:
         obs = np.zeros((self.E, OBS), np.float32)

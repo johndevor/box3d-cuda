@@ -135,33 +135,21 @@ class TestJitteredGrid(unittest.TestCase):
         finally:
             env.close()
 
-    def test_stalling_terrain_faults_at_1e8_and_holds_at_documented_1e6(self):
-        """(d) the documented civ1 stepped-top stall: SolverFault with a
-        persisted artifact at 1e-8, clean 50-step hold at the README's
-        interim 1e-6 via the exposed constructor tolerance."""
+    def test_formerly_stalling_terrain_now_holds_at_1e8_and_at_1e6(self):
+        """(d) the stepped-cube-top configuration that stalled civ1 before the
+        workstream-A2 repair (terrain seed pinned below) must now hold 50
+        zero-action steps at the STRICT 1e-8 tolerance, and still hold at the
+        README's formerly-required interim 1e-6 constructor tolerance."""
         stall = dict(FLUSH_GRID, height_jitter=JITTER_M, seed=STALLING_TERRAIN_SEED)
         env = CubeGridDuckEnv(environments=1, seed=0, grid=stall)
         try:
             action = np.zeros((1, ACT), np.float32)
-            with self.assertRaises(SolverFault) as caught:
-                for _ in range(50):
-                    env.step(action)
+            for step in range(50):
+                obs, reward, done, info = env.step(action)
+                self.assertFalse(done.any(), f"terminated at step {step}")
+            self.assertTrue(np.isfinite(obs).all())
         finally:
             env.close()
-        fault = caught.exception
-        path = Path(fault.saved_problem_path)
-        self.assertTrue(path.is_file())
-        payload = json.loads(path.read_text())
-        self.assertEqual(payload["backend"], "duck_world_v1")
-        self.assertEqual(payload["environment"], fault.env_index)
-        self.assertEqual(payload["tolerance"], 1e-8)
-        self.assertEqual(payload["grid"]["height_jitter"], JITTER_M)
-        for key in ["diagnostics", "state", "effective_targets", "action"]:
-            self.assertIn(key, payload)
-        self.assertEqual(len(payload["state"]["qpos"]), 21)
-        self.assertIn("cube_pose", payload["state"])
-        self.assertTrue(any(d["native_status"] != 0
-                            for d in payload["diagnostics"]))
 
         env = CubeGridDuckEnv(environments=1, seed=0, grid=stall,
                               impulse_tolerance=1e-6)

@@ -120,3 +120,36 @@ class TestGaitShaping(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PhaseLockTest(unittest.TestCase):
+    def _state(self, contact, phase):
+        E = len(phase)
+        return {"root_lin_vel": np.zeros((E, 3)), "root_ang_vel": np.zeros((E, 3)),
+                "foot_contact": np.array(contact, bool), "sole_height": np.zeros((E, 2)),
+                "action": np.zeros((E, 14)), "torque": np.zeros((E, 14)),
+                "phase": np.asarray(phase, float)}
+
+    def test_phase_locked_stance_rewards_alternation(self):
+        from walk.env import reward as rm
+        tr = rm.GaitTracker(3)
+        # env0: left stance during left window (sin>=0) and right up -> both match
+        # env1: limp (left always down, right down) during left window -> 1 match
+        # env2: exactly wrong (left up, right down in left window) -> 1 match
+        phase = [0.1, 0.1, 0.1]  # sin>0: left window
+        contact = [[True, False], [True, True], [False, True]]
+        prev = self._state(contact, phase)
+        r = rm.reward(prev, self._state(contact, phase), np.zeros((3, 14)),
+                      np.full(3, 0.15), tr)
+        self.assertAlmostEqual(float(r[0] - r[1]), rm.W_PHASE, places=5)
+        # limp keeps one matching foot (left), fully inverted stance matches none
+        self.assertAlmostEqual(float(r[1] - r[2]), rm.W_PHASE, places=5)
+
+    def test_phase_term_absent_without_phase_key(self):
+        from walk.env import reward as rm
+        tr = rm.GaitTracker(1)
+        s = self._state([[True, False]], [0.1]); del s["phase"]
+        r_no = rm.reward(s, dict(s), np.zeros((1, 14)), np.full(1, 0.15), rm.GaitTracker(1))
+        s2 = self._state([[True, False]], [0.1])
+        r_yes = rm.reward(s2, dict(s2), np.zeros((1, 14)), np.full(1, 0.15), tr)
+        self.assertAlmostEqual(float(r_yes[0] - r_no[0]), 2 * rm.W_PHASE, places=5)
