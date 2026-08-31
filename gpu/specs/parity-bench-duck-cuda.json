@@ -7,35 +7,47 @@
       "name": "gpu-info",
       "command": "nvidia-smi | tee gpu-info.txt && nvcc --version | tee -a gpu-info.txt",
       "timeout_s": 60,
-      "artifacts": ["gpu-info.txt"],
+      "artifacts": [
+        "gpu-info.txt"
+      ],
       "continue_on_error": false
     },
     {
       "name": "build",
       "command": "set -o pipefail; cd experimental/duck_cuda && ./build_remote.sh 2>&1 | tee ../../build.log",
       "timeout_s": 600,
-      "artifacts": ["build.log"],
+      "artifacts": [
+        "build.log"
+      ],
       "continue_on_error": false
     },
     {
       "name": "serial-build",
       "command": "set -o pipefail; g++ -std=c++17 -O2 -fPIC -shared -Iexperimental/duck_cuda/include experimental/duck_cuda/src/duck_cuda_serial.cpp -o libduck_cuda_serial.so 2>&1 | tee serial-build.log",
       "timeout_s": 300,
-      "artifacts": ["serial-build.log"],
+      "artifacts": [
+        "serial-build.log"
+      ],
       "continue_on_error": false
     },
     {
       "name": "gpu-parity",
-      "command": "set -o pipefail; DUCK_CUDA_LIBRARY=$(find experimental/duck_cuda -name 'libduck_cuda.so' | head -1) DUCK_CUDA_SERIAL_LIBRARY=$PWD/libduck_cuda_serial.so python -B experimental/duck_cuda/tests/remote_gpu_parity.py 2>&1 | tee gpu-parity.json.log && cp gpu-parity.json gpu-parity-out.json 2>/dev/null || true",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; DUCK_CUDA_LIBRARY=$(find experimental/duck_cuda -name 'libduck_cuda.so' | head -1) DUCK_CUDA_SERIAL_LIBRARY=$PWD/libduck_cuda_serial.so $PY -B experimental/duck_cuda/tests/remote_gpu_parity.py 2>&1 | tee gpu-parity.log",
       "timeout_s": 600,
-      "artifacts": ["gpu-parity.json.log", "gpu-parity.json"],
+      "artifacts": [
+        "gpu-parity.log",
+        "gpu-parity.json"
+      ],
       "continue_on_error": false
     },
     {
       "name": "gpu-bench",
-      "command": "set -o pipefail; DUCK_CUDA_LIBRARY=$(find experimental/duck_cuda -name 'libduck_cuda.so' | head -1) DUCK_CUDA_FAST_LIBRARY=$(find experimental/duck_cuda -name 'libduck_cuda_fast.so' | head -1) python -B experimental/duck_cuda/tests/remote_gpu_bench.py 2>&1 | tee gpu-bench.log",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; DUCK_CUDA_LIBRARY=$(find experimental/duck_cuda -name 'libduck_cuda.so' | head -1) DUCK_CUDA_FAST_LIBRARY=$(find experimental/duck_cuda -name 'libduck_cuda_fast.so' | head -1) $PY -B experimental/duck_cuda/tests/remote_gpu_bench.py 2>&1 | tee gpu-bench.log",
       "timeout_s": 600,
-      "artifacts": ["gpu-bench.log", "gpu-bench.json"],
+      "artifacts": [
+        "gpu-bench.log",
+        "gpu-bench.json"
+      ],
       "continue_on_error": false
     }
   ],
@@ -44,7 +56,9 @@
     "memory_gib": 16,
     "disk_gib": 20,
     "gpu": 1,
-    "gpu_types": ["RTX-5090"],
+    "gpu_types": [
+      "RTX-5090"
+    ],
     "spot": false,
     "ttl_minutes": 25,
     "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
