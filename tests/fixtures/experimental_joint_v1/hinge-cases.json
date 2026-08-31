@@ -1,0 +1,206 @@
+{
+  "actuator_effort_cap_nm": 3.23,
+  "body_inertia_kg_m2": 0.02,
+  "case_count": 16,
+  "cases": [
+    {
+      "armature": 0.0,
+      "damping": 0.0,
+      "friction_loss": 0.0,
+      "name": "bare_positive",
+      "purpose": "bare inertia analytic",
+      "q": 0.0,
+      "target": 0.1,
+      "velocity": 0.0
+    },
+    {
+      "armature": 0.027,
+      "damping": 0.0,
+      "friction_loss": 0.0,
+      "name": "armature_positive",
+      "purpose": "rotor inertia analytic",
+      "q": 0.0,
+      "target": 0.1,
+      "velocity": 0.0
+    },
+    {
+      "armature": 0.0,
+      "damping": 0.0,
+      "friction_loss": 0.0,
+      "name": "bare_negative",
+      "purpose": "bare sign symmetry",
+      "q": 0.0,
+      "target": -0.1,
+      "velocity": 0.0
+    },
+    {
+      "armature": 0.027,
+      "damping": 0.0,
+      "friction_loss": 0.0,
+      "name": "armature_negative",
+      "purpose": "rotor sign symmetry",
+      "q": 0.0,
+      "target": -0.1,
+      "velocity": 0.0
+    },
+    {
+      "armature": 0.027,
+      "damping": 0.56,
+      "friction_loss": 0.0,
+      "name": "damping_positive",
+      "purpose": "separate passive damping",
+      "q": 0.0,
+      "target": 0.0,
+      "velocity": 2.0
+    },
+    {
+      "armature": 0.027,
+      "damping": 0.56,
+      "friction_loss": 0.0,
+      "name": "damping_negative",
+      "purpose": "separate passive damping sign",
+      "q": 0.0,
+      "target": 0.0,
+      "velocity": -2.0
+    },
+    {
+      "armature": 0.027,
+      "damping": 0.56,
+      "friction_loss": 0.0,
+      "name": "positive_cap_and_damping",
+      "purpose": "motor clamp before passive damping",
+      "q": 0.0,
+      "target": 1.0,
+      "velocity": 2.0
+    },
+    {
+      "armature": 0.027,
+      "damping": 0.56,
+      "friction_loss": 0.0,
+      "name": "negative_cap_and_damping",
+      "purpose": "motor clamp sign",
+      "q": 0.0,
+      "target": -1.0,
+      "velocity": -2.0
+    },
+    {
+      "armature": 0.027,
+      "damping": 0.56,
+      "friction_loss": 0.068,
+      "name": "friction_exact_rest",
+      "purpose": "zero input and velocity; exact rest",
+      "q": 0.0,
+      "target": 0.0,
+      "velocity": 0.0
+    },
+    {
+      "armature": 0.027,
+      "damping": 0.56,
+      "friction_loss": 0.068,
+      "name": "friction_subthreshold_positive",
+      "purpose": "soft below-threshold rest, not ideal rigid stiction",
+      "q": 0.0,
+      "target": 0.0014958863126402395,
+      "velocity": 0.0
+    },
+    {
+      "armature": 0.027,
+      "damping": 0.56,
+      "friction_loss": 0.068,
+      "name": "friction_subthreshold_negative",
+      "purpose": "soft below-threshold rest sign",
+      "q": 0.0,
+      "target": -0.0014958863126402395,
+      "velocity": 0.0
+    },
+    {
+      "armature": 0.027,
+      "damping": 0.56,
+      "friction_loss": 0.068,
+      "name": "friction_slip_positive",
+      "purpose": "positive sliding",
+      "q": 0.0,
+      "target": 0.0,
+      "velocity": 2.0
+    },
+    {
+      "armature": 0.027,
+      "damping": 0.56,
+      "friction_loss": 0.068,
+      "name": "friction_slip_negative",
+      "purpose": "negative sliding",
+      "q": 0.0,
+      "target": 0.0,
+      "velocity": -2.0
+    },
+    {
+      "armature": 0.027,
+      "damping": 0.56,
+      "friction_loss": 0.068,
+      "name": "friction_above_threshold_positive",
+      "purpose": "positive breakaway request from rest",
+      "q": 0.0,
+      "target": 0.010172026925953629,
+      "velocity": 0.0
+    },
+    {
+      "armature": 0.027,
+      "damping": 0.56,
+      "friction_loss": 0.068,
+      "name": "friction_above_threshold_negative",
+      "purpose": "negative breakaway request from rest",
+      "q": 0.0,
+      "target": -0.010172026925953629,
+      "velocity": 0.0
+    },
+    {
+      "armature": 0.027,
+      "damping": 0.56,
+      "friction_loss": 0.068,
+      "name": "position_error_negative",
+      "purpose": "nonzero initial q, negative position effort",
+      "q": 0.1,
+      "target": 0.0,
+      "velocity": 0.0
+    }
+  ],
+  "dt": 0.002,
+  "fixture": "synthetic 1kg rotor, COM at world-fixed +Z hinge, diagonal inertia .01/.02/.02, gravity zero, no contacts/limits",
+  "kp": 13.37,
+  "kv": 0.0,
+  "maximum_total_steps": 48,
+  "native_execution": false,
+  "no_full_robot_steps": true,
+  "reference_scope": "analytic M/actuator/passive/integration; conditional scalar-QP diagnostic for soft friction",
+  "retry_allowed": false,
+  "schema": "box3d.open_duck.native_compat.hinge_cases/v1",
+  "solver": "MuJoCo3.3.7 Newton, iterations1, ls_iterations5, Euler with eulerdamp disabled",
+  "steps_per_case": 3,
+  "tolerances": {
+    "acceleration": 1e-09,
+    "clock": 1e-12,
+    "inertia": 1e-12,
+    "qp_diagnostic_torque": 1e-09,
+    "state": 1e-11,
+    "torque": 1e-11
+  },
+  "wall_cap_seconds": 60,
+  "xml_sha256": {
+    "armature_negative": "b410ef560eecb02501967c39a72ea82dc6784b59a7f31a0f04e5feac9ec94360",
+    "armature_positive": "e63ac486a67e6260b584623154b037c3e5b41c35ac7f46861c9ab9c944dce89f",
+    "bare_negative": "eb3aa941f10532c4cc20d1b4b77eec00526c2646add51989f8c909c6cfefcbcf",
+    "bare_positive": "36faf757f0ede2ccc447905a67a4db86557841d8c7c13c5cd0fd5a947e2fd3dc",
+    "damping_negative": "734b69b20b87be9fe531599e0001715cf8026669fa37a44abcd18362e0f907ae",
+    "damping_positive": "c6b6019e7219a0c5419c3e57535ab8ea688e853ef7df1f7fffaae1ec002e327c",
+    "friction_above_threshold_negative": "b0135dd2c62801de8368d316e16eb69df981593cd40a0b79c84a2883ab9d31b6",
+    "friction_above_threshold_positive": "0440ed58f9639ad0c69ebc223f2119cf15d216cb4242e510e376ba03d5ecc5d2",
+    "friction_exact_rest": "46269caa8805dbcfd2f4c4a09cb7194b9e24ba16677a3667bfa083593f7faee2",
+    "friction_slip_negative": "b0c053a3d14876c5b350fd67641a3c9aa1ae654c33945bf6937dcd1c849383a1",
+    "friction_slip_positive": "4dd8df6778cd30cd9a757a173cfb675639b0edb2f8ef4cfd4ec7960ba3b28067",
+    "friction_subthreshold_negative": "871779c216621ae0346dd4d46cae208ab17ae1e5a60a14a95254153602fe460b",
+    "friction_subthreshold_positive": "d38a6cba7dc3c04da0255a0025acffc44502911030093f991e925e3cbdcbbac4",
+    "negative_cap_and_damping": "cd902f91eb7a4adcd944abcfdc7693dd0239c7149c0c16f8eb4f185400d5e5d1",
+    "position_error_negative": "93e8c86cadc03c248cf989f65467d5908fa9f9ebc91d5396b50b0ef51e9db16f",
+    "positive_cap_and_damping": "11410234c77a41abd1abeca9d4d52be7b7478ada1ee3e2ab01ea3c5b02c6b60e"
+  }
+}
