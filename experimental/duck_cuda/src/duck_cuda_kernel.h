@@ -1348,8 +1348,13 @@ static DW_HD float dw_policy_reward(DwState* s, const double* a,
     if (!contact[f]) s->opp_support[f] += (contact[1 - f] ? 1.0 : 0.0) * dt;
     if (liftoff[f]) s->pre_swing_stance[f] = s->stance_time[f];
   }
-  for (int f = 0; f < 2; f++)
-    s->stance_time[f] = contact[f] ? s->stance_time[f] + dt : 0.0;
+  // reward.py v9: stance credit accrues only on FULL-contact steps (all
+  // native ticks in contact); tick-scale flicker inside a stance resets it,
+  // mirroring the evaluator's continuous-support requirement.
+  for (int f = 0; f < 2; f++) {
+    bool solid = contact[f] && s->contact_ticks[f] >= DWP_TICKS_FULL;
+    s->stance_time[f] = solid ? s->stance_time[f] + dt : 0.0;
+  }
   // 6c. flicker: stance at both boundaries but partial tick contact
   int nflick = 0;
   for (int f = 0; f < 2; f++)

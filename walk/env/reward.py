@@ -156,10 +156,15 @@ def reward(prev_state: dict, state: dict, action: np.ndarray, command: np.ndarra
         tracker.opp_support[airborne, foot] += contact[airborne, 1 - foot] * dt
         tracker.pre_swing_stance[liftoff[:, foot], foot] = \
             tracker.stance_time[liftoff[:, foot], foot]
-    tracker.stance_time = np.where(contact, tracker.stance_time + dt, 0.0)
+    # stance credit accrues only on FULL-contact steps (all native ticks in
+    # contact): tick-scale flicker inside a stance resets it, mirroring the
+    # evaluator's 40 ms CONTINUOUS-support requirement (leg-10 diagnosis:
+    # right-foot steps failed almost solely on flickered pre-liftoff stance).
+    ct = state.get("contact_ticks")
+    solid = contact if ct is None else contact & (np.asarray(ct) >= TICKS_FULL)
+    tracker.stance_time = np.where(solid, tracker.stance_time + dt, 0.0)
 
     # 6c. flicker penalty: stance at both boundaries but partial tick contact
-    ct = state.get("contact_ticks")
     if ct is not None:
         flicker = prev_contact & contact & (np.asarray(ct) < TICKS_FULL)
         r -= W_FLICKER * flicker.sum(1)

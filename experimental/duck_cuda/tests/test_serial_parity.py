@@ -284,6 +284,78 @@ class SerialParityTests(unittest.TestCase):
             env.close()
             dev.close()
 
+    # -- reward v9: flickered-stance credit reset, genuinely exercised ------------
+    def test_step_policy_parity_covers_flickered_stance(self):
+        # reward.py v9: stance credit accrues only on FULL-contact steps
+        # (contact_ticks == 10); tick-scale flicker inside a stance resets it
+        # and can flip a later touchdown's stance_ok qualification gate. The
+        # main parity test's trajectories never hit that path, so this one
+        # drives a marching pattern + seeded noise that (a) produces many
+        # flickered-stance steps and (b) was verified to DISCRIMINATE the
+        # rules: a build with the pre-v9 rule (stance += dt on any contact)
+        # diverges from the python env by 1.5 (a flipped qualified-step
+        # bonus) at step 22 of this exact sequence. Runtime vacuity guards
+        # below keep the sequence honest if the physics ever drifts.
+        from walk.env.flat import FlatFloorDuckEnv
+        E, T, dt = 4, 150, 0.02
+        rng = np.random.default_rng(2)
+        actions = np.zeros((T, E, 14), np.float32)
+        for t in range(T):
+            ph = 2 * np.pi * t / 20.0
+            base = np.zeros(14)
+            base[[2, 3, 4]] = np.array([.9, -.9, .5]) * np.sin(ph)
+            base[[11, 12, 13]] = np.array([.9, -.9, .5]) * np.sin(ph + np.pi)
+            base[[0, 9]] = .3 * np.sin(ph / 2)
+            actions[t] = np.clip(base[None, :] + rng.normal(0, .15, (E, 14)),
+                                 -1, 1).astype(np.float32)
+        env = FlatFloorDuckEnv(
+            environments=E, seed=0,
+            lane_factory=lambda n, off: CudaDuckLane(n, joint_offsets=off))
+        dev = CudaDuckLane(E)
+        try:
+            env.reset()
+            dev.reset_policy(seed=0)
+            dev.reset_policy()
+            worst_obs = worst_rew = 0.0
+            flickered = 0                       # contact at both boundaries, ct < 10
+            gate_divergent_touchdowns = 0       # v6-vs-v9 stance_ok differs
+            prevc = np.zeros((E, 2), bool)
+            stance_v9 = np.zeros((E, 2))
+            stance_v6 = np.zeros((E, 2))
+            pre_ok_differs = np.zeros((E, 2), bool)  # at the last liftoff
+            for t in range(T):
+                o_py, r_py, d_py, _info = env.step(actions[t])
+                o_dev, r_dev, d_dev, diag = dev.step_policy(actions[t])
+                self.assertEqual((diag["status"] != 0).sum(), 0, t)
+                worst_obs = max(worst_obs, float(np.abs(o_py - o_dev).max()))
+                worst_rew = max(worst_rew, float(np.abs(r_py - r_dev).max()))
+                np.testing.assert_array_equal(d_py, d_dev, f"done flags @ {t}")
+                st = dev.read()
+                c, ct = st.foot_contact, st.contact_ticks
+                flickered += int((prevc & c & (ct < 10)).any())
+                liftoff = prevc & ~c
+                touchdown = ~prevc & c
+                gate_divergent_touchdowns += int((touchdown & pre_ok_differs).any())
+                pre_ok_differs = np.where(
+                    liftoff, (stance_v6 >= 0.06) != (stance_v9 >= 0.06),
+                    pre_ok_differs)
+                stance_v9 = np.where(c & (ct >= 10), stance_v9 + dt, 0.0)
+                stance_v6 = np.where(c, stance_v6 + dt, 0.0)
+                prevc = c.copy()
+            # vacuity guards: the v9 path must actually be exercised
+            self.assertGreater(flickered, 20, "no flickered-stance steps")
+            self.assertGreater(gate_divergent_touchdowns, 0,
+                               "no touchdown whose stance_ok gate depends on v9")
+            self.assertLess(worst_obs, 1e-4, "obs parity gate")
+            self.assertLess(worst_rew, 1e-3, "reward parity gate")
+            print(f"flickered_stance_parity obs={worst_obs:.3e} "
+                  f"reward={worst_rew:.3e} flickered_steps={flickered} "
+                  f"gate_divergent_touchdowns={gate_divergent_touchdowns}",
+                  file=sys.stderr)
+        finally:
+            env.close()
+            dev.close()
+
     # -- determinism -------------------------------------------------------------
     def test_two_runs_bit_identical(self):
         a, b = CudaDuckLane(2), CudaDuckLane(2)
