@@ -27,7 +27,7 @@ extern "C" {
 // Bumped whenever an exported signature or output layout changes.
 // v2: dwc1_read gained the trailing contact_ticks output; dwc1_step now
 //     resets and accumulates per-foot contact tick counters.
-// v3: device-side policy path (walk/env/flat.py + reward.py v6 in-kernel):
+// v3: device-side policy path (walk/env/flat.py + reward.py in-kernel):
 //     dwc1_step_policy, dwc1_observe, dwc1_set_command, dwc1_reset_policy.
 #define DWC1_ABI_VERSION 3
 int dwc1_abi_version(void);
@@ -105,7 +105,7 @@ int dwc1_read(const dwc1_scene*, float* qpos, float* velocity, float* warm,
 // One policy step entirely on device: clip(actions,+-1) -> targets =
 // clip(HOME + 0.25*a, previous targets +- 0.1048) (persistent per-env slew
 // reference, frozen while done) -> joint-limit clip -> n_ticks physics ->
-// reward.py v6 (tracker state lives in the env state) -> termination (root
+// reward.py (tracker state lives in the env state) -> termination (root
 // height < 0.7*home, tilt > 45 deg, nonfinite, 400-step horizon) -> 58-dim
 // observation. The policy chain runs in f64 mirroring the python env exactly
 // (walk/env/flat.py and walk/env/reward.py are the contract). Done

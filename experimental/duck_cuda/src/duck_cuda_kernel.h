@@ -119,7 +119,7 @@ typedef struct DwState {
   // (same predicate as the foot_contact read flag). Lets the reward's
   // flicker penalty read per-tick contact with ONE read per policy step.
   uint32_t contact_ticks[DW_PAIRS];
-  // ---- device policy layer (walk/env/flat.py + reward.py v6 contract) ----
+  // ---- device policy layer (walk/env/flat.py + reward.py contract) ----
   // The policy chain runs in f64, mirroring the numpy env operation for
   // operation: this makes the effective PD targets (and hence the physics
   // trajectory) BIT-IDENTICAL to FlatFloorDuckEnv driving the same lane
@@ -1188,7 +1188,7 @@ static DW_HD void dw_fill_info(uint32_t environments, dwc1_info* info) {
 
 // ==================== device policy layer ==================================
 // Verbatim f64 port of walk/env/flat.py (action->target slew chain,
-// 58-dim observation, termination) and walk/env/reward.py v6 (EMA velocity
+// 58-dim observation, termination) and walk/env/reward.py v8 (EMA velocity
 // tracking, alive, lateral/yaw, action-rate, torque, phase-gated qualified
 // steps with placement/opposite-support/stance gates, chatter, flicker via
 // the device contact-tick counters, clearance, phase-match, double-support,
@@ -1201,7 +1201,7 @@ static DW_HD void dw_fill_info(uint32_t environments, dwc1_info* info) {
 #define DWP_MAX_TARGET_INCREMENT (5.24 * 0.02)   // flat.py f64 expression
 #define DWP_HORIZON 400u
 #define DWP_COS_MAX_TILT 0.70710678118654757     // tilt > 45deg  <=>  up < cos
-// reward.py v6 weights/constants (f64 literals identical to the python file)
+// reward.py weights/constants (f64 literals identical to the python file)
 #define DWP_W_TRACK 1.0
 #define DWP_TRACK_SIGMA_SQ 0.01
 #define DWP_TRACK_EMA_COEF (0.02 / 0.4)          // dt / TRACK_EMA_S
@@ -1227,9 +1227,12 @@ static DW_HD void dw_fill_info(uint32_t environments, dwc1_info* info) {
 #define DWP_W_SAME_FOOT 2.0
 #define DWP_W_PHASE 0.5
 
-// flat.py phase clock, exact numpy association: ((2.0*pi)*PHASE_HZ)*t*0.02.
-static DW_HD double dw_policy_phase(uint32_t t) {
-  return ((2.0 * DWP_PI) * 2.5) * (double)t * 0.02;
+// flat.py v8 speed-proportional phase clock, exact numpy association:
+// ((2.0*pi) * (PHASE_HZ_PER_MPS*command)) * t * CONTROL_DT with
+// PHASE_HZ_PER_MPS = 2.5/0.15 (both divisions/products IEEE f64, identical
+// to the python module: 0.15 m/s keeps the proven 2.5 Hz).
+static DW_HD double dw_policy_phase(uint32_t t, double command) {
+  return ((2.0 * DWP_PI) * ((2.5 / 0.15) * command)) * (double)t * 0.02;
 }
 
 // native_lane.quat_to_rot in f64 (body->world rotation from xyzw quat).
@@ -1271,12 +1274,12 @@ static DW_HD void dw_policy_observe(const DwState* s, float* obs) {
   obs[53] = 0.0f;
   obs[54] = s->cache[0].count > 0 ? 1.0f : 0.0f;
   obs[55] = s->cache[1].count > 0 ? 1.0f : 0.0f;
-  double phase = dw_policy_phase(s->t);
+  double phase = dw_policy_phase(s->t, s->command);
   obs[56] = (float)sin(phase);
   obs[57] = (float)cos(phase);
 }
 
-// reward.py v6 reward(): updates the tracker fields in place (for every env,
+// reward.py reward(): updates the tracker fields in place (for every env,
 // live or done, exactly like the python env) and returns the f32 reward.
 // `a` is the clipped f64 action, `eff` the f64 effective targets (the torque
 // estimate uses the pre-cast f64 values like flat.py's _torque).
@@ -1312,7 +1315,7 @@ static DW_HD float dw_policy_reward(DwState* s, const double* a,
   }
   r -= DWP_W_TORQUE * tq;
   // 6. qualified steps (evaluator-mirroring gates) + chatter
-  double phase = dw_policy_phase(s->t);       // pre-increment step counter
+  double phase = dw_policy_phase(s->t, s->command);  // pre-increment counter
   bool stance_left = sin(phase) >= 0.0;
   bool touchdown[2], liftoff[2], qualified[2];
   int nq = 0, nchat = 0;
@@ -1359,9 +1362,11 @@ static DW_HD float dw_policy_reward(DwState* s, const double* a,
   for (int f = 0; f < 2; f++)
     if (!contact[f] && (double)sole[f] >= DWP_CLEARANCE_M) ncl++;
   r += DWP_W_CLEARANCE * ncl;
-  // 8b. phase-locked stance while commanded
-  double match = (double)(contact[0] == stance_left)
-               + (double)(contact[1] == !stance_left);
+  // 8b. phase-locked stance while commanded -- SIGNED (reward.py v7):
+  // mismatched contact pays -W_PHASE so planting one foot through both
+  // clock windows nets zero instead of the standing subsidy.
+  double match = (contact[0] == stance_left ? 1.0 : -1.0)
+               + (contact[1] == !stance_left ? 1.0 : -1.0);
   if (fabs(s->command) > 0.0) r += DWP_W_PHASE * match;
   // 8. double support beyond the grace while commanded
   bool both = contact[0] && contact[1];

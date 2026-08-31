@@ -19,7 +19,7 @@ Also enforced: the generated duck_model.h matches a fresh regeneration from
 the pinned fixtures (drift test), bit-identical determinism between two
 scenes within one build, FlatFloorDuckEnv holding home for 100 policy steps
 on the serial lane, and the device policy path (dwc1_step_policy: in-kernel
-obs + reward.py v6 + termination) matching FlatFloorDuckEnv side by side for
+obs + reward + termination) matching FlatFloorDuckEnv side by side for
 200 policy steps within obs < 1e-4 / reward < 1e-3 / identical done flags
 (measured: bit-identical). The throughput test reports serial ticks/s per
 core (approximates per-thread GPU cost).

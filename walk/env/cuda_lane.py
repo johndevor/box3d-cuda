@@ -34,7 +34,7 @@ removing the full-state readback entirely for training:
         counter-based command resampling from {0.10, 0.15, 0.20} m/s)
     lane.observe() -> obs;  lane.set_command(commands) -> obs
 
-    walk/env/flat.py and walk/env/reward.py (v6) are the contract; the
+    walk/env/flat.py and walk/env/reward.py are the contract; the
     in-kernel policy chain runs in f64 mirroring numpy operation for
     operation, so obs/reward/done are bit-identical to FlatFloorDuckEnv
     running over the same lane build (verified by
@@ -280,7 +280,7 @@ class CudaDuckLane:
     # -- device policy path (obs + reward + termination in-kernel) ----------
     def step_policy(self, actions: np.ndarray, n_ticks: int = 10):
         """One full policy step on device: action -> slew-limited targets ->
-        n_ticks physics -> reward.py v6 -> termination -> 58-dim observation.
+        n_ticks physics -> reward.py -> termination -> 58-dim observation.
 
         Returns (obs [E,58] f32, reward [E] f32, done [E] bool, diagnostics)
         where diagnostics is a numpy structured array (DIAG_DTYPE); a nonzero
