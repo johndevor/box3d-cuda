@@ -139,6 +139,7 @@ input[type=range]{flex:1}
 <select id="speed"><option value="0.25">0.25x</option><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="2">2x</option></select>
 <input type="range" id="scrub" min="0" value="0">
 <label style="font-size:12px;color:#9a9a94"><input type="checkbox" id="follow" checked> follow</label>
+<span style="font-size:11.5px;color:#6d6d75">drag to orbit &middot; scroll to zoom</span>
 </div>
 <div class="cap" id="cap"></div>
 </div>
@@ -149,17 +150,34 @@ document.getElementById('sub').textContent =
 const cv=document.getElementById('c'),ctx=cv.getContext('2d');
 const scrub=document.getElementById('scrub');scrub.max=D.frames.length-1;
 let frame=0,playing=true,acc=0,last=performance.now();
-// fixed oblique camera: mostly side-on (+x right), slight yaw/elevation for depth
-const yaw=-0.42,el=0.30;
-const cy=Math.cos(yaw),sy=Math.sin(yaw),ce=Math.cos(el),se=Math.sin(el);
-const R=[[cy,-sy,0],[sy*ce? sy*ce:sy*ce,cy*ce,se],[sy*se,cy*se,-ce]];
-// right = (cy, -sy, 0); up-ish and forward via elevation
-function project(p,camx){
-  const x=p[0]-camx,y=p[1],z=p[2];
-  const rx=cy*x-sy*y, ry=sy*ce*x+cy*ce*y+se*z, rz=sy*se*x+cy*se*y-ce*z;
-  const s=1650;
-  return [1020+rx*s, 700-ry*s, rz];
+// orbit camera, z-up: drag to orbit, wheel to zoom, side view by default
+let az=-Math.PI/2, elev=0.28, zoom=1650;
+let basis;
+function updateBasis(){
+  const d=[Math.cos(elev)*Math.cos(az),Math.cos(elev)*Math.sin(az),Math.sin(elev)];
+  const f=[-d[0],-d[1],-d[2]];                        // view direction
+  let r=[f[1],-f[0],0]; const rl=Math.hypot(r[0],r[1])||1; r=[r[0]/rl,r[1]/rl,0];
+  const u=[r[1]*f[2]-r[2]*f[1], r[2]*f[0]-r[0]*f[2], r[0]*f[1]-r[1]*f[0]];
+  basis={r,u,f};
 }
+updateBasis();
+function project(p,camx){
+  const x=p[0]-camx,y=p[1],z=p[2]-0.12;               // target mid-duck height
+  const {r,u,f}=basis;
+  return [1020+(x*r[0]+y*r[1]+z*r[2])*zoom,
+          620-(x*u[0]+y*u[1]+z*u[2])*zoom,
+          x*f[0]+y*f[1]+z*f[2]];
+}
+cv.addEventListener('pointerdown',e=>{
+  cv.setPointerCapture(e.pointerId);
+  let px=e.clientX,py=e.clientY;
+  const move=ev=>{az-=(ev.clientX-px)*0.008; elev=Math.min(1.45,Math.max(-0.1,elev+(ev.clientY-py)*0.006));
+                  px=ev.clientX;py=ev.clientY;updateBasis();};
+  const up=()=>{cv.removeEventListener('pointermove',move);cv.removeEventListener('pointerup',up);};
+  cv.addEventListener('pointermove',move);cv.addEventListener('pointerup',up);
+});
+cv.addEventListener('wheel',e=>{e.preventDefault();
+  zoom=Math.min(5000,Math.max(400,zoom*Math.exp(-e.deltaY*0.001)));},{passive:false});
 function rot(q,v){ // wxyz active
   const [w,x,y,z]=q,[vx,vy,vz]=v;
   const tx=2*(y*vz-z*vy),ty=2*(z*vx-x*vz),tz=2*(x*vy-y*vx);
@@ -200,7 +218,7 @@ function draw(){
       tris.push({pr,depth:(pr[0][2]+pr[1][2]+pr[2][2])/3,c});
     }
   }
-  tris.sort((a,b)=>a.depth-b.depth);
+  tris.sort((a,b)=>b.depth-a.depth);   // painter: farthest along view dir first
   for(const t of tris){
     ctx.fillStyle=`rgb(${t.c[0]},${t.c[1]},${t.c[2]})`;
     ctx.beginPath();ctx.moveTo(t.pr[0][0],t.pr[0][1]);
