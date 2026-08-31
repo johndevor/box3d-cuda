@@ -49,6 +49,7 @@ from walk.train.vec import derive_seed
 @dataclasses.dataclass
 class GpuTrainConfig:
     envs: int = 4096
+    lane_env: bool = False
     horizon: int = 32
     updates: int = 300
     seed: int = 917
@@ -78,7 +79,52 @@ class Rollout:
     episodes: list          # list[(return, length)] finished this window
 
 
-def make_env(cfg: GpuTrainConfig) -> FlatFloorDuckEnv:
+class LanePolicyEnv:
+    """Duck-typed drop-in for FlatFloorDuckEnv over the ABI-v3 device policy
+    path: one kernel launch + tiny transfers per policy step. Solver faults
+    freeze+finish the env in-kernel (no exception); counted in fault_count."""
+
+    OBS, ACT = 58, 14
+
+    def __init__(self, cfg):
+        from walk.env.cuda_lane import CudaDuckLane
+        self.E = cfg.envs
+        self._lane = CudaDuckLane(
+            self.E,
+            joint_offsets=_perturbation_offsets(cfg) if cfg.perturbation else None,
+            library_path=cfg.library)
+        self._seed = cfg.seed
+        self.fault_count = 0
+
+    def reset(self, mask=None, seed=None):
+        return self._lane.reset_policy(mask=mask, seed=seed
+                                       if seed is not None else self._seed)
+
+    def step(self, action):
+        obs, reward, done, diag = self._lane.step_policy(
+            np.asarray(action, np.float32))
+        n_fault = int((diag["status"] != 0).sum())
+        if n_fault:
+            self.fault_count += n_fault
+        return obs, reward, done.astype(bool), {"faults": n_fault}
+
+    def set_command(self, commands):
+        return self._lane.set_command(commands)
+
+    def close(self):
+        self._lane.close()
+
+
+def _perturbation_offsets(cfg):
+    import numpy as _np
+    return _np.stack([
+        _np.random.default_rng([cfg.seed & 0xFFFFFFFF, e, 0]).uniform(
+            -cfg.perturbation, cfg.perturbation, 14) for e in range(cfg.envs)])
+
+
+def make_env(cfg: GpuTrainConfig):
+    if cfg.lane_env:
+        return LanePolicyEnv(cfg)
     return FlatFloorDuckEnv(
         environments=cfg.envs,
         seed=cfg.seed,
@@ -315,7 +361,7 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                     line = {
                         "kind": "train", "update": u, "skipped": "solver_fault",
                         "env_steps": env_steps, "faults": 1,
-                        "faults_total": faults_total,
+                        "faults_total": faults_total + getattr(env, "fault_count", 0),
                         "wall_update_s": round(time.perf_counter() - t0, 4),
                         "wall_total_s": round(time.perf_counter() - t_start, 3),
                     }
@@ -358,7 +404,7 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                     "approx_kl": stats.get("approx_kl"),
                     "clip_frac": stats.get("clip_frac"),
                     "faults": 0,
-                    "faults_total": faults_total,
+                    "faults_total": faults_total + getattr(env, "fault_count", 0),
                 }
                 mf.write(json.dumps(line) + "\n")
                 mf.flush()
@@ -410,6 +456,8 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--library", default=None,
                    help="path to libduck_cuda*.so / serial dylib (default: "
                         "DUCK_CUDA_LIBRARY env or local serial build)")
+    p.add_argument("--lane-env", action="store_true",
+                   help="use the ABI-v3 device policy path (1 launch/step)")
     p.add_argument("--out", required=True)
     p.add_argument("--resume", nargs="?", const="auto", default=None,
                    help="checkpoint path, or bare flag for <out>/latest.pt")
@@ -429,7 +477,7 @@ def build_argparser() -> argparse.ArgumentParser:
 def config_from_args(args: argparse.Namespace) -> GpuTrainConfig:
     return GpuTrainConfig(
         envs=args.envs, horizon=args.horizon, updates=args.updates, seed=args.seed,
-        device=args.device, library=args.library, out=args.out, resume=args.resume,
+        device=args.device, library=args.library, lane_env=args.lane_env, out=args.out, resume=args.resume,
         max_wall_s=args.max_wall_s, lr=args.lr, perturbation=args.perturbation,
         checkpoint_every=args.checkpoint_every, preflight_steps=args.preflight_steps,
         torch_threads=args.torch_threads, quiet=args.quiet,

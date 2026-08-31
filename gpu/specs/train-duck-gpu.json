@@ -25,7 +25,7 @@
     },
     {
       "name": "train",
-      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --envs 4096 --horizon 32 --updates 99999 --seed 917 --device cuda --library $(find experimental/duck_cuda -name 'libduck_cuda_fast.so' | head -1) --out gpu-train-out --resume runs/warmstart.pt --max-wall-s 780 2>&1 | tee gpu-train.log",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --envs 4096 --horizon 32 --updates 99999 --seed 917 --device cuda --library $(find experimental/duck_cuda -name 'libduck_cuda_fast.so' | head -1) --lane-env --out gpu-train-out --resume runs/warmstart.pt --max-wall-s 780 2>&1 | tee gpu-train.log",
       "timeout_s": 900,
       "artifacts": [
         "gpu-train.log",
