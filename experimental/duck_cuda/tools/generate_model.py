@@ -52,6 +52,10 @@ def load_fixture():
 
 
 def emit(native, fixture, cm) -> str:
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from walk.env import flat  # noqa: PLC0415  (gait-clock contract source)
+
     J, B = fixture.J, fixture.B
     assert (J, B) == (14, 16)
     frame = cm.record["frames"][0]
@@ -107,6 +111,10 @@ def emit(native, fixture, cm) -> str:
         "#define DW_FOOT_VERTS 18   // baked convex sole vertices per foot",
         f"#define DW_DT {f32(0.002)}",
         f"#define DW_GRAVITY_Z {f32(-9.81)}",
+        "// walk/env/flat.py gait-clock rate (f64), imported at generation time",
+        "// so the env and the device policy layer cannot silently diverge:",
+        "// the header-drift test pins env <-> kernel agreement automatically.",
+        f"#define DW_PHASE_HZ_PER_MPS {float(flat.PHASE_HZ_PER_MPS)!r}",
         f"#define DW_ARMATURE {f32(shared['armature'])}",
         f"#define DW_DAMPING {f32(shared['damping'])}",
         f"#define DW_FRICTION_LOSS {f32(shared['loss'])}",
