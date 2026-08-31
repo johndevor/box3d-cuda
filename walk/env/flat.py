@@ -78,6 +78,7 @@ class FlatFloorDuckEnv(DuckEnvBatch):
         self._t = np.zeros(self.E, np.int64)         # policy steps this episode
         self._done = np.zeros(self.E, bool)
         self._prev_action = np.zeros((self.E, ACT))
+        self._phase0 = np.zeros(self.E)              # per-episode gait-phase offset
         self._targets = np.tile(HOME, (self.E, 1))   # pre-clip slew reference
         self._effective = self._clip_limits(self._targets)
         self.reset()
@@ -114,6 +115,9 @@ class FlatFloorDuckEnv(DuckEnvBatch):
             for e in np.flatnonzero(m):
                 rng = _episode_rng(self._seed, int(e), int(self._episode[e]) + 1)
                 self._command[e] = COMMANDS_MPS[rng.integers(len(COMMANDS_MPS))]
+                # random gait-phase offset: without it every episode starts in
+                # the LEFT clock window, training a left-leading bias
+                self._phase0[e] = 2.0 * math.pi * rng.random()
                 self._episode[e] += 1
             self._t[m] = 0
             self._done[m] = False
@@ -225,7 +229,8 @@ class FlatFloorDuckEnv(DuckEnvBatch):
                 "torque": np.asarray(torque).copy(),
                 "foot_x": state.foot_pos[:, :, 0].copy(),
                 # same clock the policy observes in obs[:, 56:58]
-                "phase": 2.0 * math.pi * (PHASE_HZ_PER_MPS * self._command)
+                "phase": self._phase0
+                + 2.0 * math.pi * (PHASE_HZ_PER_MPS * self._command)
                 * self._t * CONTROL_DT}
 
     def _observe(self, state: native_lane.LaneState) -> np.ndarray:
@@ -239,7 +244,7 @@ class FlatFloorDuckEnv(DuckEnvBatch):
         obs[:, 48:51] = np.einsum("eji,ej->ei", rot, state.v[:, 0:3])
         obs[:, 51] = self._command
         obs[:, 54:56] = state.foot_contact
-        phase = 2.0 * math.pi * (PHASE_HZ_PER_MPS * self._command) \
+        phase = self._phase0 + 2.0 * math.pi * (PHASE_HZ_PER_MPS * self._command) \
             * self._t * CONTROL_DT
         obs[:, 56] = np.sin(phase)
         obs[:, 57] = np.cos(phase)
