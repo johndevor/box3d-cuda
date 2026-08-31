@@ -213,8 +213,98 @@ int solve(const civ1_problem& p,civ1_result& out){
   }catch(const Error&){lambda=snapl;residual=snapr;}
   jr=sj0;nr=sn0;tr=st0;
  };
+ uint32_t apgd_budget=524288;   // total inner projected-gradient iterations
+ auto block_accelerate=[&]{
+  // Tresca fixed-point acceleration for stalled sweeps. Multi-point foot
+  // contact produces exactly rank-deficient blocks with inconsistent
+  // depenetration targets: per-row sweeps then drift along self-stress
+  // directions indefinitely without certifying. With friction caps frozen at
+  // the current normals the remaining problem is a convex box/disk QP whose
+  // exact KKT conditions are precisely this solver's unchanged certificates,
+  // so solving it (accelerated projected gradient with adaptive restart) and
+  // refreshing the caps converges to a certifiable point even on those
+  // blocks. The trial is kept ONLY if the unchanged residual certificate
+  // strictly improves; any other outcome restores the ordinary path.
+  if(R<1||R>96||!apgd_budget)return;
+  std::vector<double> snapl(lambda),snapr(residual);
+  const double sj0=jr,sn0=nr,st0=tr,cert0=std::max({jr,nr,tr});
+  bool kept=false;
+  try{
+   double L=0;
+   for(size_t i=0;i<R;i++){double s=0;for(size_t j=0;j<R;j++)s+=std::fabs(.5*(K[i*R+j]+K[j*R+i]));L=std::max(L,s);}
+   require(finite(L)&&L>0,CIV1_NUMERIC);
+   const double step=1/L;
+   std::vector<double> x(lambda),y(lambda),xn(R),grad(R),bestx(lambda),cap(p.contacts);
+   double beste=cert0;
+   for(int outer=0;outer<64&&apgd_budget;outer++){
+    for(uint32_t c2=0;c2<p.contacts;c2++)cap[c2]=p.contact[c2].friction*std::max(0.,x[p.contact[c2].first_row]);
+    double t=1;y=x;
+    for(int k=0;k<8192&&apgd_budget;k++){
+     apgd_budget--;
+     for(size_t i=0;i<R;i++){double s=base[i];for(size_t j=0;j<R;j++)s+=K[i*R+j]*y[j];grad[i]=s;}
+     for(size_t i=0;i<R;i++){xn[i]=clip(y[i]-step*grad[i],p.lower[i],p.upper[i]);require(finite(xn[i]),CIV1_NUMERIC);}
+     for(uint32_t c2=0;c2<p.contacts;c2++){
+      const size_t r=p.contact[c2].first_row;
+      const double n2=std::hypot(xn[r+1],xn[r+2]);
+      if(n2>cap[c2]){const double f=cap[c2]>0?cap[c2]/n2:0;xn[r+1]*=f;xn[r+2]*=f;}
+     }
+     double dot=0,dn=0,xs=0;
+     for(size_t i=0;i<R;i++){const double dx=xn[i]-x[i];dot+=(y[i]-xn[i])*dx;dn=std::max(dn,std::fabs(dx));xs=std::max(xs,std::fabs(xn[i]));}
+     if(dot>0)t=1;                                  // adaptive restart
+     const double tn=.5*(1+std::sqrt(1+4*t*t)),mo=(t-1)/tn;
+     for(size_t i=0;i<R;i++){y[i]=xn[i]+mo*(xn[i]-x[i]);x[i]=xn[i];}
+     t=tn;
+     if(!(dn>1e-16*(1+xs)))break;                   // fixed point reached
+    }
+    lambda=x;residuals();
+    const double e=certify();
+    if(finite(e)&&e<beste){beste=e;bestx=x;}
+    lambda=snapl;residual=snapr;
+    if(beste<=p.impulse_tolerance)break;
+   }
+   if(beste<cert0){lambda=bestx;residuals();certify();kept=true;}
+  }catch(const Error&){}
+  if(!kept){lambda=snapl;residual=snapr;jr=sj0;nr=sn0;tr=st0;}
+ };
+ std::vector<double> wprev,wprev2;
+ auto extrapolate=[&]{
+  // Richardson extrapolation of the window-to-window creep: stalled sweeps
+  // contract geometrically along a few slow (near-null) modes, so jumping to
+  // the projected geometric-series limit shortcuts thousands of sweeps. The
+  // candidate is kept ONLY if the unchanged certificate strictly improves.
+  if(wprev.size()!=R||wprev2.size()!=R)return;
+  std::vector<double> snapl(lambda),snapr(residual);
+  const double sj0=jr,sn0=nr,st0=tr,cert0=std::max({jr,nr,tr});
+  bool kept=false;
+  try{
+   double n1=0,n2=0,dot=0;
+   for(size_t i=0;i<R;i++){
+    const double d1=lambda[i]-wprev[i],d2=wprev[i]-wprev2[i];
+    n1+=d1*d1;n2+=d2*d2;dot+=d1*d2;
+   }
+   n1=std::sqrt(n1);n2=std::sqrt(n2);
+   if(!(n1>0&&n2>0&&finite(n1)&&finite(n2)&&finite(dot)))return;
+   const double rho=std::min(n1/n2,.9999),ca=dot/(n1*n2);
+   if(!(ca>.5&&rho>.3))return;
+   const double f=rho/(1-rho);
+   for(size_t i=0;i<R;i++){
+    const double x=lambda[i]+f*(lambda[i]-wprev[i]);
+    require(finite(x),CIV1_NUMERIC);
+    lambda[i]=clip(x,p.lower[i],p.upper[i]);
+   }
+   for(uint32_t c2=0;c2<p.contacts;c2++){
+    const size_t r=p.contact[c2].first_row;
+    const double cp=p.contact[c2].friction*lambda[r],n3=std::hypot(lambda[r+1],lambda[r+2]);
+    if(n3>cp){const double sc=cp>0?cp/n3:0;lambda[r+1]*=sc;lambda[r+2]*=sc;}
+   }
+   residuals();
+   const double e=certify();
+   if(finite(e)&&e<cert0)kept=true;
+  }catch(const Error&){}
+  if(!kept){lambda=snapl;residual=snapr;jr=sj0;nr=sn0;tr=st0;}
+ };
  uint32_t iterations=0;bool converged=R==0,stalled=false,moved=false;
- size_t pair_i=R,pair_j=R;
+ size_t pair_i=R,pair_j=R;uint32_t accelerations=16;
  double reference=std::numeric_limits<double>::infinity();
  residuals();
  for(uint32_t it=0;it<p.max_iterations&&!converged;it++){
@@ -246,6 +336,15 @@ int solve(const civ1_problem& p,civ1_result& out){
      if(corr>=best){best=corr;pair_i=i2;pair_j=j2;}
     }
    }
+   if(stalled){
+    extrapolate();
+    converged=std::max({jr,nr,tr})<=p.impulse_tolerance;  // unchanged certificate
+    if(!converged&&accelerations&&err>.25*reference){
+     accelerations--;block_accelerate();
+     converged=std::max({jr,nr,tr})<=p.impulse_tolerance; // unchanged certificate
+    }
+   }
+   wprev2.swap(wprev);wprev=lambda;
    reference=err;
   }
  }

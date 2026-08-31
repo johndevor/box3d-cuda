@@ -196,10 +196,11 @@ class NullnormRepairTests(unittest.TestCase):
         g, target, lower, reference = correlated_normal_pair()
         contacts = [(0, 0.5), (3, 0.5)]
         smooth = np.zeros(6)
-        # The ordinary path alone (repair activates only after sweep 64) must
-        # still report honest non-convergence within a 64-sweep budget.
+        # Every repair is gated behind the stall detector, which cannot fire
+        # before the sweep-63 window: a 63-sweep budget is provably the pure
+        # ordinary path and must still report honest non-convergence.
         self.solve(self.problem(np.eye(6), smooth, g, target=target, lower=lower,
-                                contacts=contacts, iterations=64, tolerance=1e-11), 3)
+                                contacts=contacts, iterations=63, tolerance=1e-11), 3)
         p = self.problem(np.eye(6), smooth, g, target=target, lower=lower,
                          contacts=contacts, iterations=512, tolerance=1e-11)
         v, impulse, result = self.solve(p)
@@ -229,15 +230,16 @@ class NullnormRepairTests(unittest.TestCase):
     def test_null_direction_boundary_move_repairs_self_stress_block(self):
         lower = np.array([0.0, -math.inf, -math.inf, 0.0, -math.inf, -math.inf])
         contacts = [(0, SELF_STRESS_MU), (3, SELF_STRESS_MU)]
-        # The move happens at sweep 256; capping at 256 sweeps keeps the
-        # ordinary path only, which must honestly fail on this block.
+        # Every repair is gated behind the stall detector (sweep-63 window at
+        # the earliest): a 63-sweep budget is provably the pure ordinary path
+        # and must honestly fail on this rank-deficient block.
         self.solve(self.problem(np.eye(6), SELF_STRESS_SMOOTH, SELF_STRESS_G, lower=lower,
-                                contacts=contacts, iterations=256, tolerance=1e-11), 3)
+                                contacts=contacts, iterations=63, tolerance=1e-11), 3)
         p = self.problem(np.eye(6), SELF_STRESS_SMOOTH, SELF_STRESS_G, lower=lower,
                          contacts=contacts, iterations=4096, tolerance=1e-11)
         v, impulse, result = self.solve(p)
-        self.assertGreater(result.iterations, 256)     # converged only via the move
-        self.assertLessEqual(result.iterations, 4096)
+        self.assertGreater(result.iterations, 63)      # only stalled-sweep repairs
+        self.assertLessEqual(result.iterations, 4096)  # converge it (was: never)
         for first in (0, 3):
             self.check_contact(np.eye(6), SELF_STRESS_G, SELF_STRESS_SMOOTH,
                                impulse, v, first, SELF_STRESS_MU)
