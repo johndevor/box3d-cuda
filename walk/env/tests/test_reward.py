@@ -158,3 +158,19 @@ class PhaseLockTest(unittest.TestCase):
         s2 = self._state([[True, False]], [0.1])
         r_yes = rm.reward(s2, dict(s2), np.zeros((1, 14)), np.full(1, 0.15), tr)
         self.assertAlmostEqual(float(r_yes[0] - r_no[0]), 2 * rm.W_PHASE, places=5)
+
+
+class SameFootPenaltyTest(unittest.TestCase):
+    def test_repeated_foot_qualified_touchdown_is_penalized(self):
+        flat = (0.0, 0.0)
+        up = (0.02, 0.0)
+        swing = [((True, True), flat)] + [((False, True), up)] * 10 \
+            + [((True, True), flat)]
+        tracker = rw.GaitTracker(1)
+        tracker.v_avg[:] = 0.15
+        helper = TestGaitShaping()
+        first = helper.steps.__func__(helper, tracker, swing)
+        self.assertEqual(tracker.last_foot[0], 0)
+        second = helper.steps.__func__(helper, tracker, swing)
+        # same left foot again: step bonus still paid, minus the repeat penalty
+        self.assertAlmostEqual(first[-1] - second[-1], rw.W_SAME_FOOT, places=5)
