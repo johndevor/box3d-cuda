@@ -1,0 +1,12 @@
+transaction_library=/Users/john/Code/duck-grid-walk/gates-caps/libintegrated_duck.dylib sha256=54fe46263d0fc6b0b6bcd47623942ad7c056b397a777659e56a974aeed0d4b44
+test_invalid_dt_and_null_inputs_preserve_stage_pointer (__main__.ContactTransactions.test_invalid_dt_and_null_inputs_preserve_stage_pointer) ... ok
+test_private_prepare_pre_cache_post_query_copy_and_double_clock (__main__.ContactTransactions.test_private_prepare_pre_cache_post_query_copy_and_double_clock) ... ok
+test_restore_nonzero_masks_stage_privacy_and_exact_peer (__main__.ContactTransactions.test_restore_nonzero_masks_stage_privacy_and_exact_peer) ... ok
+test_restore_wrong_topology_unchanged_pointer_and_scene (__main__.ContactTransactions.test_restore_wrong_topology_unchanged_pointer_and_scene) ... ok
+test_stale_wrong_owner_and_double_commit (__main__.ContactTransactions.test_stale_wrong_owner_and_double_commit) ... ok
+test_wrong_pre_cache_second_environment_and_invalid_post_rollback (__main__.ContactTransactions.test_wrong_pre_cache_second_environment_and_invalid_post_rollback) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.002s
+
+OK

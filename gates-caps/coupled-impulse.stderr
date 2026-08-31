@@ -1,0 +1,20 @@
+independent_library=/Users/john/Code/duck-grid-walk/gates-caps/libintegrated_duck.dylib sha256=54fe46263d0fc6b0b6bcd47623942ad7c056b397a777659e56a974aeed0d4b44
+test_anisotropic_offcenter_coulomb_kkt_without_normal_dilatancy (__main__.CoupledImpulseTests.test_anisotropic_offcenter_coulomb_kkt_without_normal_dilatancy) ... ok
+test_extreme_disk_bracket_overflow_rejects_without_output (__main__.CoupledImpulseTests.test_extreme_disk_bracket_overflow_rejects_without_output) ... ok
+test_invalid_contact_layout_and_regularization_are_atomic (__main__.CoupledImpulseTests.test_invalid_contact_layout_and_regularization_are_atomic) ... ok
+test_invalid_numeric_inputs_leave_entire_output_untouched (__main__.CoupledImpulseTests.test_invalid_numeric_inputs_leave_entire_output_untouched) ... ok
+test_joint_force_to_impulse_scaling_with_full_mass_and_armature (__main__.CoupledImpulseTests.test_joint_force_to_impulse_scaling_with_full_mass_and_armature) ... ok
+test_large_scalar_impulse_cannot_hide_nonzero_correction (__main__.CoupledImpulseTests.test_large_scalar_impulse_cannot_hide_nonzero_correction) ... ok
+test_minimum_eigenvalue_certificate_exposes_soft_tangent_error (__main__.CoupledImpulseTests.test_minimum_eigenvalue_certificate_exposes_soft_tangent_error) ... ok
+test_nonconvergence_does_not_publish_partial_iterates (__main__.CoupledImpulseTests.test_nonconvergence_does_not_publish_partial_iterates) ... ok
+test_offdiagonal_mass_propagates_single_row_to_unconstrained_dofs (__main__.CoupledImpulseTests.test_offdiagonal_mass_propagates_single_row_to_unconstrained_dofs) ... ok
+test_overflow_in_momentum_verification_is_numeric_and_atomic (__main__.CoupledImpulseTests.test_overflow_in_momentum_verification_is_numeric_and_atomic) ... ok
+test_redundant_normals_psd_global_matrix_is_supported (__main__.CoupledImpulseTests.test_redundant_normals_psd_global_matrix_is_supported) ... ok
+test_simultaneous_unilateral_limit_and_contact (__main__.CoupledImpulseTests.test_simultaneous_unilateral_limit_and_contact) ... ok
+test_zero_friction_removes_warm_tangential_impulses (__main__.CoupledImpulseTests.test_zero_friction_removes_warm_tangential_impulses) ... ok
+test_zero_rows_preserves_smooth_velocity (__main__.CoupledImpulseTests.test_zero_rows_preserves_smooth_velocity) ... ok
+
+----------------------------------------------------------------------
+Ran 14 tests in 0.044s
+
+OK

@@ -1,0 +1,12 @@
+test_all_recorded_native_frames_anchors_coordinates_supports (__main__.ModelTests.test_all_recorded_native_frames_anchors_coordinates_supports) ... ok
+test_exact_convex_feet_isolated_contact_response (__main__.ModelTests.test_exact_convex_feet_isolated_contact_response) ... ok
+test_generalized_contact_row_virtual_power_and_velocity (__main__.ModelTests.test_generalized_contact_row_virtual_power_and_velocity) ... ok
+test_mapping_negative_controls_discriminate (__main__.ModelTests.test_mapping_negative_controls_discriminate) ... ok
+test_native_registration_actual_501_states_only_queries (__main__.ModelTests.test_native_registration_actual_501_states_only_queries) ... ok
+test_near_unit_roundtrip_and_failed_output_canary (__main__.ModelTests.test_near_unit_roundtrip_and_failed_output_canary) ... ok
+test_origin_to_com_velocity_against_kinematic_derivative (__main__.ModelTests.test_origin_to_com_velocity_against_kinematic_derivative) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.253s
+
+OK

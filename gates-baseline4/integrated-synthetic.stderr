@@ -1,0 +1,15 @@
+integrated_test_library=/Users/john/Code/duck-grid-walk/gates-baseline4/libintegrated_duck.dylib sha256=7b20c5ce29396af06acbbe1da41b8fe4f5f9f7d7ee63a69d1b2e1cd592c70ee7
+test_capture_masked_reset_restore_and_deterministic_replay (__main__.IntegratedTests.test_capture_masked_reset_restore_and_deterministic_replay) ... ok
+test_cross_owner_snapshot_rejected_even_identical_topology (__main__.IntegratedTests.test_cross_owner_snapshot_rejected_even_identical_topology) ... ok
+test_driver_source_validates_two_owners_under_lock_before_commit (__main__.IntegratedTests.test_driver_source_validates_two_owners_under_lock_before_commit) ... ok
+test_gravity_free_box_impact_matches_analytic_mass_response (__main__.IntegratedTests.test_gravity_free_box_impact_matches_analytic_mass_response) ... ok
+test_joint_only_matches_av2_independent_exhaustive_solution (__main__.IntegratedTests.test_joint_only_matches_av2_independent_exhaustive_solution) ... ok
+test_offcenter_contact_uses_full_mass_and_moves_root_and_joint (__main__.IntegratedTests.test_offcenter_contact_uses_full_mass_and_moves_root_and_joint) ... ok
+test_second_environment_nan_target_preserves_both_owners (__main__.IntegratedTests.test_second_environment_nan_target_preserves_both_owners) ... ok
+test_second_environment_solver_failure_after_first_solve_rolls_back (__main__.IntegratedTests.test_second_environment_solver_failure_after_first_solve_rolls_back) ... ok
+test_simultaneous_soft_limit_and_contact_matches_exhaustive_qp (__main__.IntegratedTests.test_simultaneous_soft_limit_and_contact_matches_exhaustive_qp) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.055s
+
+OK

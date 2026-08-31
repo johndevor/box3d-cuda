@@ -29,7 +29,9 @@ Disk disk(double a,double b,double c,double fx,double fy,double cap){
 }
 int solve(const civ1_problem& p,civ1_result& out){
  const size_t N=p.dofs,R=p.rows;
- require(N&&N<=32&&R<=384&&p.contacts<=64&&p.max_iterations&&p.max_iterations<=16384);
+ // Raised for multi-body cube-grid islands: N covers duck DOFs plus free
+ // bodies (6 each); dense chol/K stay tractable at this scale on CPU.
+ require(N&&N<=256&&R<=1536&&p.contacts<=512&&p.max_iterations&&p.max_iterations<=16384);
  require(finite(p.impulse_tolerance)&&p.impulse_tolerance>0&&p.impulse_tolerance<=1e-5);
  require(p.mass&&p.smooth_velocity&&out.velocity&&(!R||(p.jacobian&&p.target&&p.regularizer&&p.lower&&p.upper&&out.impulse))&&(!p.contacts||p.contact));
  std::vector<double> chol(N*N,0),response(R*N),K(R*R),lambda(R),base(R),v(N),residual(R);
