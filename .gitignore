@@ -8,3 +8,6 @@ dist/
 *.so
 *.dylib
 *.dll
+runs/
+gates-*/
+build-remote/

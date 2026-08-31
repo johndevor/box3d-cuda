@@ -27,7 +27,7 @@ packages = ["box3d_cuda", "box3d_cuda.benchmarking", "box3d_cuda.contracts"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-box3d_cuda = ["csrc/*.cu", "csrc/*.cpp", "LICENSE.box3d", "UPSTREAM.json"]
+box3d_cuda = ["csrc/*.cu", "csrc/*.cpp", "csrc/*.h", "LICENSE.box3d", "UPSTREAM.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

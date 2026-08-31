@@ -1,5 +1,10 @@
 include LICENSE LICENSE.box3d UPSTREAM.json CMakeLists.txt
-recursive-include csrc *.cu *.cpp
+recursive-include csrc *.cu *.cpp *.h
 recursive-include include *.h
 recursive-include examples *.cu
 recursive-include docs *.md
+recursive-include experimental *.cu *.cpp *.c *.h *.py *.json *.npz *.md *.html CMakeLists.txt
+recursive-include duck_model *.py *.xml *.json *.md *LICENSE *NOTICE
+recursive-include walk *.py *.md
+recursive-include gpu *.py *.json *.md
+recursive-include scripts *.py

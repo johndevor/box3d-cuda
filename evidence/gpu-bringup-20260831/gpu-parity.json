@@ -1,0 +1,30 @@
+{
+ "schema": "duckgridwalk.gpu-parity/1",
+ "environments": 64,
+ "ticks": 800,
+ "gates": {
+  "windowed_max_q_diff_100t": {
+   "value": 0.0004519820213317871,
+   "bound": 0.001,
+   "pass": true
+  },
+  "windowed_max_v_diff_100t": {
+   "value": 0.10645009577274323,
+   "bound": 0.25,
+   "pass": true
+  },
+  "gpu_max_penetration_m": {
+   "value": 0.00015521608293056488,
+   "bound": 0.005,
+   "pass": true
+  },
+  "gpu_all_finite": {
+   "pass": true
+  },
+  "gpu_determinism_bitwise": {
+   "pass": true
+  }
+ },
+ "failures": [],
+ "passed": true
+}

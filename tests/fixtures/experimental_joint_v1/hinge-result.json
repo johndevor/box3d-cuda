@@ -1,0 +1,6379 @@
+{
+  "cases": [
+    {
+      "case": {
+        "armature": 0.0,
+        "damping": 0.0,
+        "friction_loss": 0.0,
+        "name": "bare_positive",
+        "purpose": "bare inertia analytic",
+        "q": 0.0,
+        "target": 0.1,
+        "velocity": 0.0
+      },
+      "compiled": {
+        "actuator_biasprm": [
+          [
+            0.0,
+            -13.37,
+            -0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_forcerange": [
+          [
+            -3.23,
+            3.23
+          ]
+        ],
+        "actuator_gainprm": [
+          [
+            13.37,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_gear": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_inertia": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.01,
+            0.02,
+            0.02
+          ]
+        ],
+        "body_ipos": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_mass": [
+          0.0,
+          1.0
+        ],
+        "dof_M0": [
+          0.02
+        ],
+        "dof_armature": [
+          0.0
+        ],
+        "dof_damping": [
+          0.0
+        ],
+        "dof_frictionloss": [
+          0.0
+        ],
+        "dof_invweight0": [
+          50.0
+        ],
+        "dof_solimp": [
+          [
+            0.9,
+            0.95,
+            0.001,
+            0.5,
+            2.0
+          ]
+        ],
+        "dof_solref": [
+          [
+            0.02,
+            1.0
+          ]
+        ],
+        "jnt_axis": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "reset": {
+        "ctrl": 0.1,
+        "q": 0.0,
+        "time_s": 0.0,
+        "velocity": 0.0
+      },
+      "status": "passed-component-and-integration-gates",
+      "steps": [
+        {
+          "actuator_force_nm": 1.337,
+          "analytic_reference": {
+            "actuator": 1.337,
+            "actuator_unclamped": 1.337,
+            "passive": -0.0,
+            "smooth_total": 1.337
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": 66.85,
+            "acceleration_smooth": 66.85,
+            "actuator": 1.337,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.02,
+            "passive": 0.0
+          },
+          "post": {
+            "q": 0.0002674,
+            "time_s": 0.002,
+            "velocity": 0.13369999999999999
+          },
+          "pre": {
+            "ctrl": 0.1,
+            "q": 0.0,
+            "time_s": 0.0,
+            "velocity": 0.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 1,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": 1.333424862,
+          "analytic_reference": {
+            "actuator": 1.333424862,
+            "actuator_unclamped": 1.333424862,
+            "passive": -0.0,
+            "smooth_total": 1.333424862
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": 66.6712431,
+            "acceleration_smooth": 66.6712431,
+            "actuator": 1.333424862,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.02,
+            "passive": 0.0
+          },
+          "post": {
+            "q": 0.0008014849724,
+            "time_s": 0.004,
+            "velocity": 0.2670424862
+          },
+          "pre": {
+            "ctrl": 0.1,
+            "q": 0.0002674,
+            "time_s": 0.002,
+            "velocity": 0.13369999999999999
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 2,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": 1.326284145919012,
+          "analytic_reference": {
+            "actuator": 1.326284145919012,
+            "actuator_unclamped": 1.326284145919012,
+            "passive": -0.0,
+            "smooth_total": 1.326284145919012
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": 66.3142072959506,
+            "acceleration_smooth": 66.3142072959506,
+            "actuator": 1.326284145919012,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.02,
+            "passive": 0.0
+          },
+          "post": {
+            "q": 0.0016008267739838023,
+            "time_s": 0.006,
+            "velocity": 0.39967090079190115
+          },
+          "pre": {
+            "ctrl": 0.1,
+            "q": 0.0008014849724,
+            "time_s": 0.004,
+            "velocity": 0.2670424862
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 3,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "xml": "<mujoco model=\"native_compat_bare_positive\">\n  <compiler angle=\"radian\"/>\n  <option timestep=\"0.002\" gravity=\"0 0 0\" integrator=\"Euler\" solver=\"Newton\" iterations=\"1\" ls_iterations=\"5\" jacobian=\"dense\">\n    <flag eulerdamp=\"disable\"/>\n  </option>\n  <worldbody><body name=\"rotor\">\n    <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\"0.01 0.02 0.02\"/>\n    <joint name=\"hinge\" type=\"hinge\" pos=\"0 0 0\" axis=\"0 0 1\" limited=\"false\" armature=\"0.0\" damping=\"0.0\" frictionloss=\"0.0\" solreffriction=\"0.02 1\" solimpfriction=\"0.9 0.95 0.001 0.5 2\"/>\n  </body></worldbody>\n  <actuator><position name=\"motor\" joint=\"hinge\" kp=\"13.37\" kv=\"0.0\" ctrllimited=\"false\" forcelimited=\"true\" forcerange=\"-3.23 3.23\"/></actuator>\n</mujoco>",
+      "xml_sha256": "36faf757f0ede2ccc447905a67a4db86557841d8c7c13c5cd0fd5a947e2fd3dc"
+    },
+    {
+      "case": {
+        "armature": 0.027,
+        "damping": 0.0,
+        "friction_loss": 0.0,
+        "name": "armature_positive",
+        "purpose": "rotor inertia analytic",
+        "q": 0.0,
+        "target": 0.1,
+        "velocity": 0.0
+      },
+      "compiled": {
+        "actuator_biasprm": [
+          [
+            0.0,
+            -13.37,
+            -0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_forcerange": [
+          [
+            -3.23,
+            3.23
+          ]
+        ],
+        "actuator_gainprm": [
+          [
+            13.37,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_gear": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_inertia": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.01,
+            0.02,
+            0.02
+          ]
+        ],
+        "body_ipos": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_mass": [
+          0.0,
+          1.0
+        ],
+        "dof_M0": [
+          0.047
+        ],
+        "dof_armature": [
+          0.027
+        ],
+        "dof_damping": [
+          0.0
+        ],
+        "dof_frictionloss": [
+          0.0
+        ],
+        "dof_invweight0": [
+          21.27659574468085
+        ],
+        "dof_solimp": [
+          [
+            0.9,
+            0.95,
+            0.001,
+            0.5,
+            2.0
+          ]
+        ],
+        "dof_solref": [
+          [
+            0.02,
+            1.0
+          ]
+        ],
+        "jnt_axis": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "reset": {
+        "ctrl": 0.1,
+        "q": 0.0,
+        "time_s": 0.0,
+        "velocity": 0.0
+      },
+      "status": "passed-component-and-integration-gates",
+      "steps": [
+        {
+          "actuator_force_nm": 1.337,
+          "analytic_reference": {
+            "actuator": 1.337,
+            "actuator_unclamped": 1.337,
+            "passive": -0.0,
+            "smooth_total": 1.337
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": 28.446808510638295,
+            "acceleration_smooth": 28.446808510638295,
+            "actuator": 1.337,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": 0.0
+          },
+          "post": {
+            "q": 0.00011378723404255319,
+            "time_s": 0.002,
+            "velocity": 0.05689361702127659
+          },
+          "pre": {
+            "ctrl": 0.1,
+            "q": 0.0,
+            "time_s": 0.0,
+            "velocity": 0.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 1,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": 1.335478664680851,
+          "analytic_reference": {
+            "actuator": 1.335478664680851,
+            "actuator_unclamped": 1.335478664680851,
+            "passive": -0.0,
+            "smooth_total": 1.335478664680851
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": 28.41443967406066,
+            "acceleration_smooth": 28.41443967406066,
+            "actuator": 1.335478664680851,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": 0.0
+          },
+          "post": {
+            "q": 0.00034123222678134903,
+            "time_s": 0.004,
+            "velocity": 0.11372249636939791
+          },
+          "pre": {
+            "ctrl": 0.1,
+            "q": 0.00011378723404255319,
+            "time_s": 0.002,
+            "velocity": 0.05689361702127659
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 2,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": 1.3324377251279333,
+          "analytic_reference": {
+            "actuator": 1.3324377251279333,
+            "actuator_unclamped": 1.3324377251279333,
+            "passive": -0.0,
+            "smooth_total": 1.3324377251279333
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": 28.34973883250922,
+            "acceleration_smooth": 28.34973883250922,
+            "actuator": 1.3324377251279333,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": 0.0
+          },
+          "post": {
+            "q": 0.0006820761748501817,
+            "time_s": 0.006,
+            "velocity": 0.17042197403441636
+          },
+          "pre": {
+            "ctrl": 0.1,
+            "q": 0.00034123222678134903,
+            "time_s": 0.004,
+            "velocity": 0.11372249636939791
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 3,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "xml": "<mujoco model=\"native_compat_armature_positive\">\n  <compiler angle=\"radian\"/>\n  <option timestep=\"0.002\" gravity=\"0 0 0\" integrator=\"Euler\" solver=\"Newton\" iterations=\"1\" ls_iterations=\"5\" jacobian=\"dense\">\n    <flag eulerdamp=\"disable\"/>\n  </option>\n  <worldbody><body name=\"rotor\">\n    <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\"0.01 0.02 0.02\"/>\n    <joint name=\"hinge\" type=\"hinge\" pos=\"0 0 0\" axis=\"0 0 1\" limited=\"false\" armature=\"0.027\" damping=\"0.0\" frictionloss=\"0.0\" solreffriction=\"0.02 1\" solimpfriction=\"0.9 0.95 0.001 0.5 2\"/>\n  </body></worldbody>\n  <actuator><position name=\"motor\" joint=\"hinge\" kp=\"13.37\" kv=\"0.0\" ctrllimited=\"false\" forcelimited=\"true\" forcerange=\"-3.23 3.23\"/></actuator>\n</mujoco>",
+      "xml_sha256": "e63ac486a67e6260b584623154b037c3e5b41c35ac7f46861c9ab9c944dce89f"
+    },
+    {
+      "case": {
+        "armature": 0.0,
+        "damping": 0.0,
+        "friction_loss": 0.0,
+        "name": "bare_negative",
+        "purpose": "bare sign symmetry",
+        "q": 0.0,
+        "target": -0.1,
+        "velocity": 0.0
+      },
+      "compiled": {
+        "actuator_biasprm": [
+          [
+            0.0,
+            -13.37,
+            -0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_forcerange": [
+          [
+            -3.23,
+            3.23
+          ]
+        ],
+        "actuator_gainprm": [
+          [
+            13.37,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_gear": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_inertia": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.01,
+            0.02,
+            0.02
+          ]
+        ],
+        "body_ipos": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_mass": [
+          0.0,
+          1.0
+        ],
+        "dof_M0": [
+          0.02
+        ],
+        "dof_armature": [
+          0.0
+        ],
+        "dof_damping": [
+          0.0
+        ],
+        "dof_frictionloss": [
+          0.0
+        ],
+        "dof_invweight0": [
+          50.0
+        ],
+        "dof_solimp": [
+          [
+            0.9,
+            0.95,
+            0.001,
+            0.5,
+            2.0
+          ]
+        ],
+        "dof_solref": [
+          [
+            0.02,
+            1.0
+          ]
+        ],
+        "jnt_axis": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "reset": {
+        "ctrl": -0.1,
+        "q": 0.0,
+        "time_s": 0.0,
+        "velocity": 0.0
+      },
+      "status": "passed-component-and-integration-gates",
+      "steps": [
+        {
+          "actuator_force_nm": -1.337,
+          "analytic_reference": {
+            "actuator": -1.337,
+            "actuator_unclamped": -1.337,
+            "passive": -0.0,
+            "smooth_total": -1.337
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": -66.85,
+            "acceleration_smooth": -66.85,
+            "actuator": -1.337,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.02,
+            "passive": 0.0
+          },
+          "post": {
+            "q": -0.0002674,
+            "time_s": 0.002,
+            "velocity": -0.13369999999999999
+          },
+          "pre": {
+            "ctrl": -0.1,
+            "q": 0.0,
+            "time_s": 0.0,
+            "velocity": 0.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 1,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": -1.333424862,
+          "analytic_reference": {
+            "actuator": -1.333424862,
+            "actuator_unclamped": -1.333424862,
+            "passive": 0.0,
+            "smooth_total": -1.333424862
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": -66.6712431,
+            "acceleration_smooth": -66.6712431,
+            "actuator": -1.333424862,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.02,
+            "passive": 0.0
+          },
+          "post": {
+            "q": -0.0008014849724,
+            "time_s": 0.004,
+            "velocity": -0.2670424862
+          },
+          "pre": {
+            "ctrl": -0.1,
+            "q": -0.0002674,
+            "time_s": 0.002,
+            "velocity": -0.13369999999999999
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 2,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": -1.326284145919012,
+          "analytic_reference": {
+            "actuator": -1.326284145919012,
+            "actuator_unclamped": -1.326284145919012,
+            "passive": 0.0,
+            "smooth_total": -1.326284145919012
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": -66.3142072959506,
+            "acceleration_smooth": -66.3142072959506,
+            "actuator": -1.326284145919012,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.02,
+            "passive": 0.0
+          },
+          "post": {
+            "q": -0.0016008267739838023,
+            "time_s": 0.006,
+            "velocity": -0.39967090079190115
+          },
+          "pre": {
+            "ctrl": -0.1,
+            "q": -0.0008014849724,
+            "time_s": 0.004,
+            "velocity": -0.2670424862
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 3,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "xml": "<mujoco model=\"native_compat_bare_negative\">\n  <compiler angle=\"radian\"/>\n  <option timestep=\"0.002\" gravity=\"0 0 0\" integrator=\"Euler\" solver=\"Newton\" iterations=\"1\" ls_iterations=\"5\" jacobian=\"dense\">\n    <flag eulerdamp=\"disable\"/>\n  </option>\n  <worldbody><body name=\"rotor\">\n    <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\"0.01 0.02 0.02\"/>\n    <joint name=\"hinge\" type=\"hinge\" pos=\"0 0 0\" axis=\"0 0 1\" limited=\"false\" armature=\"0.0\" damping=\"0.0\" frictionloss=\"0.0\" solreffriction=\"0.02 1\" solimpfriction=\"0.9 0.95 0.001 0.5 2\"/>\n  </body></worldbody>\n  <actuator><position name=\"motor\" joint=\"hinge\" kp=\"13.37\" kv=\"0.0\" ctrllimited=\"false\" forcelimited=\"true\" forcerange=\"-3.23 3.23\"/></actuator>\n</mujoco>",
+      "xml_sha256": "eb3aa941f10532c4cc20d1b4b77eec00526c2646add51989f8c909c6cfefcbcf"
+    },
+    {
+      "case": {
+        "armature": 0.027,
+        "damping": 0.0,
+        "friction_loss": 0.0,
+        "name": "armature_negative",
+        "purpose": "rotor sign symmetry",
+        "q": 0.0,
+        "target": -0.1,
+        "velocity": 0.0
+      },
+      "compiled": {
+        "actuator_biasprm": [
+          [
+            0.0,
+            -13.37,
+            -0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_forcerange": [
+          [
+            -3.23,
+            3.23
+          ]
+        ],
+        "actuator_gainprm": [
+          [
+            13.37,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_gear": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_inertia": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.01,
+            0.02,
+            0.02
+          ]
+        ],
+        "body_ipos": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_mass": [
+          0.0,
+          1.0
+        ],
+        "dof_M0": [
+          0.047
+        ],
+        "dof_armature": [
+          0.027
+        ],
+        "dof_damping": [
+          0.0
+        ],
+        "dof_frictionloss": [
+          0.0
+        ],
+        "dof_invweight0": [
+          21.27659574468085
+        ],
+        "dof_solimp": [
+          [
+            0.9,
+            0.95,
+            0.001,
+            0.5,
+            2.0
+          ]
+        ],
+        "dof_solref": [
+          [
+            0.02,
+            1.0
+          ]
+        ],
+        "jnt_axis": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "reset": {
+        "ctrl": -0.1,
+        "q": 0.0,
+        "time_s": 0.0,
+        "velocity": 0.0
+      },
+      "status": "passed-component-and-integration-gates",
+      "steps": [
+        {
+          "actuator_force_nm": -1.337,
+          "analytic_reference": {
+            "actuator": -1.337,
+            "actuator_unclamped": -1.337,
+            "passive": -0.0,
+            "smooth_total": -1.337
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": -28.446808510638295,
+            "acceleration_smooth": -28.446808510638295,
+            "actuator": -1.337,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": 0.0
+          },
+          "post": {
+            "q": -0.00011378723404255319,
+            "time_s": 0.002,
+            "velocity": -0.05689361702127659
+          },
+          "pre": {
+            "ctrl": -0.1,
+            "q": 0.0,
+            "time_s": 0.0,
+            "velocity": 0.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 1,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": -1.335478664680851,
+          "analytic_reference": {
+            "actuator": -1.335478664680851,
+            "actuator_unclamped": -1.335478664680851,
+            "passive": 0.0,
+            "smooth_total": -1.335478664680851
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": -28.41443967406066,
+            "acceleration_smooth": -28.41443967406066,
+            "actuator": -1.335478664680851,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": 0.0
+          },
+          "post": {
+            "q": -0.00034123222678134903,
+            "time_s": 0.004,
+            "velocity": -0.11372249636939791
+          },
+          "pre": {
+            "ctrl": -0.1,
+            "q": -0.00011378723404255319,
+            "time_s": 0.002,
+            "velocity": -0.05689361702127659
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 2,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": -1.3324377251279333,
+          "analytic_reference": {
+            "actuator": -1.3324377251279333,
+            "actuator_unclamped": -1.3324377251279333,
+            "passive": 0.0,
+            "smooth_total": -1.3324377251279333
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": -28.34973883250922,
+            "acceleration_smooth": -28.34973883250922,
+            "actuator": -1.3324377251279333,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": 0.0
+          },
+          "post": {
+            "q": -0.0006820761748501817,
+            "time_s": 0.006,
+            "velocity": -0.17042197403441636
+          },
+          "pre": {
+            "ctrl": -0.1,
+            "q": -0.00034123222678134903,
+            "time_s": 0.004,
+            "velocity": -0.11372249636939791
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 3,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "xml": "<mujoco model=\"native_compat_armature_negative\">\n  <compiler angle=\"radian\"/>\n  <option timestep=\"0.002\" gravity=\"0 0 0\" integrator=\"Euler\" solver=\"Newton\" iterations=\"1\" ls_iterations=\"5\" jacobian=\"dense\">\n    <flag eulerdamp=\"disable\"/>\n  </option>\n  <worldbody><body name=\"rotor\">\n    <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\"0.01 0.02 0.02\"/>\n    <joint name=\"hinge\" type=\"hinge\" pos=\"0 0 0\" axis=\"0 0 1\" limited=\"false\" armature=\"0.027\" damping=\"0.0\" frictionloss=\"0.0\" solreffriction=\"0.02 1\" solimpfriction=\"0.9 0.95 0.001 0.5 2\"/>\n  </body></worldbody>\n  <actuator><position name=\"motor\" joint=\"hinge\" kp=\"13.37\" kv=\"0.0\" ctrllimited=\"false\" forcelimited=\"true\" forcerange=\"-3.23 3.23\"/></actuator>\n</mujoco>",
+      "xml_sha256": "b410ef560eecb02501967c39a72ea82dc6784b59a7f31a0f04e5feac9ec94360"
+    },
+    {
+      "case": {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.0,
+        "name": "damping_positive",
+        "purpose": "separate passive damping",
+        "q": 0.0,
+        "target": 0.0,
+        "velocity": 2.0
+      },
+      "compiled": {
+        "actuator_biasprm": [
+          [
+            0.0,
+            -13.37,
+            -0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_forcerange": [
+          [
+            -3.23,
+            3.23
+          ]
+        ],
+        "actuator_gainprm": [
+          [
+            13.37,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_gear": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_inertia": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.01,
+            0.02,
+            0.02
+          ]
+        ],
+        "body_ipos": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_mass": [
+          0.0,
+          1.0
+        ],
+        "dof_M0": [
+          0.047
+        ],
+        "dof_armature": [
+          0.027
+        ],
+        "dof_damping": [
+          0.56
+        ],
+        "dof_frictionloss": [
+          0.0
+        ],
+        "dof_invweight0": [
+          21.27659574468085
+        ],
+        "dof_solimp": [
+          [
+            0.9,
+            0.95,
+            0.001,
+            0.5,
+            2.0
+          ]
+        ],
+        "dof_solref": [
+          [
+            0.02,
+            1.0
+          ]
+        ],
+        "jnt_axis": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "reset": {
+        "ctrl": 0.0,
+        "q": 0.0,
+        "time_s": 0.0,
+        "velocity": 2.0
+      },
+      "status": "passed-component-and-integration-gates",
+      "steps": [
+        {
+          "actuator_force_nm": 0.0,
+          "analytic_reference": {
+            "actuator": 0.0,
+            "actuator_unclamped": 0.0,
+            "passive": -1.12,
+            "smooth_total": -1.12
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": -23.829787234042556,
+            "acceleration_smooth": -23.829787234042556,
+            "actuator": 0.0,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": -1.12
+          },
+          "post": {
+            "q": 0.0039046808510638294,
+            "time_s": 0.002,
+            "velocity": 1.9523404255319148
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": 0.0,
+            "time_s": 0.0,
+            "velocity": 2.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 1,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": -0.052205582978723394,
+          "analytic_reference": {
+            "actuator": -0.052205582978723394,
+            "actuator_unclamped": -0.052205582978723394,
+            "passive": -1.0933106382978723,
+            "smooth_total": -1.1455162212765957
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": -24.372685559076505,
+            "acceleration_smooth": -24.372685559076505,
+            "actuator": -0.052205582978723394,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": -1.0933106382978723
+          },
+          "post": {
+            "q": 0.007711870959891353,
+            "time_s": 0.004,
+            "velocity": 1.9035950544137619
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": 0.0039046808510638294,
+            "time_s": 0.002,
+            "velocity": 1.9523404255319148
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 2,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": -0.10310771473374739,
+          "analytic_reference": {
+            "actuator": -0.10310771473374739,
+            "actuator_unclamped": -0.10310771473374739,
+            "passive": -1.0660132304717067,
+            "smooth_total": -1.169120945205454
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": -24.874913727775617,
+            "acceleration_smooth": -24.874913727775617,
+            "actuator": -0.10310771473374739,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": -1.0660132304717067
+          },
+          "post": {
+            "q": 0.011419561413807774,
+            "time_s": 0.006,
+            "velocity": 1.8538452269582106
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": 0.007711870959891353,
+            "time_s": 0.004,
+            "velocity": 1.9035950544137619
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 3,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "xml": "<mujoco model=\"native_compat_damping_positive\">\n  <compiler angle=\"radian\"/>\n  <option timestep=\"0.002\" gravity=\"0 0 0\" integrator=\"Euler\" solver=\"Newton\" iterations=\"1\" ls_iterations=\"5\" jacobian=\"dense\">\n    <flag eulerdamp=\"disable\"/>\n  </option>\n  <worldbody><body name=\"rotor\">\n    <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\"0.01 0.02 0.02\"/>\n    <joint name=\"hinge\" type=\"hinge\" pos=\"0 0 0\" axis=\"0 0 1\" limited=\"false\" armature=\"0.027\" damping=\"0.56\" frictionloss=\"0.0\" solreffriction=\"0.02 1\" solimpfriction=\"0.9 0.95 0.001 0.5 2\"/>\n  </body></worldbody>\n  <actuator><position name=\"motor\" joint=\"hinge\" kp=\"13.37\" kv=\"0.0\" ctrllimited=\"false\" forcelimited=\"true\" forcerange=\"-3.23 3.23\"/></actuator>\n</mujoco>",
+      "xml_sha256": "c6b6019e7219a0c5419c3e57535ab8ea688e853ef7df1f7fffaae1ec002e327c"
+    },
+    {
+      "case": {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.0,
+        "name": "damping_negative",
+        "purpose": "separate passive damping sign",
+        "q": 0.0,
+        "target": 0.0,
+        "velocity": -2.0
+      },
+      "compiled": {
+        "actuator_biasprm": [
+          [
+            0.0,
+            -13.37,
+            -0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_forcerange": [
+          [
+            -3.23,
+            3.23
+          ]
+        ],
+        "actuator_gainprm": [
+          [
+            13.37,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_gear": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_inertia": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.01,
+            0.02,
+            0.02
+          ]
+        ],
+        "body_ipos": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_mass": [
+          0.0,
+          1.0
+        ],
+        "dof_M0": [
+          0.047
+        ],
+        "dof_armature": [
+          0.027
+        ],
+        "dof_damping": [
+          0.56
+        ],
+        "dof_frictionloss": [
+          0.0
+        ],
+        "dof_invweight0": [
+          21.27659574468085
+        ],
+        "dof_solimp": [
+          [
+            0.9,
+            0.95,
+            0.001,
+            0.5,
+            2.0
+          ]
+        ],
+        "dof_solref": [
+          [
+            0.02,
+            1.0
+          ]
+        ],
+        "jnt_axis": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "reset": {
+        "ctrl": 0.0,
+        "q": 0.0,
+        "time_s": 0.0,
+        "velocity": -2.0
+      },
+      "status": "passed-component-and-integration-gates",
+      "steps": [
+        {
+          "actuator_force_nm": 0.0,
+          "analytic_reference": {
+            "actuator": 0.0,
+            "actuator_unclamped": 0.0,
+            "passive": 1.12,
+            "smooth_total": 1.12
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": 23.829787234042556,
+            "acceleration_smooth": 23.829787234042556,
+            "actuator": 0.0,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": 1.12
+          },
+          "post": {
+            "q": -0.0039046808510638294,
+            "time_s": 0.002,
+            "velocity": -1.9523404255319148
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": 0.0,
+            "time_s": 0.0,
+            "velocity": -2.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 1,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": 0.052205582978723394,
+          "analytic_reference": {
+            "actuator": 0.052205582978723394,
+            "actuator_unclamped": 0.052205582978723394,
+            "passive": 1.0933106382978723,
+            "smooth_total": 1.1455162212765957
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": 24.372685559076505,
+            "acceleration_smooth": 24.372685559076505,
+            "actuator": 0.052205582978723394,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": 1.0933106382978723
+          },
+          "post": {
+            "q": -0.007711870959891353,
+            "time_s": 0.004,
+            "velocity": -1.9035950544137619
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": -0.0039046808510638294,
+            "time_s": 0.002,
+            "velocity": -1.9523404255319148
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 2,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": 0.10310771473374739,
+          "analytic_reference": {
+            "actuator": 0.10310771473374739,
+            "actuator_unclamped": 0.10310771473374739,
+            "passive": 1.0660132304717067,
+            "smooth_total": 1.169120945205454
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": 24.874913727775617,
+            "acceleration_smooth": 24.874913727775617,
+            "actuator": 0.10310771473374739,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": 1.0660132304717067
+          },
+          "post": {
+            "q": -0.011419561413807774,
+            "time_s": 0.006,
+            "velocity": -1.8538452269582106
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": -0.007711870959891353,
+            "time_s": 0.004,
+            "velocity": -1.9035950544137619
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 3,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "xml": "<mujoco model=\"native_compat_damping_negative\">\n  <compiler angle=\"radian\"/>\n  <option timestep=\"0.002\" gravity=\"0 0 0\" integrator=\"Euler\" solver=\"Newton\" iterations=\"1\" ls_iterations=\"5\" jacobian=\"dense\">\n    <flag eulerdamp=\"disable\"/>\n  </option>\n  <worldbody><body name=\"rotor\">\n    <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\"0.01 0.02 0.02\"/>\n    <joint name=\"hinge\" type=\"hinge\" pos=\"0 0 0\" axis=\"0 0 1\" limited=\"false\" armature=\"0.027\" damping=\"0.56\" frictionloss=\"0.0\" solreffriction=\"0.02 1\" solimpfriction=\"0.9 0.95 0.001 0.5 2\"/>\n  </body></worldbody>\n  <actuator><position name=\"motor\" joint=\"hinge\" kp=\"13.37\" kv=\"0.0\" ctrllimited=\"false\" forcelimited=\"true\" forcerange=\"-3.23 3.23\"/></actuator>\n</mujoco>",
+      "xml_sha256": "734b69b20b87be9fe531599e0001715cf8026669fa37a44abcd18362e0f907ae"
+    },
+    {
+      "case": {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.0,
+        "name": "positive_cap_and_damping",
+        "purpose": "motor clamp before passive damping",
+        "q": 0.0,
+        "target": 1.0,
+        "velocity": 2.0
+      },
+      "compiled": {
+        "actuator_biasprm": [
+          [
+            0.0,
+            -13.37,
+            -0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_forcerange": [
+          [
+            -3.23,
+            3.23
+          ]
+        ],
+        "actuator_gainprm": [
+          [
+            13.37,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_gear": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_inertia": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.01,
+            0.02,
+            0.02
+          ]
+        ],
+        "body_ipos": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_mass": [
+          0.0,
+          1.0
+        ],
+        "dof_M0": [
+          0.047
+        ],
+        "dof_armature": [
+          0.027
+        ],
+        "dof_damping": [
+          0.56
+        ],
+        "dof_frictionloss": [
+          0.0
+        ],
+        "dof_invweight0": [
+          21.27659574468085
+        ],
+        "dof_solimp": [
+          [
+            0.9,
+            0.95,
+            0.001,
+            0.5,
+            2.0
+          ]
+        ],
+        "dof_solref": [
+          [
+            0.02,
+            1.0
+          ]
+        ],
+        "jnt_axis": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "reset": {
+        "ctrl": 1.0,
+        "q": 0.0,
+        "time_s": 0.0,
+        "velocity": 2.0
+      },
+      "status": "passed-component-and-integration-gates",
+      "steps": [
+        {
+          "actuator_force_nm": 3.23,
+          "analytic_reference": {
+            "actuator": 3.23,
+            "actuator_unclamped": 13.37,
+            "passive": -1.12,
+            "smooth_total": 2.11
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": 44.89361702127659,
+            "acceleration_smooth": 44.89361702127659,
+            "actuator": 3.23,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": -1.12
+          },
+          "post": {
+            "q": 0.004179574468085106,
+            "time_s": 0.002,
+            "velocity": 2.089787234042553
+          },
+          "pre": {
+            "ctrl": 1.0,
+            "q": 0.0,
+            "time_s": 0.0,
+            "velocity": 2.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 1,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": 3.23,
+          "analytic_reference": {
+            "actuator": 3.23,
+            "actuator_unclamped": 13.3141190893617,
+            "passive": -1.1702808510638298,
+            "smooth_total": 2.0597191489361704
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": 43.823811679492984,
+            "acceleration_smooth": 43.823811679492984,
+            "actuator": 3.23,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": -1.1702808510638298
+          },
+          "post": {
+            "q": 0.008534444182888184,
+            "time_s": 0.004,
+            "velocity": 2.177434857401539
+          },
+          "pre": {
+            "ctrl": 1.0,
+            "q": 0.004179574468085106,
+            "time_s": 0.002,
+            "velocity": 2.089787234042553
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 2,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": 3.23,
+          "analytic_reference": {
+            "actuator": 3.23,
+            "actuator_unclamped": 13.255894481274785,
+            "passive": -1.219363520144862,
+            "smooth_total": 2.0106364798551377
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": 42.779499571385905,
+            "acceleration_smooth": 42.779499571385905,
+            "actuator": 3.23,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": -1.219363520144862
+          },
+          "post": {
+            "q": 0.013060431895976806,
+            "time_s": 0.006,
+            "velocity": 2.262993856544311
+          },
+          "pre": {
+            "ctrl": 1.0,
+            "q": 0.008534444182888184,
+            "time_s": 0.004,
+            "velocity": 2.177434857401539
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 3,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "xml": "<mujoco model=\"native_compat_positive_cap_and_damping\">\n  <compiler angle=\"radian\"/>\n  <option timestep=\"0.002\" gravity=\"0 0 0\" integrator=\"Euler\" solver=\"Newton\" iterations=\"1\" ls_iterations=\"5\" jacobian=\"dense\">\n    <flag eulerdamp=\"disable\"/>\n  </option>\n  <worldbody><body name=\"rotor\">\n    <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\"0.01 0.02 0.02\"/>\n    <joint name=\"hinge\" type=\"hinge\" pos=\"0 0 0\" axis=\"0 0 1\" limited=\"false\" armature=\"0.027\" damping=\"0.56\" frictionloss=\"0.0\" solreffriction=\"0.02 1\" solimpfriction=\"0.9 0.95 0.001 0.5 2\"/>\n  </body></worldbody>\n  <actuator><position name=\"motor\" joint=\"hinge\" kp=\"13.37\" kv=\"0.0\" ctrllimited=\"false\" forcelimited=\"true\" forcerange=\"-3.23 3.23\"/></actuator>\n</mujoco>",
+      "xml_sha256": "11410234c77a41abd1abeca9d4d52be7b7478ada1ee3e2ab01ea3c5b02c6b60e"
+    },
+    {
+      "case": {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.0,
+        "name": "negative_cap_and_damping",
+        "purpose": "motor clamp sign",
+        "q": 0.0,
+        "target": -1.0,
+        "velocity": -2.0
+      },
+      "compiled": {
+        "actuator_biasprm": [
+          [
+            0.0,
+            -13.37,
+            -0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_forcerange": [
+          [
+            -3.23,
+            3.23
+          ]
+        ],
+        "actuator_gainprm": [
+          [
+            13.37,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_gear": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_inertia": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.01,
+            0.02,
+            0.02
+          ]
+        ],
+        "body_ipos": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_mass": [
+          0.0,
+          1.0
+        ],
+        "dof_M0": [
+          0.047
+        ],
+        "dof_armature": [
+          0.027
+        ],
+        "dof_damping": [
+          0.56
+        ],
+        "dof_frictionloss": [
+          0.0
+        ],
+        "dof_invweight0": [
+          21.27659574468085
+        ],
+        "dof_solimp": [
+          [
+            0.9,
+            0.95,
+            0.001,
+            0.5,
+            2.0
+          ]
+        ],
+        "dof_solref": [
+          [
+            0.02,
+            1.0
+          ]
+        ],
+        "jnt_axis": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "reset": {
+        "ctrl": -1.0,
+        "q": 0.0,
+        "time_s": 0.0,
+        "velocity": -2.0
+      },
+      "status": "passed-component-and-integration-gates",
+      "steps": [
+        {
+          "actuator_force_nm": -3.23,
+          "analytic_reference": {
+            "actuator": -3.23,
+            "actuator_unclamped": -13.37,
+            "passive": 1.12,
+            "smooth_total": -2.11
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": -44.89361702127659,
+            "acceleration_smooth": -44.89361702127659,
+            "actuator": -3.23,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": 1.12
+          },
+          "post": {
+            "q": -0.004179574468085106,
+            "time_s": 0.002,
+            "velocity": -2.089787234042553
+          },
+          "pre": {
+            "ctrl": -1.0,
+            "q": 0.0,
+            "time_s": 0.0,
+            "velocity": -2.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 1,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": -3.23,
+          "analytic_reference": {
+            "actuator": -3.23,
+            "actuator_unclamped": -13.3141190893617,
+            "passive": 1.1702808510638298,
+            "smooth_total": -2.0597191489361704
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": -43.823811679492984,
+            "acceleration_smooth": -43.823811679492984,
+            "actuator": -3.23,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": 1.1702808510638298
+          },
+          "post": {
+            "q": -0.008534444182888184,
+            "time_s": 0.004,
+            "velocity": -2.177434857401539
+          },
+          "pre": {
+            "ctrl": -1.0,
+            "q": -0.004179574468085106,
+            "time_s": 0.002,
+            "velocity": -2.089787234042553
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 2,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": -3.23,
+          "analytic_reference": {
+            "actuator": -3.23,
+            "actuator_unclamped": -13.255894481274785,
+            "passive": 1.219363520144862,
+            "smooth_total": -2.0106364798551377
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [],
+            "aref": [],
+            "bound": [],
+            "count": 0,
+            "force": [],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [],
+            "state": [],
+            "type": []
+          },
+          "forces_pre_integration": {
+            "acceleration": -42.779499571385905,
+            "acceleration_smooth": -42.779499571385905,
+            "actuator": -3.23,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": 1.219363520144862
+          },
+          "post": {
+            "q": -0.013060431895976806,
+            "time_s": 0.006,
+            "velocity": -2.262993856544311
+          },
+          "pre": {
+            "ctrl": -1.0,
+            "q": -0.008534444182888184,
+            "time_s": 0.004,
+            "velocity": -2.177434857401539
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 3,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "xml": "<mujoco model=\"native_compat_negative_cap_and_damping\">\n  <compiler angle=\"radian\"/>\n  <option timestep=\"0.002\" gravity=\"0 0 0\" integrator=\"Euler\" solver=\"Newton\" iterations=\"1\" ls_iterations=\"5\" jacobian=\"dense\">\n    <flag eulerdamp=\"disable\"/>\n  </option>\n  <worldbody><body name=\"rotor\">\n    <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\"0.01 0.02 0.02\"/>\n    <joint name=\"hinge\" type=\"hinge\" pos=\"0 0 0\" axis=\"0 0 1\" limited=\"false\" armature=\"0.027\" damping=\"0.56\" frictionloss=\"0.0\" solreffriction=\"0.02 1\" solimpfriction=\"0.9 0.95 0.001 0.5 2\"/>\n  </body></worldbody>\n  <actuator><position name=\"motor\" joint=\"hinge\" kp=\"13.37\" kv=\"0.0\" ctrllimited=\"false\" forcelimited=\"true\" forcerange=\"-3.23 3.23\"/></actuator>\n</mujoco>",
+      "xml_sha256": "cd902f91eb7a4adcd944abcfdc7693dd0239c7149c0c16f8eb4f185400d5e5d1"
+    },
+    {
+      "case": {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.068,
+        "name": "friction_exact_rest",
+        "purpose": "zero input and velocity; exact rest",
+        "q": 0.0,
+        "target": 0.0,
+        "velocity": 0.0
+      },
+      "compiled": {
+        "actuator_biasprm": [
+          [
+            0.0,
+            -13.37,
+            -0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_forcerange": [
+          [
+            -3.23,
+            3.23
+          ]
+        ],
+        "actuator_gainprm": [
+          [
+            13.37,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_gear": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_inertia": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.01,
+            0.02,
+            0.02
+          ]
+        ],
+        "body_ipos": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_mass": [
+          0.0,
+          1.0
+        ],
+        "dof_M0": [
+          0.047
+        ],
+        "dof_armature": [
+          0.027
+        ],
+        "dof_damping": [
+          0.56
+        ],
+        "dof_frictionloss": [
+          0.068
+        ],
+        "dof_invweight0": [
+          21.27659574468085
+        ],
+        "dof_solimp": [
+          [
+            0.9,
+            0.95,
+            0.001,
+            0.5,
+            2.0
+          ]
+        ],
+        "dof_solref": [
+          [
+            0.02,
+            1.0
+          ]
+        ],
+        "jnt_axis": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "reset": {
+        "ctrl": 0.0,
+        "q": 0.0,
+        "time_s": 0.0,
+        "velocity": 0.0
+      },
+      "status": "passed-component-and-integration-gates",
+      "steps": [
+        {
+          "actuator_force_nm": 0.0,
+          "analytic_reference": {
+            "actuator": 0.0,
+            "actuator_unclamped": 0.0,
+            "passive": -0.0,
+            "smooth_total": 0.0
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              -0.0
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": -0.0,
+            "count": 1,
+            "force": [
+              -0.0
+            ],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              1
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": 0.0,
+            "acceleration_smooth": 0.0,
+            "actuator": 0.0,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": 0.0
+          },
+          "post": {
+            "q": 0.0,
+            "time_s": 0.002,
+            "velocity": 0.0
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": 0.0,
+            "time_s": 0.0,
+            "velocity": 0.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 1,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": 0.0,
+          "analytic_reference": {
+            "actuator": 0.0,
+            "actuator_unclamped": 0.0,
+            "passive": -0.0,
+            "smooth_total": 0.0
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              -0.0
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": -0.0,
+            "count": 1,
+            "force": [
+              -0.0
+            ],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              1
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": 0.0,
+            "acceleration_smooth": 0.0,
+            "actuator": 0.0,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": 0.0
+          },
+          "post": {
+            "q": 0.0,
+            "time_s": 0.004,
+            "velocity": 0.0
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": 0.0,
+            "time_s": 0.002,
+            "velocity": 0.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 2,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": 0.0,
+          "analytic_reference": {
+            "actuator": 0.0,
+            "actuator_unclamped": 0.0,
+            "passive": -0.0,
+            "smooth_total": 0.0
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              -0.0
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": -0.0,
+            "count": 1,
+            "force": [
+              -0.0
+            ],
+            "iterations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              1
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": 0.0,
+            "acceleration_smooth": 0.0,
+            "actuator": 0.0,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.0,
+            "mass": 0.047,
+            "passive": 0.0
+          },
+          "post": {
+            "q": 0.0,
+            "time_s": 0.006,
+            "velocity": 0.0
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": 0.0,
+            "time_s": 0.004,
+            "velocity": 0.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 3,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "xml": "<mujoco model=\"native_compat_friction_exact_rest\">\n  <compiler angle=\"radian\"/>\n  <option timestep=\"0.002\" gravity=\"0 0 0\" integrator=\"Euler\" solver=\"Newton\" iterations=\"1\" ls_iterations=\"5\" jacobian=\"dense\">\n    <flag eulerdamp=\"disable\"/>\n  </option>\n  <worldbody><body name=\"rotor\">\n    <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\"0.01 0.02 0.02\"/>\n    <joint name=\"hinge\" type=\"hinge\" pos=\"0 0 0\" axis=\"0 0 1\" limited=\"false\" armature=\"0.027\" damping=\"0.56\" frictionloss=\"0.068\" solreffriction=\"0.02 1\" solimpfriction=\"0.9 0.95 0.001 0.5 2\"/>\n  </body></worldbody>\n  <actuator><position name=\"motor\" joint=\"hinge\" kp=\"13.37\" kv=\"0.0\" ctrllimited=\"false\" forcelimited=\"true\" forcerange=\"-3.23 3.23\"/></actuator>\n</mujoco>",
+      "xml_sha256": "46269caa8805dbcfd2f4c4a09cb7194b9e24ba16677a3667bfa083593f7faee2"
+    },
+    {
+      "case": {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.068,
+        "name": "friction_subthreshold_positive",
+        "purpose": "soft below-threshold rest, not ideal rigid stiction",
+        "q": 0.0,
+        "target": 0.0014958863126402395,
+        "velocity": 0.0
+      },
+      "compiled": {
+        "actuator_biasprm": [
+          [
+            0.0,
+            -13.37,
+            -0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_forcerange": [
+          [
+            -3.23,
+            3.23
+          ]
+        ],
+        "actuator_gainprm": [
+          [
+            13.37,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_gear": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_inertia": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.01,
+            0.02,
+            0.02
+          ]
+        ],
+        "body_ipos": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_mass": [
+          0.0,
+          1.0
+        ],
+        "dof_M0": [
+          0.047
+        ],
+        "dof_armature": [
+          0.027
+        ],
+        "dof_damping": [
+          0.56
+        ],
+        "dof_frictionloss": [
+          0.068
+        ],
+        "dof_invweight0": [
+          21.27659574468085
+        ],
+        "dof_solimp": [
+          [
+            0.9,
+            0.95,
+            0.001,
+            0.5,
+            2.0
+          ]
+        ],
+        "dof_solref": [
+          [
+            0.02,
+            1.0
+          ]
+        ],
+        "jnt_axis": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "reset": {
+        "ctrl": 0.0014958863126402395,
+        "q": 0.0,
+        "time_s": 0.0,
+        "velocity": 0.0
+      },
+      "status": "passed-component-and-integration-gates",
+      "steps": [
+        {
+          "actuator_force_nm": 0.02,
+          "analytic_reference": {
+            "actuator": 0.02,
+            "actuator_unclamped": 0.02,
+            "passive": -0.0,
+            "smooth_total": 0.02
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              -0.0
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": -0.018,
+            "count": 1,
+            "force": [
+              -0.018000000000000002
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 3.469446951953614e-18,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              3
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": 0.042553191489361694,
+            "acceleration_smooth": 0.425531914893617,
+            "actuator": 0.02,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": -0.018000000000000002,
+            "mass": 0.047,
+            "passive": 0.0
+          },
+          "post": {
+            "q": 1.702127659574468e-07,
+            "time_s": 0.002,
+            "velocity": 8.51063829787234e-05
+          },
+          "pre": {
+            "ctrl": 0.0014958863126402395,
+            "q": 0.0,
+            "time_s": 0.0,
+            "velocity": 0.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 1,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": 0.01999772425531915,
+          "analytic_reference": {
+            "actuator": 0.01999772425531915,
+            "actuator_unclamped": 0.01999772425531915,
+            "passive": -4.765957446808511e-05,
+            "smooth_total": 0.019950064680851063
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              -0.008958566629339306
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": -0.01833400558118701,
+            "count": 1,
+            "force": [
+              -0.018334005581187005
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 3.469446951953614e-18,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              3
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": 0.034384236163064956,
+            "acceleration_smooth": 0.4244694612947035,
+            "actuator": 0.01999772425531915,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": -0.018334005581187005,
+            "mass": 0.047,
+            "passive": -4.765957446808511e-05
+          },
+          "post": {
+            "q": 4.779624765671534e-07,
+            "time_s": 0.004,
+            "velocity": 0.0001538748553048533
+          },
+          "pre": {
+            "ctrl": 0.0014958863126402395,
+            "q": 1.702127659574468e-07,
+            "time_s": 0.002,
+            "velocity": 8.51063829787234e-05
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 2,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": 0.0199936096416883,
+          "analytic_reference": {
+            "actuator": 0.0199936096416883,
+            "actuator_unclamped": 0.0199936096416883,
+            "passive": -8.616991897071786e-05,
+            "smooth_total": 0.01990743972271758
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              -0.01619735318998456
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": -0.018601843790382166,
+            "count": 1,
+            "force": [
+              -0.018601843790382166
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              3
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": 0.02777863685820022,
+            "acceleration_smooth": 0.4235625472918634,
+            "actuator": 0.0199936096416883,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": -0.018601843790382166,
+            "mass": 0.047,
+            "passive": -8.616991897071786e-05
+          },
+          "post": {
+            "q": 8.96826734609661e-07,
+            "time_s": 0.006,
+            "velocity": 0.00020943212902125376
+          },
+          "pre": {
+            "ctrl": 0.0014958863126402395,
+            "q": 4.779624765671534e-07,
+            "time_s": 0.004,
+            "velocity": 0.0001538748553048533
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 3,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "xml": "<mujoco model=\"native_compat_friction_subthreshold_positive\">\n  <compiler angle=\"radian\"/>\n  <option timestep=\"0.002\" gravity=\"0 0 0\" integrator=\"Euler\" solver=\"Newton\" iterations=\"1\" ls_iterations=\"5\" jacobian=\"dense\">\n    <flag eulerdamp=\"disable\"/>\n  </option>\n  <worldbody><body name=\"rotor\">\n    <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\"0.01 0.02 0.02\"/>\n    <joint name=\"hinge\" type=\"hinge\" pos=\"0 0 0\" axis=\"0 0 1\" limited=\"false\" armature=\"0.027\" damping=\"0.56\" frictionloss=\"0.068\" solreffriction=\"0.02 1\" solimpfriction=\"0.9 0.95 0.001 0.5 2\"/>\n  </body></worldbody>\n  <actuator><position name=\"motor\" joint=\"hinge\" kp=\"13.37\" kv=\"0.0\" ctrllimited=\"false\" forcelimited=\"true\" forcerange=\"-3.23 3.23\"/></actuator>\n</mujoco>",
+      "xml_sha256": "d38a6cba7dc3c04da0255a0025acffc44502911030093f991e925e3cbdcbbac4"
+    },
+    {
+      "case": {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.068,
+        "name": "friction_subthreshold_negative",
+        "purpose": "soft below-threshold rest sign",
+        "q": 0.0,
+        "target": -0.0014958863126402395,
+        "velocity": 0.0
+      },
+      "compiled": {
+        "actuator_biasprm": [
+          [
+            0.0,
+            -13.37,
+            -0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_forcerange": [
+          [
+            -3.23,
+            3.23
+          ]
+        ],
+        "actuator_gainprm": [
+          [
+            13.37,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_gear": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_inertia": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.01,
+            0.02,
+            0.02
+          ]
+        ],
+        "body_ipos": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_mass": [
+          0.0,
+          1.0
+        ],
+        "dof_M0": [
+          0.047
+        ],
+        "dof_armature": [
+          0.027
+        ],
+        "dof_damping": [
+          0.56
+        ],
+        "dof_frictionloss": [
+          0.068
+        ],
+        "dof_invweight0": [
+          21.27659574468085
+        ],
+        "dof_solimp": [
+          [
+            0.9,
+            0.95,
+            0.001,
+            0.5,
+            2.0
+          ]
+        ],
+        "dof_solref": [
+          [
+            0.02,
+            1.0
+          ]
+        ],
+        "jnt_axis": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "reset": {
+        "ctrl": -0.0014958863126402395,
+        "q": 0.0,
+        "time_s": 0.0,
+        "velocity": 0.0
+      },
+      "status": "passed-component-and-integration-gates",
+      "steps": [
+        {
+          "actuator_force_nm": -0.02,
+          "analytic_reference": {
+            "actuator": -0.02,
+            "actuator_unclamped": -0.02,
+            "passive": -0.0,
+            "smooth_total": -0.02
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              -0.0
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": 0.018,
+            "count": 1,
+            "force": [
+              0.018000000000000002
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 3.469446951953614e-18,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              2
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": -0.042553191489361694,
+            "acceleration_smooth": -0.425531914893617,
+            "actuator": -0.02,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.018000000000000002,
+            "mass": 0.047,
+            "passive": 0.0
+          },
+          "post": {
+            "q": -1.702127659574468e-07,
+            "time_s": 0.002,
+            "velocity": -8.51063829787234e-05
+          },
+          "pre": {
+            "ctrl": -0.0014958863126402395,
+            "q": 0.0,
+            "time_s": 0.0,
+            "velocity": 0.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 1,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": -0.01999772425531915,
+          "analytic_reference": {
+            "actuator": -0.01999772425531915,
+            "actuator_unclamped": -0.01999772425531915,
+            "passive": 4.765957446808511e-05,
+            "smooth_total": -0.019950064680851063
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              0.008958566629339306
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": 0.01833400558118701,
+            "count": 1,
+            "force": [
+              0.018334005581187005
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 3.469446951953614e-18,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              2
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": -0.034384236163064956,
+            "acceleration_smooth": -0.4244694612947035,
+            "actuator": -0.01999772425531915,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.018334005581187005,
+            "mass": 0.047,
+            "passive": 4.765957446808511e-05
+          },
+          "post": {
+            "q": -4.779624765671534e-07,
+            "time_s": 0.004,
+            "velocity": -0.0001538748553048533
+          },
+          "pre": {
+            "ctrl": -0.0014958863126402395,
+            "q": -1.702127659574468e-07,
+            "time_s": 0.002,
+            "velocity": -8.51063829787234e-05
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 2,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": -0.0199936096416883,
+          "analytic_reference": {
+            "actuator": -0.0199936096416883,
+            "actuator_unclamped": -0.0199936096416883,
+            "passive": 8.616991897071786e-05,
+            "smooth_total": -0.01990743972271758
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              0.01619735318998456
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": 0.018601843790382166,
+            "count": 1,
+            "force": [
+              0.018601843790382166
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              2
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": -0.02777863685820022,
+            "acceleration_smooth": -0.4235625472918634,
+            "actuator": -0.0199936096416883,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.018601843790382166,
+            "mass": 0.047,
+            "passive": 8.616991897071786e-05
+          },
+          "post": {
+            "q": -8.96826734609661e-07,
+            "time_s": 0.006,
+            "velocity": -0.00020943212902125376
+          },
+          "pre": {
+            "ctrl": -0.0014958863126402395,
+            "q": -4.779624765671534e-07,
+            "time_s": 0.004,
+            "velocity": -0.0001538748553048533
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 3,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "xml": "<mujoco model=\"native_compat_friction_subthreshold_negative\">\n  <compiler angle=\"radian\"/>\n  <option timestep=\"0.002\" gravity=\"0 0 0\" integrator=\"Euler\" solver=\"Newton\" iterations=\"1\" ls_iterations=\"5\" jacobian=\"dense\">\n    <flag eulerdamp=\"disable\"/>\n  </option>\n  <worldbody><body name=\"rotor\">\n    <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\"0.01 0.02 0.02\"/>\n    <joint name=\"hinge\" type=\"hinge\" pos=\"0 0 0\" axis=\"0 0 1\" limited=\"false\" armature=\"0.027\" damping=\"0.56\" frictionloss=\"0.068\" solreffriction=\"0.02 1\" solimpfriction=\"0.9 0.95 0.001 0.5 2\"/>\n  </body></worldbody>\n  <actuator><position name=\"motor\" joint=\"hinge\" kp=\"13.37\" kv=\"0.0\" ctrllimited=\"false\" forcelimited=\"true\" forcerange=\"-3.23 3.23\"/></actuator>\n</mujoco>",
+      "xml_sha256": "871779c216621ae0346dd4d46cae208ab17ae1e5a60a14a95254153602fe460b"
+    },
+    {
+      "case": {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.068,
+        "name": "friction_slip_positive",
+        "purpose": "positive sliding",
+        "q": 0.0,
+        "target": 0.0,
+        "velocity": 2.0
+      },
+      "compiled": {
+        "actuator_biasprm": [
+          [
+            0.0,
+            -13.37,
+            -0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_forcerange": [
+          [
+            -3.23,
+            3.23
+          ]
+        ],
+        "actuator_gainprm": [
+          [
+            13.37,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_gear": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_inertia": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.01,
+            0.02,
+            0.02
+          ]
+        ],
+        "body_ipos": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_mass": [
+          0.0,
+          1.0
+        ],
+        "dof_M0": [
+          0.047
+        ],
+        "dof_armature": [
+          0.027
+        ],
+        "dof_damping": [
+          0.56
+        ],
+        "dof_frictionloss": [
+          0.068
+        ],
+        "dof_invweight0": [
+          21.27659574468085
+        ],
+        "dof_solimp": [
+          [
+            0.9,
+            0.95,
+            0.001,
+            0.5,
+            2.0
+          ]
+        ],
+        "dof_solref": [
+          [
+            0.02,
+            1.0
+          ]
+        ],
+        "jnt_axis": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "reset": {
+        "ctrl": 0.0,
+        "q": 0.0,
+        "time_s": 0.0,
+        "velocity": 2.0
+      },
+      "status": "passed-component-and-integration-gates",
+      "steps": [
+        {
+          "actuator_force_nm": 0.0,
+          "analytic_reference": {
+            "actuator": 0.0,
+            "actuator_unclamped": 0.0,
+            "passive": -1.12,
+            "smooth_total": -1.12
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              -210.5263157894737
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": -0.068,
+            "count": 1,
+            "force": [
+              -0.068
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              3
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": -25.276595744680854,
+            "acceleration_smooth": -23.829787234042556,
+            "actuator": 0.0,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": -0.068,
+            "mass": 0.047,
+            "passive": -1.12
+          },
+          "post": {
+            "q": 0.0038988936170212766,
+            "time_s": 0.002,
+            "velocity": 1.9494468085106382
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": 0.0,
+            "time_s": 0.0,
+            "velocity": 2.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 1,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": -0.05212820765957447,
+          "analytic_reference": {
+            "actuator": -0.05212820765957447,
+            "actuator_unclamped": -0.05212820765957447,
+            "passive": -1.0916902127659576,
+            "smooth_total": -1.143818420425532
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              -205.20492721164615
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": -0.068,
+            "count": 1,
+            "force": [
+              -0.068
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              3
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": -25.78337064735174,
+            "acceleration_smooth": -24.336562136713447,
+            "actuator": -0.05212820765957447,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": -0.068,
+            "mass": 0.047,
+            "passive": -1.0916902127659576
+          },
+          "post": {
+            "q": 0.007694653751453146,
+            "time_s": 0.004,
+            "velocity": 1.8978800672159348
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": 0.0038988936170212766,
+            "time_s": 0.002,
+            "velocity": 1.9494468085106382
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 2,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": -0.10287752065692857,
+          "analytic_reference": {
+            "actuator": -0.10287752065692857,
+            "actuator_unclamped": -0.10287752065692857,
+            "passive": -1.0628128376409236,
+            "smooth_total": -1.1656903582978522
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              -199.77684918062474
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": -0.068,
+            "count": 1,
+            "force": [
+              -0.068
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              3
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": -26.24873102761388,
+            "acceleration_smooth": -24.801922516975576,
+            "actuator": -0.10287752065692857,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": -0.068,
+            "mass": 0.047,
+            "passive": -1.0628128376409236
+          },
+          "post": {
+            "q": 0.01138541896177456,
+            "time_s": 0.006,
+            "velocity": 1.8453826051607072
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": 0.007694653751453146,
+            "time_s": 0.004,
+            "velocity": 1.8978800672159348
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 3,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "xml": "<mujoco model=\"native_compat_friction_slip_positive\">\n  <compiler angle=\"radian\"/>\n  <option timestep=\"0.002\" gravity=\"0 0 0\" integrator=\"Euler\" solver=\"Newton\" iterations=\"1\" ls_iterations=\"5\" jacobian=\"dense\">\n    <flag eulerdamp=\"disable\"/>\n  </option>\n  <worldbody><body name=\"rotor\">\n    <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\"0.01 0.02 0.02\"/>\n    <joint name=\"hinge\" type=\"hinge\" pos=\"0 0 0\" axis=\"0 0 1\" limited=\"false\" armature=\"0.027\" damping=\"0.56\" frictionloss=\"0.068\" solreffriction=\"0.02 1\" solimpfriction=\"0.9 0.95 0.001 0.5 2\"/>\n  </body></worldbody>\n  <actuator><position name=\"motor\" joint=\"hinge\" kp=\"13.37\" kv=\"0.0\" ctrllimited=\"false\" forcelimited=\"true\" forcerange=\"-3.23 3.23\"/></actuator>\n</mujoco>",
+      "xml_sha256": "4dd8df6778cd30cd9a757a173cfb675639b0edb2f8ef4cfd4ec7960ba3b28067"
+    },
+    {
+      "case": {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.068,
+        "name": "friction_slip_negative",
+        "purpose": "negative sliding",
+        "q": 0.0,
+        "target": 0.0,
+        "velocity": -2.0
+      },
+      "compiled": {
+        "actuator_biasprm": [
+          [
+            0.0,
+            -13.37,
+            -0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_forcerange": [
+          [
+            -3.23,
+            3.23
+          ]
+        ],
+        "actuator_gainprm": [
+          [
+            13.37,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_gear": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_inertia": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.01,
+            0.02,
+            0.02
+          ]
+        ],
+        "body_ipos": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_mass": [
+          0.0,
+          1.0
+        ],
+        "dof_M0": [
+          0.047
+        ],
+        "dof_armature": [
+          0.027
+        ],
+        "dof_damping": [
+          0.56
+        ],
+        "dof_frictionloss": [
+          0.068
+        ],
+        "dof_invweight0": [
+          21.27659574468085
+        ],
+        "dof_solimp": [
+          [
+            0.9,
+            0.95,
+            0.001,
+            0.5,
+            2.0
+          ]
+        ],
+        "dof_solref": [
+          [
+            0.02,
+            1.0
+          ]
+        ],
+        "jnt_axis": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "reset": {
+        "ctrl": 0.0,
+        "q": 0.0,
+        "time_s": 0.0,
+        "velocity": -2.0
+      },
+      "status": "passed-component-and-integration-gates",
+      "steps": [
+        {
+          "actuator_force_nm": 0.0,
+          "analytic_reference": {
+            "actuator": 0.0,
+            "actuator_unclamped": 0.0,
+            "passive": 1.12,
+            "smooth_total": 1.12
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              210.5263157894737
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": 0.068,
+            "count": 1,
+            "force": [
+              0.068
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              2
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": 25.276595744680854,
+            "acceleration_smooth": 23.829787234042556,
+            "actuator": 0.0,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.068,
+            "mass": 0.047,
+            "passive": 1.12
+          },
+          "post": {
+            "q": -0.0038988936170212766,
+            "time_s": 0.002,
+            "velocity": -1.9494468085106382
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": 0.0,
+            "time_s": 0.0,
+            "velocity": -2.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 1,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": 0.05212820765957447,
+          "analytic_reference": {
+            "actuator": 0.05212820765957447,
+            "actuator_unclamped": 0.05212820765957447,
+            "passive": 1.0916902127659576,
+            "smooth_total": 1.143818420425532
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              205.20492721164615
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": 0.068,
+            "count": 1,
+            "force": [
+              0.068
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              2
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": 25.78337064735174,
+            "acceleration_smooth": 24.336562136713447,
+            "actuator": 0.05212820765957447,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.068,
+            "mass": 0.047,
+            "passive": 1.0916902127659576
+          },
+          "post": {
+            "q": -0.007694653751453146,
+            "time_s": 0.004,
+            "velocity": -1.8978800672159348
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": -0.0038988936170212766,
+            "time_s": 0.002,
+            "velocity": -1.9494468085106382
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 2,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": 0.10287752065692857,
+          "analytic_reference": {
+            "actuator": 0.10287752065692857,
+            "actuator_unclamped": 0.10287752065692857,
+            "passive": 1.0628128376409236,
+            "smooth_total": 1.1656903582978522
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              199.77684918062474
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": 0.068,
+            "count": 1,
+            "force": [
+              0.068
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              2
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": 26.24873102761388,
+            "acceleration_smooth": 24.801922516975576,
+            "actuator": 0.10287752065692857,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.068,
+            "mass": 0.047,
+            "passive": 1.0628128376409236
+          },
+          "post": {
+            "q": -0.01138541896177456,
+            "time_s": 0.006,
+            "velocity": -1.8453826051607072
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": -0.007694653751453146,
+            "time_s": 0.004,
+            "velocity": -1.8978800672159348
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 3,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "xml": "<mujoco model=\"native_compat_friction_slip_negative\">\n  <compiler angle=\"radian\"/>\n  <option timestep=\"0.002\" gravity=\"0 0 0\" integrator=\"Euler\" solver=\"Newton\" iterations=\"1\" ls_iterations=\"5\" jacobian=\"dense\">\n    <flag eulerdamp=\"disable\"/>\n  </option>\n  <worldbody><body name=\"rotor\">\n    <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\"0.01 0.02 0.02\"/>\n    <joint name=\"hinge\" type=\"hinge\" pos=\"0 0 0\" axis=\"0 0 1\" limited=\"false\" armature=\"0.027\" damping=\"0.56\" frictionloss=\"0.068\" solreffriction=\"0.02 1\" solimpfriction=\"0.9 0.95 0.001 0.5 2\"/>\n  </body></worldbody>\n  <actuator><position name=\"motor\" joint=\"hinge\" kp=\"13.37\" kv=\"0.0\" ctrllimited=\"false\" forcelimited=\"true\" forcerange=\"-3.23 3.23\"/></actuator>\n</mujoco>",
+      "xml_sha256": "b0c053a3d14876c5b350fd67641a3c9aa1ae654c33945bf6937dcd1c849383a1"
+    },
+    {
+      "case": {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.068,
+        "name": "friction_above_threshold_positive",
+        "purpose": "positive breakaway request from rest",
+        "q": 0.0,
+        "target": 0.010172026925953629,
+        "velocity": 0.0
+      },
+      "compiled": {
+        "actuator_biasprm": [
+          [
+            0.0,
+            -13.37,
+            -0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_forcerange": [
+          [
+            -3.23,
+            3.23
+          ]
+        ],
+        "actuator_gainprm": [
+          [
+            13.37,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_gear": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_inertia": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.01,
+            0.02,
+            0.02
+          ]
+        ],
+        "body_ipos": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_mass": [
+          0.0,
+          1.0
+        ],
+        "dof_M0": [
+          0.047
+        ],
+        "dof_armature": [
+          0.027
+        ],
+        "dof_damping": [
+          0.56
+        ],
+        "dof_frictionloss": [
+          0.068
+        ],
+        "dof_invweight0": [
+          21.27659574468085
+        ],
+        "dof_solimp": [
+          [
+            0.9,
+            0.95,
+            0.001,
+            0.5,
+            2.0
+          ]
+        ],
+        "dof_solref": [
+          [
+            0.02,
+            1.0
+          ]
+        ],
+        "jnt_axis": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "reset": {
+        "ctrl": 0.010172026925953629,
+        "q": 0.0,
+        "time_s": 0.0,
+        "velocity": 0.0
+      },
+      "status": "passed-component-and-integration-gates",
+      "steps": [
+        {
+          "actuator_force_nm": 0.136,
+          "analytic_reference": {
+            "actuator": 0.136,
+            "actuator_unclamped": 0.136,
+            "passive": -0.0,
+            "smooth_total": 0.136
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              -0.0
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": -0.068,
+            "count": 1,
+            "force": [
+              -0.068
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              3
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": 1.446808510638298,
+            "acceleration_smooth": 2.893617021276596,
+            "actuator": 0.136,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": -0.068,
+            "mass": 0.047,
+            "passive": 0.0
+          },
+          "post": {
+            "q": 5.787234042553193e-06,
+            "time_s": 0.002,
+            "velocity": 0.002893617021276596
+          },
+          "pre": {
+            "ctrl": 0.010172026925953629,
+            "q": 0.0,
+            "time_s": 0.0,
+            "velocity": 0.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 1,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": 0.13592262468085106,
+          "analytic_reference": {
+            "actuator": 0.1359226246808511,
+            "actuator_unclamped": 0.1359226246808511,
+            "passive": -0.001620425531914894,
+            "smooth_total": 0.1343021991489362
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              -0.30459126539753645
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": -0.068,
+            "count": 1,
+            "force": [
+              -0.068
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              3
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": 1.4106850882752378,
+            "acceleration_smooth": 2.8574935989135355,
+            "actuator": 0.13592262468085106,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": -0.068,
+            "mass": 0.047,
+            "passive": -0.001620425531914894
+          },
+          "post": {
+            "q": 1.7217208438207335e-05,
+            "time_s": 0.004,
+            "velocity": 0.005714987197827072
+          },
+          "pre": {
+            "ctrl": 0.010172026925953629,
+            "q": 5.787234042553193e-06,
+            "time_s": 0.002,
+            "velocity": 0.002893617021276596
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 2,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": 0.1357698059231812,
+          "analytic_reference": {
+            "actuator": 0.13576980592318116,
+            "actuator_unclamped": 0.13576980592318116,
+            "passive": -0.0032003928307831604,
+            "smooth_total": 0.132569413092398
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              -0.6015775997712708
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": -0.068,
+            "count": 1,
+            "force": [
+              -0.068
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              3
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": 1.373817299838256,
+            "acceleration_smooth": 2.8206258104765536,
+            "actuator": 0.1357698059231812,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": -0.068,
+            "mass": 0.047,
+            "passive": -0.0032003928307831604
+          },
+          "post": {
+            "q": 3.41424520332145e-05,
+            "time_s": 0.006,
+            "velocity": 0.008462621797503584
+          },
+          "pre": {
+            "ctrl": 0.010172026925953629,
+            "q": 1.7217208438207335e-05,
+            "time_s": 0.004,
+            "velocity": 0.005714987197827072
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 3,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "xml": "<mujoco model=\"native_compat_friction_above_threshold_positive\">\n  <compiler angle=\"radian\"/>\n  <option timestep=\"0.002\" gravity=\"0 0 0\" integrator=\"Euler\" solver=\"Newton\" iterations=\"1\" ls_iterations=\"5\" jacobian=\"dense\">\n    <flag eulerdamp=\"disable\"/>\n  </option>\n  <worldbody><body name=\"rotor\">\n    <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\"0.01 0.02 0.02\"/>\n    <joint name=\"hinge\" type=\"hinge\" pos=\"0 0 0\" axis=\"0 0 1\" limited=\"false\" armature=\"0.027\" damping=\"0.56\" frictionloss=\"0.068\" solreffriction=\"0.02 1\" solimpfriction=\"0.9 0.95 0.001 0.5 2\"/>\n  </body></worldbody>\n  <actuator><position name=\"motor\" joint=\"hinge\" kp=\"13.37\" kv=\"0.0\" ctrllimited=\"false\" forcelimited=\"true\" forcerange=\"-3.23 3.23\"/></actuator>\n</mujoco>",
+      "xml_sha256": "0440ed58f9639ad0c69ebc223f2119cf15d216cb4242e510e376ba03d5ecc5d2"
+    },
+    {
+      "case": {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.068,
+        "name": "friction_above_threshold_negative",
+        "purpose": "negative breakaway request from rest",
+        "q": 0.0,
+        "target": -0.010172026925953629,
+        "velocity": 0.0
+      },
+      "compiled": {
+        "actuator_biasprm": [
+          [
+            0.0,
+            -13.37,
+            -0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_forcerange": [
+          [
+            -3.23,
+            3.23
+          ]
+        ],
+        "actuator_gainprm": [
+          [
+            13.37,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_gear": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_inertia": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.01,
+            0.02,
+            0.02
+          ]
+        ],
+        "body_ipos": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_mass": [
+          0.0,
+          1.0
+        ],
+        "dof_M0": [
+          0.047
+        ],
+        "dof_armature": [
+          0.027
+        ],
+        "dof_damping": [
+          0.56
+        ],
+        "dof_frictionloss": [
+          0.068
+        ],
+        "dof_invweight0": [
+          21.27659574468085
+        ],
+        "dof_solimp": [
+          [
+            0.9,
+            0.95,
+            0.001,
+            0.5,
+            2.0
+          ]
+        ],
+        "dof_solref": [
+          [
+            0.02,
+            1.0
+          ]
+        ],
+        "jnt_axis": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "reset": {
+        "ctrl": -0.010172026925953629,
+        "q": 0.0,
+        "time_s": 0.0,
+        "velocity": 0.0
+      },
+      "status": "passed-component-and-integration-gates",
+      "steps": [
+        {
+          "actuator_force_nm": -0.136,
+          "analytic_reference": {
+            "actuator": -0.136,
+            "actuator_unclamped": -0.136,
+            "passive": -0.0,
+            "smooth_total": -0.136
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              -0.0
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": 0.068,
+            "count": 1,
+            "force": [
+              0.068
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              2
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": -1.446808510638298,
+            "acceleration_smooth": -2.893617021276596,
+            "actuator": -0.136,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.068,
+            "mass": 0.047,
+            "passive": 0.0
+          },
+          "post": {
+            "q": -5.787234042553193e-06,
+            "time_s": 0.002,
+            "velocity": -0.002893617021276596
+          },
+          "pre": {
+            "ctrl": -0.010172026925953629,
+            "q": 0.0,
+            "time_s": 0.0,
+            "velocity": 0.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 1,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": -0.13592262468085106,
+          "analytic_reference": {
+            "actuator": -0.1359226246808511,
+            "actuator_unclamped": -0.1359226246808511,
+            "passive": 0.001620425531914894,
+            "smooth_total": -0.1343021991489362
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              0.30459126539753645
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": 0.068,
+            "count": 1,
+            "force": [
+              0.068
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              2
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": -1.4106850882752378,
+            "acceleration_smooth": -2.8574935989135355,
+            "actuator": -0.13592262468085106,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.068,
+            "mass": 0.047,
+            "passive": 0.001620425531914894
+          },
+          "post": {
+            "q": -1.7217208438207335e-05,
+            "time_s": 0.004,
+            "velocity": -0.005714987197827072
+          },
+          "pre": {
+            "ctrl": -0.010172026925953629,
+            "q": -5.787234042553193e-06,
+            "time_s": 0.002,
+            "velocity": -0.002893617021276596
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 2,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": -0.1357698059231812,
+          "analytic_reference": {
+            "actuator": -0.13576980592318116,
+            "actuator_unclamped": -0.13576980592318116,
+            "passive": 0.0032003928307831604,
+            "smooth_total": -0.132569413092398
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              0.6015775997712708
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": 0.068,
+            "count": 1,
+            "force": [
+              0.068
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              2
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": -1.373817299838256,
+            "acceleration_smooth": -2.8206258104765536,
+            "actuator": -0.1357698059231812,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.068,
+            "mass": 0.047,
+            "passive": 0.0032003928307831604
+          },
+          "post": {
+            "q": -3.41424520332145e-05,
+            "time_s": 0.006,
+            "velocity": -0.008462621797503584
+          },
+          "pre": {
+            "ctrl": -0.010172026925953629,
+            "q": -1.7217208438207335e-05,
+            "time_s": 0.004,
+            "velocity": -0.005714987197827072
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 3,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "xml": "<mujoco model=\"native_compat_friction_above_threshold_negative\">\n  <compiler angle=\"radian\"/>\n  <option timestep=\"0.002\" gravity=\"0 0 0\" integrator=\"Euler\" solver=\"Newton\" iterations=\"1\" ls_iterations=\"5\" jacobian=\"dense\">\n    <flag eulerdamp=\"disable\"/>\n  </option>\n  <worldbody><body name=\"rotor\">\n    <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\"0.01 0.02 0.02\"/>\n    <joint name=\"hinge\" type=\"hinge\" pos=\"0 0 0\" axis=\"0 0 1\" limited=\"false\" armature=\"0.027\" damping=\"0.56\" frictionloss=\"0.068\" solreffriction=\"0.02 1\" solimpfriction=\"0.9 0.95 0.001 0.5 2\"/>\n  </body></worldbody>\n  <actuator><position name=\"motor\" joint=\"hinge\" kp=\"13.37\" kv=\"0.0\" ctrllimited=\"false\" forcelimited=\"true\" forcerange=\"-3.23 3.23\"/></actuator>\n</mujoco>",
+      "xml_sha256": "b0135dd2c62801de8368d316e16eb69df981593cd40a0b79c84a2883ab9d31b6"
+    },
+    {
+      "case": {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.068,
+        "name": "position_error_negative",
+        "purpose": "nonzero initial q, negative position effort",
+        "q": 0.1,
+        "target": 0.0,
+        "velocity": 0.0
+      },
+      "compiled": {
+        "actuator_biasprm": [
+          [
+            0.0,
+            -13.37,
+            -0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_forcerange": [
+          [
+            -3.23,
+            3.23
+          ]
+        ],
+        "actuator_gainprm": [
+          [
+            13.37,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "actuator_gear": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_inertia": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.01,
+            0.02,
+            0.02
+          ]
+        ],
+        "body_ipos": [
+          [
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "body_mass": [
+          0.0,
+          1.0
+        ],
+        "dof_M0": [
+          0.047
+        ],
+        "dof_armature": [
+          0.027
+        ],
+        "dof_damping": [
+          0.56
+        ],
+        "dof_frictionloss": [
+          0.068
+        ],
+        "dof_invweight0": [
+          21.27659574468085
+        ],
+        "dof_solimp": [
+          [
+            0.9,
+            0.95,
+            0.001,
+            0.5,
+            2.0
+          ]
+        ],
+        "dof_solref": [
+          [
+            0.02,
+            1.0
+          ]
+        ],
+        "jnt_axis": [
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "reset": {
+        "ctrl": 0.0,
+        "q": 0.1,
+        "time_s": 0.0,
+        "velocity": 0.0
+      },
+      "status": "passed-component-and-integration-gates",
+      "steps": [
+        {
+          "actuator_force_nm": -1.337,
+          "analytic_reference": {
+            "actuator": -1.337,
+            "actuator_unclamped": -1.337,
+            "passive": -0.0,
+            "smooth_total": -1.337
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              -0.0
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": 0.068,
+            "count": 1,
+            "force": [
+              0.068
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              2
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": -26.999999999999996,
+            "acceleration_smooth": -28.446808510638295,
+            "actuator": -1.337,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.068,
+            "mass": 0.047,
+            "passive": 0.0
+          },
+          "post": {
+            "q": 0.09989200000000001,
+            "time_s": 0.002,
+            "velocity": -0.05399999999999999
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": 0.1,
+            "time_s": 0.0,
+            "velocity": 0.0
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 1,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": -1.33555604,
+          "analytic_reference": {
+            "actuator": -1.33555604,
+            "actuator_unclamped": -1.33555604,
+            "passive": 0.03024,
+            "smooth_total": -1.30531604
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              5.684210526315789
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": 0.068,
+            "count": 1,
+            "force": [
+              0.068
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              2
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": -26.32587319148936,
+            "acceleration_smooth": -27.772681702127656,
+            "actuator": -1.33555604,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.068,
+            "mass": 0.047,
+            "passive": 0.03024
+          },
+          "post": {
+            "q": 0.09967869650723406,
+            "time_s": 0.004,
+            "velocity": -0.10665174638297871
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": 0.09989200000000001,
+            "time_s": 0.002,
+            "velocity": -0.05399999999999999
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 2,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actuator_force_nm": -1.3327041723017192,
+          "analytic_reference": {
+            "actuator": -1.3327041723017192,
+            "actuator_unclamped": -1.3327041723017192,
+            "passive": 0.05972497797446808,
+            "smooth_total": -1.272979194327251
+          },
+          "component_and_integration_gates_passed": true,
+          "constraint_solver": {
+            "R": [
+              2.3640661938534273
+            ],
+            "aref": [
+              11.226499619260917
+            ],
+            "bound": [
+              0.068
+            ],
+            "conditional_qp_optimum": 0.068,
+            "count": 1,
+            "force": [
+              0.068
+            ],
+            "iterations": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "jacobian": [
+              1.0
+            ],
+            "qp_difference_nm": 0.0,
+            "qp_matches_diagnostic_tolerance": true,
+            "qp_scope": "exact scalar optimum conditional on captured R/aref; finite-iteration runtime need not equal optimum",
+            "state": [
+              2
+            ],
+            "type": [
+              1
+            ]
+          },
+          "forces_pre_integration": {
+            "acceleration": -25.637855198452147,
+            "acceleration_smooth": -27.084663709090446,
+            "actuator": -1.3327041723017192,
+            "applied": 0.0,
+            "bias": 0.0,
+            "constraint": 0.068,
+            "mass": 0.047,
+            "passive": 0.05972497797446808
+          },
+          "post": {
+            "q": 0.0993628415936743,
+            "time_s": 0.006,
+            "velocity": -0.157927456779883
+          },
+          "pre": {
+            "ctrl": 0.0,
+            "q": 0.09967869650723406,
+            "time_s": 0.004,
+            "velocity": -0.10665174638297871
+          },
+          "stage": "mj_step returned forces/solver at PRE; integrated q/v at POST; no extra forward",
+          "step": 3,
+          "warnings": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "xml": "<mujoco model=\"native_compat_position_error_negative\">\n  <compiler angle=\"radian\"/>\n  <option timestep=\"0.002\" gravity=\"0 0 0\" integrator=\"Euler\" solver=\"Newton\" iterations=\"1\" ls_iterations=\"5\" jacobian=\"dense\">\n    <flag eulerdamp=\"disable\"/>\n  </option>\n  <worldbody><body name=\"rotor\">\n    <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\"0.01 0.02 0.02\"/>\n    <joint name=\"hinge\" type=\"hinge\" pos=\"0 0 0\" axis=\"0 0 1\" limited=\"false\" armature=\"0.027\" damping=\"0.56\" frictionloss=\"0.068\" solreffriction=\"0.02 1\" solimpfriction=\"0.9 0.95 0.001 0.5 2\"/>\n  </body></worldbody>\n  <actuator><position name=\"motor\" joint=\"hinge\" kp=\"13.37\" kv=\"0.0\" ctrllimited=\"false\" forcelimited=\"true\" forcerange=\"-3.23 3.23\"/></actuator>\n</mujoco>",
+      "xml_sha256": "93e8c86cadc03c248cf989f65467d5908fa9f9ebc91d5396b50b0ef51e9db16f"
+    }
+  ],
+  "elapsed_seconds": 0.06851495802402496,
+  "full_robot_steps": 0,
+  "integration_steps_executed": 48,
+  "manifest": {
+    "actuator_effort_cap_nm": 3.23,
+    "body_inertia_kg_m2": 0.02,
+    "case_count": 16,
+    "cases": [
+      {
+        "armature": 0.0,
+        "damping": 0.0,
+        "friction_loss": 0.0,
+        "name": "bare_positive",
+        "purpose": "bare inertia analytic",
+        "q": 0.0,
+        "target": 0.1,
+        "velocity": 0.0
+      },
+      {
+        "armature": 0.027,
+        "damping": 0.0,
+        "friction_loss": 0.0,
+        "name": "armature_positive",
+        "purpose": "rotor inertia analytic",
+        "q": 0.0,
+        "target": 0.1,
+        "velocity": 0.0
+      },
+      {
+        "armature": 0.0,
+        "damping": 0.0,
+        "friction_loss": 0.0,
+        "name": "bare_negative",
+        "purpose": "bare sign symmetry",
+        "q": 0.0,
+        "target": -0.1,
+        "velocity": 0.0
+      },
+      {
+        "armature": 0.027,
+        "damping": 0.0,
+        "friction_loss": 0.0,
+        "name": "armature_negative",
+        "purpose": "rotor sign symmetry",
+        "q": 0.0,
+        "target": -0.1,
+        "velocity": 0.0
+      },
+      {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.0,
+        "name": "damping_positive",
+        "purpose": "separate passive damping",
+        "q": 0.0,
+        "target": 0.0,
+        "velocity": 2.0
+      },
+      {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.0,
+        "name": "damping_negative",
+        "purpose": "separate passive damping sign",
+        "q": 0.0,
+        "target": 0.0,
+        "velocity": -2.0
+      },
+      {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.0,
+        "name": "positive_cap_and_damping",
+        "purpose": "motor clamp before passive damping",
+        "q": 0.0,
+        "target": 1.0,
+        "velocity": 2.0
+      },
+      {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.0,
+        "name": "negative_cap_and_damping",
+        "purpose": "motor clamp sign",
+        "q": 0.0,
+        "target": -1.0,
+        "velocity": -2.0
+      },
+      {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.068,
+        "name": "friction_exact_rest",
+        "purpose": "zero input and velocity; exact rest",
+        "q": 0.0,
+        "target": 0.0,
+        "velocity": 0.0
+      },
+      {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.068,
+        "name": "friction_subthreshold_positive",
+        "purpose": "soft below-threshold rest, not ideal rigid stiction",
+        "q": 0.0,
+        "target": 0.0014958863126402395,
+        "velocity": 0.0
+      },
+      {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.068,
+        "name": "friction_subthreshold_negative",
+        "purpose": "soft below-threshold rest sign",
+        "q": 0.0,
+        "target": -0.0014958863126402395,
+        "velocity": 0.0
+      },
+      {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.068,
+        "name": "friction_slip_positive",
+        "purpose": "positive sliding",
+        "q": 0.0,
+        "target": 0.0,
+        "velocity": 2.0
+      },
+      {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.068,
+        "name": "friction_slip_negative",
+        "purpose": "negative sliding",
+        "q": 0.0,
+        "target": 0.0,
+        "velocity": -2.0
+      },
+      {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.068,
+        "name": "friction_above_threshold_positive",
+        "purpose": "positive breakaway request from rest",
+        "q": 0.0,
+        "target": 0.010172026925953629,
+        "velocity": 0.0
+      },
+      {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.068,
+        "name": "friction_above_threshold_negative",
+        "purpose": "negative breakaway request from rest",
+        "q": 0.0,
+        "target": -0.010172026925953629,
+        "velocity": 0.0
+      },
+      {
+        "armature": 0.027,
+        "damping": 0.56,
+        "friction_loss": 0.068,
+        "name": "position_error_negative",
+        "purpose": "nonzero initial q, negative position effort",
+        "q": 0.1,
+        "target": 0.0,
+        "velocity": 0.0
+      }
+    ],
+    "dt": 0.002,
+    "fixture": "synthetic 1kg rotor, COM at world-fixed +Z hinge, diagonal inertia .01/.02/.02, gravity zero, no contacts/limits",
+    "kp": 13.37,
+    "kv": 0.0,
+    "maximum_total_steps": 48,
+    "native_execution": false,
+    "no_full_robot_steps": true,
+    "reference_scope": "analytic M/actuator/passive/integration; conditional scalar-QP diagnostic for soft friction",
+    "retry_allowed": false,
+    "schema": "box3d.open_duck.native_compat.hinge_cases/v1",
+    "solver": "MuJoCo3.3.7 Newton, iterations1, ls_iterations5, Euler with eulerdamp disabled",
+    "steps_per_case": 3,
+    "tolerances": {
+      "acceleration": 1e-09,
+      "clock": 1e-12,
+      "inertia": 1e-12,
+      "qp_diagnostic_torque": 1e-09,
+      "state": 1e-11,
+      "torque": 1e-11
+    },
+    "wall_cap_seconds": 60
+  },
+  "native_execution": false,
+  "runtime": {
+    "mujoco": "3.3.7",
+    "numpy": "2.4.6",
+    "python": "3.11.15 (main, Aug  5 2026, 15:33:48) [Clang 22.1.3 ]"
+  },
+  "schema": "box3d.open_duck.native_compat.hinge_run/v1",
+  "status": "passed-isolated-cpu-component-reference"
+}

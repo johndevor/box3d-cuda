@@ -1,0 +1,161 @@
+{
+  "commit": "40f7dee2faa9af8f588c54174b452bc8006d731d",
+  "deletion": {
+    "at": "2026-08-31T14:33:07-0400",
+    "delete_attempted": true,
+    "delete_error": null,
+    "sandbox_id": "fd076e15-8221-429e-94b4-7eb958bd7926",
+    "verified_gone": true
+  },
+  "exit_code": 0,
+  "gpu_types": [
+    "RTX-5090",
+    "RTX-4090"
+  ],
+  "jobs": [
+    {
+      "artifacts": {
+        "gpu-info.txt": {
+          "path": "/Users/john/Code/duck-grid-walk/runs/gpu/20260831-143013-parity-bench-duck-cuda/artifacts/gpu-info/gpu-info.txt",
+          "sha256": "8c1171ca0b1e2cc112f385d29f7d7bb30fc79a8da2fd6f82b659d80df8513073",
+          "status": "ok"
+        }
+      },
+      "exit_code": 0,
+      "log": "/Users/john/Code/duck-grid-walk/runs/gpu/20260831-143013-parity-bench-duck-cuda/logs/gpu-info.log",
+      "name": "gpu-info",
+      "wall_time_s": 0.51
+    },
+    {
+      "artifacts": {
+        "build.log": {
+          "path": "/Users/john/Code/duck-grid-walk/runs/gpu/20260831-143013-parity-bench-duck-cuda/artifacts/build/build.log",
+          "sha256": "8c9d5f237273802227af440f57baf608a4ab49605d8919412c588cf4bea81c42",
+          "status": "ok"
+        }
+      },
+      "exit_code": 0,
+      "log": "/Users/john/Code/duck-grid-walk/runs/gpu/20260831-143013-parity-bench-duck-cuda/logs/build.log",
+      "name": "build",
+      "wall_time_s": 56.17
+    },
+    {
+      "artifacts": {
+        "serial-build.log": {
+          "path": "/Users/john/Code/duck-grid-walk/runs/gpu/20260831-143013-parity-bench-duck-cuda/artifacts/serial-build/serial-build.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "status": "ok"
+        }
+      },
+      "exit_code": 0,
+      "log": "/Users/john/Code/duck-grid-walk/runs/gpu/20260831-143013-parity-bench-duck-cuda/logs/serial-build.log",
+      "name": "serial-build",
+      "wall_time_s": 1.45
+    },
+    {
+      "artifacts": {
+        "gpu-parity.json": {
+          "path": "/Users/john/Code/duck-grid-walk/runs/gpu/20260831-143013-parity-bench-duck-cuda/artifacts/gpu-parity/gpu-parity.json",
+          "sha256": "fa8e03176ce57967b73f754aa8aff818cb8ee869deed3586fb0096f227d861e8",
+          "status": "ok"
+        },
+        "gpu-parity.log": {
+          "path": "/Users/john/Code/duck-grid-walk/runs/gpu/20260831-143013-parity-bench-duck-cuda/artifacts/gpu-parity/gpu-parity.log",
+          "sha256": "2ae5e5c1625e4c99983033b5f776626288f6bf141c8fa24b006a6fa14ccb2008",
+          "status": "ok"
+        }
+      },
+      "exit_code": 0,
+      "log": "/Users/john/Code/duck-grid-walk/runs/gpu/20260831-143013-parity-bench-duck-cuda/logs/gpu-parity.log",
+      "name": "gpu-parity",
+      "wall_time_s": 9.8
+    },
+    {
+      "artifacts": {
+        "gpu-bench.json": {
+          "path": "/Users/john/Code/duck-grid-walk/runs/gpu/20260831-143013-parity-bench-duck-cuda/artifacts/gpu-bench/gpu-bench.json",
+          "sha256": "6bc1ed59f617157dd1a60572ae759c7a3045680725f3c8978b9f4b357d5c5917",
+          "status": "ok"
+        },
+        "gpu-bench.log": {
+          "path": "/Users/john/Code/duck-grid-walk/runs/gpu/20260831-143013-parity-bench-duck-cuda/artifacts/gpu-bench/gpu-bench.log",
+          "sha256": "33f79d8a4520861786ab3223dcf93fd590d8fad88f2a12421b76021b08644b66",
+          "status": "ok"
+        }
+      },
+      "exit_code": 0,
+      "log": "/Users/john/Code/duck-grid-walk/runs/gpu/20260831-143013-parity-bench-duck-cuda/logs/gpu-bench.log",
+      "name": "gpu-bench",
+      "wall_time_s": 97.6
+    }
+  ],
+  "payload_tar_sha256": "55ebd5e8ae14b7897ff1de8f639561e1b29335c290a66998fe9385009c2a42bc",
+  "sandbox_id": "fd076e15-8221-429e-94b4-7eb958bd7926",
+  "spec": {
+    "jobs": [
+      {
+        "artifacts": [
+          "gpu-info.txt"
+        ],
+        "command": "nvidia-smi | tee gpu-info.txt && nvcc --version | tee -a gpu-info.txt",
+        "continue_on_error": false,
+        "name": "gpu-info",
+        "timeout_s": 60
+      },
+      {
+        "artifacts": [
+          "build.log"
+        ],
+        "command": "set -o pipefail; cd experimental/duck_cuda && ./build_remote.sh 2>&1 | tee ../../build.log",
+        "continue_on_error": false,
+        "name": "build",
+        "timeout_s": 600
+      },
+      {
+        "artifacts": [
+          "serial-build.log"
+        ],
+        "command": "set -o pipefail; g++ -std=c++17 -O2 -ffp-contract=off -fPIC -shared -Iexperimental/duck_cuda/include experimental/duck_cuda/src/duck_cuda_serial.cpp -o libduck_cuda_serial.so 2>&1 | tee serial-build.log",
+        "continue_on_error": false,
+        "name": "serial-build",
+        "timeout_s": 300
+      },
+      {
+        "artifacts": [
+          "gpu-parity.log",
+          "gpu-parity.json"
+        ],
+        "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; DUCK_CUDA_LIBRARY=$(find experimental/duck_cuda -name 'libduck_cuda.so' | head -1) DUCK_CUDA_SERIAL_LIBRARY=$PWD/libduck_cuda_serial.so $PY -B experimental/duck_cuda/tests/remote_gpu_parity.py 2>&1 | tee gpu-parity.log",
+        "continue_on_error": false,
+        "name": "gpu-parity",
+        "timeout_s": 600
+      },
+      {
+        "artifacts": [
+          "gpu-bench.log",
+          "gpu-bench.json"
+        ],
+        "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; DUCK_CUDA_LIBRARY=$(find experimental/duck_cuda -name 'libduck_cuda.so' | head -1) DUCK_CUDA_FAST_LIBRARY=$(find experimental/duck_cuda -name 'libduck_cuda_fast.so' | head -1) $PY -B experimental/duck_cuda/tests/remote_gpu_bench.py 2>&1 | tee gpu-bench.log",
+        "continue_on_error": false,
+        "name": "gpu-bench",
+        "timeout_s": 600
+      }
+    ],
+    "name": "parity-bench-duck-cuda",
+    "resources": {
+      "cpu": 4,
+      "disk_gib": 20,
+      "gpu": 1,
+      "gpu_types": [
+        "RTX-5090"
+      ],
+      "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404",
+      "memory_gib": 16,
+      "spot": false,
+      "ttl_minutes": 25
+    },
+    "tar_globs": [],
+    "upload_extra": []
+  },
+  "started_at": "2026-08-31T14:30:14-0400"
+}

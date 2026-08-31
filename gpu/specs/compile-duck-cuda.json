@@ -1,0 +1,31 @@
+{
+  "name": "compile-duck-cuda",
+  "tar_globs": [],
+  "upload_extra": [],
+  "jobs": [
+    {
+      "name": "gpu-info",
+      "command": "set -o pipefail; nvidia-smi | tee gpu-info.txt && nvcc --version | tee -a gpu-info.txt",
+      "timeout_s": 60,
+      "artifacts": ["gpu-info.txt"],
+      "continue_on_error": false
+    },
+    {
+      "name": "build",
+      "command": "set -o pipefail; (cd experimental/duck_cuda && ./build_remote.sh) 2>&1 | tee build.log",
+      "timeout_s": 600,
+      "artifacts": ["build.log"],
+      "continue_on_error": false
+    }
+  ],
+  "resources": {
+    "cpu": 4,
+    "memory_gib": 16,
+    "disk_gib": 20,
+    "gpu": 1,
+    "gpu_types": ["RTX-5090"],
+    "spot": false,
+    "ttl_minutes": 25,
+    "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
+  }
+}
