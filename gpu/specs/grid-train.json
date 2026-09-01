@@ -1,0 +1,54 @@
+{
+  "name": "grid-train",
+  "_comment": "Cube-terrain (CubeGridDuckEnv) training leg. The CUDA engine has no cubes, so this leg trains on the SANDBOX CPUS via walk.train.run + the dwv1 CPU world layer; the GPU sits idle (gpu:1 only because the launcher provisions GPU sandboxes). Relay contract mirrors continue-ff-short: upload runs/grid-warmstart.pt (a walk.train.run checkpoint, e.g. from walk.train.grid_curriculum.make_warmstart_checkpoint or a stage latest.pt), the leg advances it ~45 PPO updates on the stage grid, judges it with walk.eval.grid_acceptance, and ships latest.pt back. Change the STAGE variable in the train job to move up the ladder (flush | rough4 | rough8; specs in walk/eval/grid_acceptance.py).",
+  "tar_globs": [],
+  "upload_extra": [
+    "runs/grid-warmstart.pt"
+  ],
+  "jobs": [
+    {
+      "name": "build",
+      "command": "set -o pipefail; command -v clang++ >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq clang) 2>&1 | tail -1; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -c 'from walk.env import world; print(\"libduck_world:\", world.build())' 2>&1 | tee build.log",
+      "timeout_s": 600,
+      "artifacts": [
+        "build.log"
+      ],
+      "continue_on_error": false
+    },
+    {
+      "name": "train",
+      "command": "set -o pipefail; STAGE=flush; PY=$(command -v python3); U=$($PY -B -c 'import torch; print(int(torch.load(\"runs/grid-warmstart.pt\", map_location=\"cpu\", weights_only=False)[\"update\"]))'); GRID=$($PY -B -c \"import json; from walk.eval.grid_acceptance import stage_grid; print(json.dumps({'environments': 2, 'grid': stage_grid('$STAGE')}))\"); mkdir -p grid-train-out && cp runs/grid-warmstart.pt grid-train-out/latest.pt; $PY -B -m walk.train.run --env walk.env.grid:CubeGridDuckEnv --env-kwargs \"$GRID\" --workers 8 --horizon 64 --updates $((U+45)) --seed 917 --out grid-train-out --resume --checkpoint-every 5 --eval-every 0 --preflight-steps 0 --torch-threads 2 --lr 7.5e-5 --target-kl 0.05 2>&1 | tee grid-train.log",
+      "timeout_s": 1500,
+      "artifacts": [
+        "grid-train.log",
+        "grid-train-out/metrics.jsonl",
+        "grid-train-out/faults.jsonl",
+        "grid-train-out/latest.pt"
+      ],
+      "continue_on_error": false
+    },
+    {
+      "name": "judge",
+      "command": "set -o pipefail; STAGE=flush; PY=$(command -v python3); $PY -B -m walk.eval.grid_acceptance --actor grid-train-out/latest.pt --stage $STAGE --out grid-judge --jobs 4 2>&1 | tee grid-judge.log",
+      "timeout_s": 900,
+      "artifacts": [
+        "grid-judge.log",
+        "grid-judge/grid_acceptance.json"
+      ],
+      "continue_on_error": true
+    }
+  ],
+  "resources": {
+    "cpu": 8,
+    "memory_gib": 16,
+    "disk_gib": 20,
+    "gpu": 1,
+    "gpu_types": [
+      "RTX-5090"
+    ],
+    "spot": false,
+    "ttl_minutes": 50,
+    "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
+  },
+  "use_snapshot": true
+}
