@@ -55,6 +55,10 @@ def emit(native, fixture, cm) -> str:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     from walk.env import flat  # noqa: PLC0415  (gait-clock contract source)
+    from walk.env import reward as reward_mod  # noqa: PLC0415 (imitation ref)
+
+    ref = np.asarray(reward_mod.REF_GAIT, dtype=np.float64)
+    assert ref.shape == (int(reward_mod.REF_BINS), 14), "REF_GAIT shape drift"
 
     J, B = fixture.J, fixture.B
     assert (J, B) == (14, 16)
@@ -165,6 +169,15 @@ def emit(native, fixture, cm) -> str:
         "// chain runs in f64 to mirror walk/env/flat.py's HOME bit for bit.",
         "DW_MODEL_CONST double DW_HOME_TARGETS_F64[DW_J] = {"
         + ",".join(f"{float(x):.17g}" for x in frame["motor_targets"]) + "};",
+        "// reward.py v12 self-imitation: phase-indexed reference joint cycle",
+        "// (walk/env/reference_gait.json) + weights, imported from reward.py",
+        "// at generation time so the drift test pins reward <-> kernel.",
+        f"#define DW_REF_BINS {int(reward_mod.REF_BINS)}",
+        f"#define DW_IMIT_W {float(reward_mod.W_IMIT)!r}",
+        f"#define DW_IMIT_SIGMA_SQ {float(reward_mod.IMIT_SIGMA_SQ)!r}",
+        "DW_MODEL_CONST double DW_REF_GAIT[DW_REF_BINS][DW_J] = {"
+        + ",".join("{" + ",".join(repr(float(x)) for x in row_vals) + "}"
+                   for row_vals in ref) + "};",
         "DW_MODEL_CONST unsigned DW_PAIR_BODY_A[DW_PAIRS] = {6u,15u};",
         "DW_MODEL_CONST unsigned DW_PAIR_BODY_B[DW_PAIRS] = {0u,0u};",
         "DW_MODEL_CONST float DW_PAIR_MU[DW_PAIRS] = " + row(cm.mu[:2]) + ";",

@@ -1677,6 +1677,25 @@ static DW_HD float dw_policy_reward(DwState* s, const double* a,
   for (int f = 0; f < 2; f++)
     if (!contact[f] && (double)sole[f] >= DWP_CLEARANCE_M) ncl++;
   r += DWP_W_CLEARANCE * ncl;
+  // 8a. self-imitation (reward.py v12): joint pose near the phase-indexed
+  // reference cycle while commanded. Exact numpy mirror: bin =
+  // int(mod(phase/(2pi), 1) * BINS) % BINS (np.mod follows the divisor
+  // sign; the cast truncates), err = sum(sq)/14, bonus = W*exp((-err)/s2).
+  // DW_REF_GAIT and the constants are generated from reward.py +
+  // reference_gait.json (drift-test pinned).
+  {
+    double frac = fmod(phase / (2.0 * DWP_PI), 1.0);
+    if (frac < 0.0) frac += 1.0;
+    int bin = ((int)(frac * (double)DW_REF_BINS)) % DW_REF_BINS;
+    double serr = 0;
+    for (int j = 0; j < DW_J; j++) {
+      double dref = (double)s->q[7 + j] - DW_REF_GAIT[bin][j];
+      serr += dref * dref;
+    }
+    double ierr = serr / (double)DW_J;
+    if (fabs(s->command) > 0.0)
+      r += DW_IMIT_W * exp((-ierr) / DW_IMIT_SIGMA_SQ);
+  }
   // 8b. phase-locked stance while commanded -- SIGNED (reward.py v7):
   // mismatched contact pays -W_PHASE so planting one foot through both
   // clock windows nets zero instead of the standing subsidy.
