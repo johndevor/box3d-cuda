@@ -1,0 +1,49 @@
+{
+  "name": "fresh-gru",
+  "tar_globs": [],
+  "upload_extra": [],
+  "jobs": [
+    {
+      "name": "gpu-info",
+      "command": "nvidia-smi | tee gpu-info.txt && nvcc --version | tee -a gpu-info.txt",
+      "timeout_s": 60,
+      "artifacts": [
+        "gpu-info.txt"
+      ],
+      "continue_on_error": false
+    },
+    {
+      "name": "build",
+      "command": "set -o pipefail; cd experimental/duck_cuda && ./build_remote.sh 2>&1 | tee ../../build.log",
+      "timeout_s": 600,
+      "artifacts": [
+        "build.log"
+      ],
+      "continue_on_error": false
+    },
+    {
+      "name": "train",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --envs 4096 --horizon 64 --updates 99999 --seed 917 --device cuda --library $(find experimental/duck_cuda -name 'libduck_cuda_fast.so' | head -1) --lane-env --policy gru --randomization '{\"r_mass\":0.1,\"r_friction\":0.2,\"r_kp\":0.1,\"r_damping\":0.2,\"max_latency_steps\":1}' --out gpu-train-out --lr 1.5e-4 --max-wall-s 2400 2>&1 | tee gpu-train.log",
+      "timeout_s": 2700,
+      "artifacts": [
+        "gpu-train.log",
+        "gpu-train-out/metrics.jsonl",
+        "gpu-train-out/actor_final.pt",
+        "gpu-train-out/latest.pt"
+      ],
+      "continue_on_error": false
+    }
+  ],
+  "resources": {
+    "cpu": 4,
+    "memory_gib": 16,
+    "disk_gib": 20,
+    "gpu": 1,
+    "gpu_types": [
+      "RTX-5090"
+    ],
+    "spot": false,
+    "ttl_minutes": 50,
+    "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
+  }
+}
