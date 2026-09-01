@@ -169,9 +169,21 @@ def emit(native, fixture, cm) -> str:
         "// chain runs in f64 to mirror walk/env/flat.py's HOME bit for bit.",
         "DW_MODEL_CONST double DW_HOME_TARGETS_F64[DW_J] = {"
         + ",".join(f"{float(x):.17g}" for x in frame["motor_targets"]) + "};",
+        "// ALL reward.py weights/constants the kernel consumes, imported from",
+        "// walk/env/reward.py at generation time so any weight change fails",
+        "// the header-drift test until regenerated (reward <-> kernel pin).",
+        *[f"#define DW_RW_{name} {float(getattr(reward_mod, name))!r}"
+          for name in [
+              "W_TRACK", "TRACK_SIGMA_SQ", "TRACK_EMA_S", "W_ALIVE",
+              "W_LATERAL", "W_ACTION_RATE", "W_TORQUE", "W_AIR_TIME",
+              "AIR_TIME_MIN", "AIR_TIME_MAX", "PLACEMENT_MIN_M",
+              "OPP_SUPPORT_FRAC", "W_CHATTER", "CHATTER_MAX_S", "W_FLICKER",
+              "STANCE_MIN_S", "W_CLEARANCE", "CLEARANCE_M",
+              "W_DOUBLE_SUPPORT", "DOUBLE_SUPPORT_GRACE", "W_ALTERNATE",
+              "W_SAME_FOOT", "W_PHASE"]],
+        f"#define DW_RW_TICKS_FULL {int(reward_mod.TICKS_FULL)}u",
         "// reward.py v12 self-imitation: phase-indexed reference joint cycle",
-        "// (walk/env/reference_gait.json) + weights, imported from reward.py",
-        "// at generation time so the drift test pins reward <-> kernel.",
+        "// (walk/env/reference_gait.json), same generation-time pinning.",
         f"#define DW_REF_BINS {int(reward_mod.REF_BINS)}",
         f"#define DW_IMIT_W {float(reward_mod.W_IMIT)!r}",
         f"#define DW_IMIT_SIGMA_SQ {float(reward_mod.IMIT_SIGMA_SQ)!r}",

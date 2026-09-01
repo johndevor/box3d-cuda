@@ -1506,31 +1506,33 @@ static DW_HD void dw_fill_info(uint32_t environments, dwc1_info* info) {
 #define DWP_MAX_TARGET_INCREMENT (5.24 * 0.02)   // flat.py f64 expression
 #define DWP_HORIZON 400u
 #define DWP_COS_MAX_TILT 0.70710678118654757     // tilt > 45deg  <=>  up < cos
-// reward.py weights/constants (f64 literals identical to the python file)
-#define DWP_W_TRACK 1.0
-#define DWP_TRACK_SIGMA_SQ 0.01
-#define DWP_TRACK_EMA_COEF (0.02 / 0.4)          // dt / TRACK_EMA_S
-#define DWP_W_ALIVE 0.5
-#define DWP_W_LATERAL 0.5
-#define DWP_W_ACTION_RATE 0.01
-#define DWP_W_TORQUE 2e-4
-#define DWP_W_AIR_TIME 1.5
-#define DWP_AIR_TIME_MIN 0.08
-#define DWP_AIR_TIME_MAX 0.40
-#define DWP_PLACEMENT_MIN_M 0.030
-#define DWP_OPP_SUPPORT_FRAC 0.90
-#define DWP_W_CHATTER 0.2
-#define DWP_CHATTER_MAX_S 0.06
-#define DWP_W_FLICKER 0.3
-#define DWP_TICKS_FULL 10u
-#define DWP_STANCE_MIN_S 0.06
-#define DWP_W_CLEARANCE 0.1
-#define DWP_CLEARANCE_M 0.010
-#define DWP_W_DOUBLE_SUPPORT 0.5
-#define DWP_DOUBLE_SUPPORT_GRACE 0.25
-#define DWP_W_ALTERNATE 0.5
-#define DWP_W_SAME_FOOT 2.0
-#define DWP_W_PHASE 0.5
+// reward.py weights/constants: GENERATED into duck_model.h from reward.py
+// itself (DW_RW_*), so any python-side weight change fails the header-drift
+// test until the header is regenerated. The kernel keeps its DWP_ aliases.
+#define DWP_W_TRACK DW_RW_W_TRACK
+#define DWP_TRACK_SIGMA_SQ DW_RW_TRACK_SIGMA_SQ
+#define DWP_TRACK_EMA_COEF (DWP_CONTROL_DT / DW_RW_TRACK_EMA_S)
+#define DWP_W_ALIVE DW_RW_W_ALIVE
+#define DWP_W_LATERAL DW_RW_W_LATERAL
+#define DWP_W_ACTION_RATE DW_RW_W_ACTION_RATE
+#define DWP_W_TORQUE DW_RW_W_TORQUE
+#define DWP_W_AIR_TIME DW_RW_W_AIR_TIME
+#define DWP_AIR_TIME_MIN DW_RW_AIR_TIME_MIN
+#define DWP_AIR_TIME_MAX DW_RW_AIR_TIME_MAX
+#define DWP_PLACEMENT_MIN_M DW_RW_PLACEMENT_MIN_M
+#define DWP_OPP_SUPPORT_FRAC DW_RW_OPP_SUPPORT_FRAC
+#define DWP_W_CHATTER DW_RW_W_CHATTER
+#define DWP_CHATTER_MAX_S DW_RW_CHATTER_MAX_S
+#define DWP_W_FLICKER DW_RW_W_FLICKER
+#define DWP_TICKS_FULL DW_RW_TICKS_FULL
+#define DWP_STANCE_MIN_S DW_RW_STANCE_MIN_S
+#define DWP_W_CLEARANCE DW_RW_W_CLEARANCE
+#define DWP_CLEARANCE_M DW_RW_CLEARANCE_M
+#define DWP_W_DOUBLE_SUPPORT DW_RW_W_DOUBLE_SUPPORT
+#define DWP_DOUBLE_SUPPORT_GRACE DW_RW_DOUBLE_SUPPORT_GRACE
+#define DWP_W_ALTERNATE DW_RW_W_ALTERNATE
+#define DWP_W_SAME_FOOT DW_RW_W_SAME_FOOT
+#define DWP_W_PHASE DW_RW_W_PHASE
 
 // flat.py AFFINE gait clock, exact numpy association: the per-episode random
 // offset (resampled at reset, host-side RNG) plus

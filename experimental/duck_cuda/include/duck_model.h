@@ -60,9 +60,35 @@ DW_MODEL_CONST float DW_HOME_TARGETS[DW_J] = {0.00200000009f,0.0529999994f,-0.62
 // exact f64 home targets: the device policy layer's action->target
 // chain runs in f64 to mirror walk/env/flat.py's HOME bit for bit.
 DW_MODEL_CONST double DW_HOME_TARGETS_F64[DW_J] = {0.002,0.052999999999999999,-0.63,1.3680000000000001,-0.78400000000000003,0,0,0,0,-0.0030000000000000001,-0.065000000000000002,0.63500000000000001,1.379,-0.79600000000000004};
+// ALL reward.py weights/constants the kernel consumes, imported from
+// walk/env/reward.py at generation time so any weight change fails
+// the header-drift test until regenerated (reward <-> kernel pin).
+#define DW_RW_W_TRACK 1.0
+#define DW_RW_TRACK_SIGMA_SQ 0.01
+#define DW_RW_TRACK_EMA_S 0.4
+#define DW_RW_W_ALIVE 0.5
+#define DW_RW_W_LATERAL 0.5
+#define DW_RW_W_ACTION_RATE 0.01
+#define DW_RW_W_TORQUE 0.0002
+#define DW_RW_W_AIR_TIME 1.5
+#define DW_RW_AIR_TIME_MIN 0.08
+#define DW_RW_AIR_TIME_MAX 0.4
+#define DW_RW_PLACEMENT_MIN_M 0.03
+#define DW_RW_OPP_SUPPORT_FRAC 0.9
+#define DW_RW_W_CHATTER 0.2
+#define DW_RW_CHATTER_MAX_S 0.06
+#define DW_RW_W_FLICKER 1.5
+#define DW_RW_STANCE_MIN_S 0.06
+#define DW_RW_W_CLEARANCE 0.1
+#define DW_RW_CLEARANCE_M 0.01
+#define DW_RW_W_DOUBLE_SUPPORT 0.5
+#define DW_RW_DOUBLE_SUPPORT_GRACE 0.25
+#define DW_RW_W_ALTERNATE 0.5
+#define DW_RW_W_SAME_FOOT 2.0
+#define DW_RW_W_PHASE 0.5
+#define DW_RW_TICKS_FULL 10u
 // reward.py v12 self-imitation: phase-indexed reference joint cycle
-// (walk/env/reference_gait.json) + weights, imported from reward.py
-// at generation time so the drift test pins reward <-> kernel.
+// (walk/env/reference_gait.json), same generation-time pinning.
 #define DW_REF_BINS 64
 #define DW_IMIT_W 0.5
 #define DW_IMIT_SIGMA_SQ 0.04
