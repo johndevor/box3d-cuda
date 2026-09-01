@@ -59,6 +59,7 @@ from walk.train.vec import derive_seed
 class GpuTrainConfig:
     envs: int = 4096
     lane_env: bool = False
+    randomization: dict | None = None
     horizon: int = 32
     updates: int = 300
     seed: int = 917
@@ -104,7 +105,8 @@ class LanePolicyEnv:
         self._lane = CudaDuckLane(
             self.E,
             joint_offsets=_perturbation_offsets(cfg) if cfg.perturbation else None,
-            library_path=cfg.library)
+            library_path=cfg.library,
+            randomization=cfg.randomization)
         self._seed = cfg.seed
         self.fault_count = 0
 
@@ -580,6 +582,8 @@ def build_argparser() -> argparse.ArgumentParser:
                         "DUCK_CUDA_LIBRARY env or local serial build)")
     p.add_argument("--lane-env", action="store_true",
                    help="use the ABI-v3 device policy path (1 launch/step)")
+    p.add_argument("--randomization", default=None,
+                   help='JSON DR config, e.g. {"r_mass":0.1,"max_latency_steps":1}')
     p.add_argument("--out", required=True)
     p.add_argument("--resume", nargs="?", const="auto", default=None,
                    help="checkpoint path, or bare flag for <out>/latest.pt")
@@ -604,7 +608,7 @@ def build_argparser() -> argparse.ArgumentParser:
 def config_from_args(args: argparse.Namespace) -> GpuTrainConfig:
     return GpuTrainConfig(
         envs=args.envs, horizon=args.horizon, updates=args.updates, seed=args.seed,
-        device=args.device, library=args.library, lane_env=args.lane_env, out=args.out, resume=args.resume,
+        device=args.device, library=args.library, lane_env=args.lane_env, randomization=(json.loads(args.randomization) if args.randomization else None), out=args.out, resume=args.resume,
         max_wall_s=args.max_wall_s, policy=args.policy, lr=args.lr,
         gamma=args.gamma, gae_lambda=args.gae_lambda, perturbation=args.perturbation,
         checkpoint_every=args.checkpoint_every, preflight_steps=args.preflight_steps,
