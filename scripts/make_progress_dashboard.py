@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Regenerate runs/progress.html from runs/flat-*/metrics.jsonl.
+"""Regenerate runs/progress.html from runs/flat-*/metrics.jsonl and the
+GPU relay legs under runs/gpu/*/artifacts/train/gpu-train-out/metrics.jsonl.
 
 Usage: .venv/bin/python -B scripts/make_progress_dashboard.py
 """
@@ -7,8 +8,14 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNS = [("flat-002", "baseline -> repaired solver"),
-        ("flat-003", "phase-locked reward")]
+RUNS = [("flat-002", "CPU baseline -> repaired solver"),
+        ("flat-003", "CPU, phase-locked reward")]
+# The GPU relay lineage (one training run executed as many short sandbox
+# legs): fresh-ff (u1-334) -> continue-ff (u335-635) -> continue-ff-short
+# (u636+). Later legs re-run update ranges after checkpoint rollbacks, so
+# rows are deduped by update with the chronologically-latest leg winning.
+GPU_RELAY_LABEL = "4096 envs, RTX 5090, DR+latency"
+GPU_RELAY_GLOBS = ("*-fresh-ff", "*-continue-ff", "*-continue-ff-short")
 EVENTS = [(591, "solver repair"), (1301, "phase-locked reward")]
 
 
@@ -38,13 +45,54 @@ def load(name):
     return rows, evals
 
 
+def load_gpu_relay():
+    """Concatenate the GPU relay legs into one series, deduped by update.
+
+    Legs are read in timestamp order (directory names sort chronologically);
+    the last occurrence of an update wins, which resolves both resume overlap
+    and checkpoint-rollback re-runs. In-run acceptance probes (kind="accept")
+    with accepted=true become annotations.
+    """
+    legs = []
+    for pattern in GPU_RELAY_GLOBS:
+        legs.extend((ROOT / "runs" / "gpu").glob(pattern))
+    train, accepted = {}, {}
+    for leg in sorted(legs, key=lambda p: p.name):
+        path = leg / "artifacts" / "train" / "gpu-train-out" / "metrics.jsonl"
+        if not path.exists():
+            continue
+        for line in path.open():
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if d.get("kind") == "train":
+                train[d["update"]] = d
+            elif d.get("kind") == "accept" and d.get("accepted"):
+                accepted[d["update"]] = d
+    rows = [dict(u=u, rew=rnd(t.get("reward_mean")), eplen=rnd(t.get("ep_len_mean"), 1),
+                 f=t.get("faults", 0), es=t.get("env_steps", 0))
+            for u, t in sorted(train.items())]
+    return rows, sorted(accepted)
+
+
 def main():
     runs = []
     for name, label in RUNS:
         rows, evals = load(name)
         if rows:
             runs.append({"run": name, "label": label, "train": rows, "evals": evals})
-    payload = json.dumps({"runs": runs, "events": EVENTS}, separators=(",", ":"))
+    events = list(EVENTS)
+    gpu_rows, accepted_updates = load_gpu_relay()
+    if gpu_rows:
+        runs.append({"run": "gpu-relay", "label": GPU_RELAY_LABEL,
+                     "train": gpu_rows, "evals": [],
+                     "accepted": accepted_updates})
+        # one line per accepted update; label only the last (they can be a
+        # few updates apart and the labels would overlap)
+        events += [(u, "accepted u%d" % u if u == accepted_updates[-1] else "")
+                   for u in accepted_updates]
+    payload = json.dumps({"runs": runs, "events": events}, separators=(",", ":"))
     html = TEMPLATE.replace("__DATA__", payload)
     out = ROOT / "runs" / "progress.html"
     out.write_text(html)
@@ -61,7 +109,7 @@ TEMPLATE = r"""<!doctype html>
   --surface-1:#fcfcfb; --page:#f9f9f7;
   --ink-1:#0b0b0b; --ink-2:#52514e; --ink-3:#898781;
   --grid:#e1e0d9; --axis:#c3c2b7; --ring:rgba(11,11,11,.10);
-  --s1:#2a78d6; --s2:#eb6834;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a;
 }
 @media (prefers-color-scheme: dark){
   :root:where(:not([data-theme="light"])) .viz-root{
@@ -69,7 +117,7 @@ TEMPLATE = r"""<!doctype html>
     --surface-1:#1a1a19; --page:#0d0d0d;
     --ink-1:#ffffff; --ink-2:#c3c2b7; --ink-3:#898781;
     --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
-    --s1:#3987e5; --s2:#d95926;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70;
   }
 }
 :root[data-theme="dark"] .viz-root{
@@ -77,7 +125,7 @@ TEMPLATE = r"""<!doctype html>
   --surface-1:#1a1a19; --page:#0d0d0d;
   --ink-1:#ffffff; --ink-2:#c3c2b7; --ink-3:#898781;
   --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
-  --s1:#3987e5; --s2:#d95926;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70;
 }
 body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
 .viz-root{background:var(--page);color:var(--ink-1);min-height:100vh;padding:28px 32px 48px}
@@ -116,8 +164,10 @@ th{color:var(--ink-2);font-weight:600}
 <body><div class="viz-root">
 <button class="toggle" onclick="const r=document.documentElement;r.dataset.theme=(r.dataset.theme==='dark'?'light':'dark')">theme</button>
 <h1>Open Duck &mdash; flat-floor walking, PPO training progress</h1>
-<p class="sub">192 envs &times; 12 workers on M5 Pro &middot; 0.02 s policy steps &middot; dashed lines mark the
-solver repair (u591) and the phase-locked stance reward / run fork (u1301). flat-001 (25 updates, superseded) omitted.</p>
+<p class="sub">CPU runs: 192 envs &times; 12 workers on M5 Pro. gpu-relay: 4096 envs on one RTX 5090
+(relay of short sandbox legs concatenated and deduped by update; separate update numbering from the CPU runs).
+0.02 s policy steps &middot; dashed lines mark the solver repair (u591), the phase-locked stance reward / run fork (u1301),
+and the strict in-run acceptance pass on gpu-relay. flat-001 (25 updates, superseded) omitted.</p>
 <div class="tiles" id="tiles"></div>
 <div class="legend" id="legend"></div>
 <div class="gridwrap" id="grid"></div>
@@ -125,7 +175,7 @@ solver repair (u591) and the phase-locked stance reward / run fork (u1301). flat
 <details><summary>Data table (evals + every 100th training update)</summary><div id="tbl"></div></details>
 <script>
 const DATA = __DATA__;
-const COLORS = ["var(--s1)","var(--s2)"];
+const COLORS = ["var(--s1)","var(--s2)","var(--s3)"];
 const W=560,H=232,ML=46,MR=64,MT=16,MB=24;
 const runs = DATA.runs;
 const allU = runs.flatMap(r=>r.train.map(t=>t.u));
@@ -143,11 +193,11 @@ function niceTicks(lo,hi,n=4){
 function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;")}
 
 const PANELS=[
- {key:"rew",  title:"Train reward per policy step (rollout mean, per update)", get:r=>r.train.map(t=>[t.u,t.rew]), fmt:v=>v.toFixed(3)},
+ {key:"rew",  title:"Train reward per policy step (rollout mean, per update)", get:r=>r.train.filter(t=>t.rew!=null).map(t=>[t.u,t.rew]), fmt:v=>v.toFixed(3)},
  {key:"eval", title:"Deterministic eval return (every 25 updates; × = skipped on solver fault)", get:r=>r.evals.filter(e=>e.ret!=null).map(e=>[e.u,e.ret]), fmt:v=>v.toFixed(0), marker:true,
   skips:r=>r.evals.filter(e=>e.ret==null).map(e=>e.u)},
- {key:"eplen",title:"Mean episode length, policy steps (400 = full 8 s, no fall)", get:r=>r.train.map(t=>[t.u,t.eplen]), fmt:v=>v.toFixed(0), ymax:400},
- {key:"f",    title:"Solver faults per update (poisoned rollout shards)", get:r=>r.train.map(t=>[t.u,t.f]), fmt:v=>v.toFixed(0)},
+ {key:"eplen",title:"Mean episode length, policy steps (400 = full 8 s, no fall)", get:r=>r.train.filter(t=>t.eplen!=null).map(t=>[t.u,t.eplen]), fmt:v=>v.toFixed(0), ymax:400},
+ {key:"f",    title:"Solver faults per update (poisoned rollout shards)", get:r=>r.train.filter(t=>t.f!=null).map(t=>[t.u,t.f]), fmt:v=>v.toFixed(0)},
 ];
 
 const grid=document.getElementById("grid"), tt=document.getElementById("tt");
@@ -220,7 +270,7 @@ document.getElementById("tiles").innerHTML=[
  ["Latest eval return", lastEval.ret.toFixed(1), "u"+lastEval.u+" · deterministic, 8 s"],
  ["Best eval return", bestEval.ret.toFixed(1), "u"+bestEval.u],
  ["Faults, last 100 updates", tailF, "was ~700 per 100 pre-repair"],
- ["Env steps simulated", (totalSteps/1e6).toFixed(1)+"M", "across both runs"],
+ ["Env steps simulated", totalSteps>=1e9?(totalSteps/1e9).toFixed(2)+"B":(totalSteps/1e6).toFixed(1)+"M", "across all runs"],
 ].map(([k,v,d])=>`<div class="tile"><div class="k">${k}</div><div class="v">${v}</div><div class="d">${d}</div></div>`).join("");
 
 // table view
@@ -228,7 +278,7 @@ let tb=`<table><tr><th>update</th><th>run</th><th>reward</th><th>ep len</th><th>
 runs.forEach(r=>{
   const em=new Map(r.evals.filter(e=>e.ret!=null).map(e=>[e.u,e.ret]));
   r.train.filter(t=>t.u%100===0).forEach(t=>{
-    tb+=`<tr><td>${t.u}</td><td>${r.run}</td><td>${t.rew}</td><td>${t.eplen}</td><td>${t.f}</td><td>${em.get(t.u)??""}</td></tr>`});
+    tb+=`<tr><td>${t.u}</td><td>${r.run}</td><td>${t.rew??""}</td><td>${t.eplen??""}</td><td>${t.f??""}</td><td>${em.get(t.u)??""}</td></tr>`});
 });
 tb+="</table>";
 document.getElementById("tbl").innerHTML=tb;
