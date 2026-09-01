@@ -89,6 +89,34 @@ snapshots can be pruned in the Daytona dashboard. Deleting
   If deletion cannot be verified, the launcher exits 4 with a loud message —
   go delete the sandbox in the Daytona dashboard immediately.
 
+## Detached execution for long jobs (reliability)
+
+A single long-lived `process.exec` stream is fragile: a transient proxy read
+timeout (`DaytonaConnectionTimeoutError`) once killed a 40-min train leg.
+Jobs with `timeout_s > 600` — or any job that sets `"detached": true`
+(`"detached": false` opts a long job out) — therefore run detached:
+
+1. The command is started server-side via the SDK session API
+   (`process.create_session` + `execute_session_command(run_async=True)`),
+   so the workload survives any client/proxy hiccup. No nohup/pid files
+   needed — the session tracks the exit code.
+2. The launcher polls every ~15 s with short calls
+   (`get_session_command(...).exit_code`, `None` while running). Transient
+   poll failures are RETRIED; only 5 *consecutive* failures abort the leg.
+   The counter resets on any successful poll.
+3. On completion the full log is fetched via `get_session_command_logs`
+   (also retried, best effort) and written redacted as usual.
+4. The job's `timeout_s` is still enforced (exit code 124 on expiry), and
+   the 3300 s host budget still bounds everything.
+
+Artifact salvage: artifacts are downloaded per job even when the job fails,
+and a best-effort salvage pass runs before deletion for any job whose
+artifacts were never collected (exec raised, polling gave up, job skipped).
+Salvaged files land in the normal `artifacts/<job>/` layout and are recorded
+under `salvaged_artifacts` in `manifest.json` with per-file
+`ok`/`missing`/`error` status — a broken stream can no longer lose a
+training leg's checkpoints.
+
 ## Spot-failure behavior
 
 Spot capacity for RTX-5090 can be unavailable. Creation errors whose message
@@ -133,7 +161,9 @@ left behind. Just re-run later or add `--gpu-type RTX-4090`.
       "command": "cmake ... && ...",  // runs via `cd /tmp/duckwork && (cmd)`
       "timeout_s": 600,               // remote timeout, <= 1500
       "artifacts": ["build.log"],     // workdir-relative, downloaded per job
-      "continue_on_error": false      // default false: stop on first failure
+      "continue_on_error": false,     // default false: stop on first failure
+      "detached": true                // optional; default: auto-detach when
+                                      // timeout_s > 600 (see above)
     }
   ],
   "use_snapshot": false,              // true = create from the baked snapshot
@@ -176,7 +206,15 @@ Verified against the pinned host runtime
   bytes` (plus `upload_files`, `download_files` for batches).
 - `Sandbox.process.exec(command, cwd=None, env=None, timeout=None) ->
   ExecuteResponse` with fields `exit_code`, `result` (combined output),
-  `artifacts` (`ExecutionArtifacts` with `stdout` / charts).
+  `artifacts` (`ExecutionArtifacts` with `stdout` / charts) — used for
+  short jobs only.
+- Sessions (detached long jobs): `process.create_session(session_id)`;
+  `process.execute_session_command(session_id,
+  SessionExecuteRequest(command=..., run_async=True), timeout=...) ->
+  SessionExecuteResponse` (`cmd_id`); `process.get_session_command(
+  session_id, cmd_id) -> Command` (`exit_code` is `None` while running);
+  `process.get_session_command_logs(session_id, cmd_id) ->
+  SessionCommandLogsResponse` (`output`/`stdout`/`stderr`).
 - Snapshots: `Sandbox.create_snapshot(name, timeout=...)` captures the
   sandbox filesystem into a named snapshot;
   `CreateSandboxFromSnapshotParams(snapshot=<name>, spot=..., ttl_minutes=...,

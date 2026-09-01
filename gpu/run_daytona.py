@@ -27,6 +27,14 @@ Secrets discipline (enforced here):
   * Anything matching the key value or the Daytona key pattern is redacted
     from all captured output before it is written to disk.
 
+Reliability (long jobs):
+  * Jobs with timeout_s > 600 (or "detached": true) run DETACHED via a
+    server-side session command instead of one fragile long-lived exec
+    stream; the launcher polls with short calls every ~15 s and retries up
+    to 5 consecutive transient poll failures.
+  * Artifacts are pulled best-effort even when a job fails or the stream
+    breaks (salvage pass before deletion), so checkpoints survive.
+
 Budget policy (hard):
   * One sandbox at a time (checked via launcher label before create).
   * Total host wall clock cap: 3300 s per invocation.
@@ -95,6 +103,18 @@ EXIT_SPOT_UNAVAILABLE = 3
 EXIT_DELETE_UNVERIFIED = 4
 EXIT_BUDGET_EXCEEDED = 5
 
+# Detached execution: long jobs must not ride a single long-lived exec stream
+# (transient proxy read-timeouts killed a 40-min train leg). Jobs whose
+# timeout exceeds the threshold (or that set "detached": true) run through a
+# server-side session command (run_async) and are polled with short calls;
+# transient poll failures are retried, never fatal until MAX_POLL_FAILURES
+# consecutive misses.
+DETACH_THRESHOLD_S = 600
+DETACHED_POLL_INTERVAL_S = 15
+MAX_POLL_FAILURES = 5
+JOB_TIMEOUT_EXIT_CODE = 124  # detached job exceeded its timeout_s
+DETACHED_SESSION_ID = "duck-launcher-jobs"
+
 
 # --------------------------------------------------------------------------
 # Errors
@@ -161,6 +181,14 @@ class JobSpec:
     timeout_s: int
     artifacts: list
     continue_on_error: bool = False
+    detached: bool = None  # None = auto (timeout_s > DETACH_THRESHOLD_S)
+
+
+def job_is_detached(job):
+    """Detached when explicitly requested, else automatically for long jobs."""
+    if job.detached is not None:
+        return job.detached
+    return job.timeout_s > DETACH_THRESHOLD_S
 
 
 @dataclasses.dataclass
@@ -228,7 +256,10 @@ def parse_spec(raw):
                  f"jobs[{i}].artifacts must be workdir-relative paths without '..'")
         coe = j.get("continue_on_error", False)
         _require(isinstance(coe, bool), f"jobs[{i}].continue_on_error must be a boolean")
-        jobs.append(JobSpec(j["name"], j["command"], j["timeout_s"], list(arts), coe))
+        det = j.get("detached", None)
+        _require(det is None or isinstance(det, bool),
+                 f"jobs[{i}].detached must be a boolean when present")
+        jobs.append(JobSpec(j["name"], j["command"], j["timeout_s"], list(arts), coe, det))
     names = [j.name for j in jobs]
     _require(len(names) == len(set(names)), "job names must be unique")
 
@@ -330,6 +361,7 @@ def load_image_manifest(path):
 class SandboxHandle:
     sandbox_id: str
     raw: object = None
+    session_created: bool = False
 
 
 @dataclasses.dataclass
@@ -448,6 +480,39 @@ class DaytonaProvider:
         resp = handle.raw.process.exec(command, env=None, timeout=int(timeout_s))
         return ExecResult(exit_code=int(resp.exit_code), output=resp.result or "")
 
+    def exec_detached_start(self, handle, command):
+        """Start a command in a server-side session (run_async) and return an
+        opaque reference for polling. The session lives in the sandbox, so a
+        broken client connection cannot kill the workload."""
+        d = self._daytona
+        try:
+            if not getattr(handle, "session_created", False):
+                handle.raw.process.create_session(DETACHED_SESSION_ID)
+                handle.session_created = True
+            req = d.SessionExecuteRequest(command=command, run_async=True)
+            resp = handle.raw.process.execute_session_command(
+                DETACHED_SESSION_ID, req, timeout=60)
+            return (DETACHED_SESSION_ID, resp.cmd_id)
+        except d.DaytonaError as e:
+            raise LauncherError(f"detached start failed: {e}") from e
+
+    def exec_detached_poll(self, handle, ref):
+        """Return the command's exit code, or None while still running.
+        Exceptions (transient proxy timeouts etc.) propagate: the launcher
+        retries them up to MAX_POLL_FAILURES consecutive times."""
+        session_id, cmd_id = ref
+        cmd = handle.raw.process.get_session_command(session_id, cmd_id)
+        code = getattr(cmd, "exit_code", None)
+        return None if code is None else int(code)
+
+    def exec_detached_logs(self, handle, ref):
+        """Fetch the full combined output of a session command."""
+        session_id, cmd_id = ref
+        logs = handle.raw.process.get_session_command_logs(session_id, cmd_id)
+        if getattr(logs, "output", None) is not None:
+            return logs.output
+        return (getattr(logs, "stdout", "") or "") + (getattr(logs, "stderr", "") or "")
+
     def download(self, handle, remote_path):
         try:
             return handle.raw.fs.download_file(remote_path)
@@ -473,6 +538,9 @@ class Deadline:
     def __init__(self, cap_s=WALL_CLOCK_CAP_S, clock=time.monotonic):
         self._clock = clock
         self._end = clock() + cap_s
+
+    def now(self):
+        return self._clock()
 
     def remaining(self):
         return self._end - self._clock()
@@ -509,9 +577,82 @@ def _write_json(path, obj, redactor):
     path.write_text(redactor.redact(json.dumps(obj, indent=2, sort_keys=True)) + "\n")
 
 
+def _collect_job_artifacts(provider, handle, job, run_dir, redactor):
+    """Download a job's artifacts, best effort: a failing download marks the
+    artifact instead of raising, so one bad transfer never loses the rest."""
+    arts = {}
+    for rel in job.artifacts:
+        try:
+            data = provider.download(handle, f"{REMOTE_WORKDIR}/{rel}")
+        except Exception as e:  # noqa: BLE001 - transient transport errors
+            arts[rel] = {"status": "error", "error": redactor.redact(str(e))}
+            continue
+        if data is None:
+            arts[rel] = {"status": "missing"}
+            continue
+        dest = Path(run_dir) / "artifacts" / job.name / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        arts[rel] = {
+            "status": "ok",
+            "path": str(dest),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+    return arts
+
+
+def _run_job_detached(provider, handle, job, command, deadline, redactor,
+                      log, sleep_fn):
+    """Run a long job via a detached server-side session command and poll it
+    with short calls. Transient poll failures are retried (up to
+    MAX_POLL_FAILURES consecutive) so a proxy hiccup cannot kill the leg."""
+    ref = provider.exec_detached_start(handle, command)
+    job_end = deadline.now() + min(job.timeout_s, max(1.0, deadline.remaining()))
+    failures = 0
+    exit_code = None
+    while True:
+        if deadline.now() >= job_end:
+            log(f"[launcher] job {job.name} exceeded its {job.timeout_s}s timeout "
+                f"(detached); marking exit {JOB_TIMEOUT_EXIT_CODE}")
+            exit_code = JOB_TIMEOUT_EXIT_CODE
+            break
+        sleep_fn(min(DETACHED_POLL_INTERVAL_S, max(1.0, job_end - deadline.now())))
+        try:
+            code = provider.exec_detached_poll(handle, ref)
+            failures = 0
+        except (BudgetExceededError, KeyboardInterrupt):
+            raise
+        except Exception as e:  # noqa: BLE001 - includes SDK/transport errors
+            failures += 1
+            log(f"[launcher] job {job.name} poll failed "
+                f"({failures}/{MAX_POLL_FAILURES}): {redactor.redact(str(e))} "
+                "— retrying")
+            if failures >= MAX_POLL_FAILURES:
+                raise LauncherError(
+                    f"detached poll for job {job.name} failed {failures} "
+                    f"consecutive times: {redactor.redact(str(e))}"
+                ) from e
+            continue
+        if code is not None:
+            exit_code = code
+            break
+    output = ""
+    for attempt in range(1, MAX_POLL_FAILURES + 1):
+        try:
+            output = provider.exec_detached_logs(handle, ref)
+            break
+        except Exception as e:  # noqa: BLE001
+            log(f"[launcher] job {job.name} log fetch failed "
+                f"({attempt}/{MAX_POLL_FAILURES}): {redactor.redact(str(e))}")
+            if attempt < MAX_POLL_FAILURES:
+                sleep_fn(2)
+    return ExecResult(exit_code=exit_code, output=output)
+
+
 def execute_run(spec, repo_root, run_dir, provider, redactor, deadline,
                 extra_gpu_types=(), log=print, label=None,
-                snapshot_name=None, post_success_hook=None):
+                snapshot_name=None, post_success_hook=None,
+                sleep_fn=time.sleep):
     """Full lifecycle: tar -> create -> upload -> jobs -> artifacts ->
     manifest -> delete (finally, verified). Returns process exit code.
 
@@ -545,6 +686,7 @@ def execute_run(spec, repo_root, run_dir, provider, redactor, deadline,
 
     handle = None
     exit_code = EXIT_OK
+    collected_jobs = set()  # jobs whose artifacts were already downloaded
     try:
         deadline.check("sandbox creation")
         existing = provider.list_launcher_sandbox_ids()
@@ -586,30 +728,22 @@ def execute_run(spec, repo_root, run_dir, provider, redactor, deadline,
                 continue
             deadline.check(f"job {job.name}")
             t0 = time.monotonic()
-            log(f"[launcher] job {job.name}: {job.command}")
-            result = provider.exec(
-                handle,
-                f"cd {REMOTE_WORKDIR} && ({job.command})",
-                timeout_s=deadline.clip(job.timeout_s),
-            )
+            wrapped = f"cd {REMOTE_WORKDIR} && ({job.command})"
+            if job_is_detached(job):
+                log(f"[launcher] job {job.name} (detached): {job.command}")
+                result = _run_job_detached(
+                    provider, handle, job, wrapped, deadline, redactor,
+                    log, sleep_fn)
+            else:
+                log(f"[launcher] job {job.name}: {job.command}")
+                result = provider.exec(
+                    handle, wrapped, timeout_s=deadline.clip(job.timeout_s))
             wall = round(time.monotonic() - t0, 2)
             log_file = run_dir / "logs" / f"{job.name}.log"
             _write_text(log_file, result.output, redactor)
 
-            arts = {}
-            for rel in job.artifacts:
-                data = provider.download(handle, f"{REMOTE_WORKDIR}/{rel}")
-                if data is None:
-                    arts[rel] = {"status": "missing"}
-                    continue
-                dest = run_dir / "artifacts" / job.name / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(data)
-                arts[rel] = {
-                    "status": "ok",
-                    "path": str(dest),
-                    "sha256": hashlib.sha256(data).hexdigest(),
-                }
+            arts = _collect_job_artifacts(provider, handle, job, run_dir, redactor)
+            collected_jobs.add(job.name)
             manifest["jobs"].append({
                 "name": job.name,
                 "exit_code": result.exit_code,
@@ -644,6 +778,25 @@ def execute_run(spec, repo_root, run_dir, provider, redactor, deadline,
             "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         if handle is not None:
+            # Best-effort artifact salvage BEFORE deletion: any job whose
+            # artifacts were not collected in the normal flow (exec raised,
+            # poll gave up, job skipped) still gets a download attempt so a
+            # broken stream can't lose a training leg's checkpoints.
+            try:
+                salvage = {}
+                for job in spec.jobs:
+                    if job.name in collected_jobs or not job.artifacts:
+                        continue
+                    entry = _collect_job_artifacts(
+                        provider, handle, job, run_dir, redactor)
+                    if entry:
+                        salvage[job.name] = entry
+                if salvage:
+                    manifest["salvaged_artifacts"] = salvage
+                    log("[launcher] salvaged artifacts (best effort) for: "
+                        + ", ".join(sorted(salvage)))
+            except Exception as e:  # never let salvage block deletion
+                log(f"[launcher] artifact salvage failed: {redactor.redact(str(e))}")
             receipt["delete_attempted"] = True
             try:
                 provider.delete(handle)
