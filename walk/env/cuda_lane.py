@@ -227,6 +227,11 @@ class CudaDuckLane:
             raise RuntimeError(
                 f"{self.library_path} exports dwc1 ABI v{abi}; "
                 f"this wrapper requires v{ABI_VERSION} (rebuild the library)")
+        # The CUDA build is warp-per-env (32 lanes/env): throughput saturates
+        # around E=8192-16384 on an RTX 5090; larger batches only add memory
+        # (~sizeof(DwWork) ~ 100 KB workspace per env).
+        if not 1 <= int(environments) <= 65536:
+            raise ValueError("environments must be in [1, 65536]")
         self.E = int(environments)
         self.J, self.B, self.P = J, B, P
         offsets = None

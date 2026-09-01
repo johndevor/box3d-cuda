@@ -9,6 +9,7 @@
 #include "duck_cuda_kernel.h"
 
 #include <algorithm>
+#include <memory>
 #include <new>
 #include <vector>
 
@@ -16,7 +17,7 @@ struct dwc1_scene {
   uint32_t E = 0;
   DwParams params{};
   std::vector<DwState> state, initial;
-  std::vector<float> scratch;  // [E, DW_SCRATCH_FLOATS] solver K + response
+  std::vector<DwWork> work;  // [E] per-env cooperative workspaces
 };
 
 extern "C" {
@@ -32,11 +33,14 @@ int dwc1_create(uint32_t environments, const float* joint_offsets,
   try {
     auto s = new dwc1_scene;
     s->E = environments;
-    if (!dw_reference_weights(s->params.refweight)) { delete s; return DWC1_DYNAMICS; }
+    s->state.resize(environments);
+    s->work.resize(environments);
+    if (!dw_reference_weights(s->params.refweight, &s->work[0])) {
+      delete s;
+      return DWC1_DYNAMICS;
+    }
     s->params.tolerance = DW_SOLVE_TOLERANCE;
     s->params.max_iterations = DW_MAX_ITERATIONS;
-    s->state.resize(environments);
-    s->scratch.resize((size_t)environments * DW_SCRATCH_FLOATS);
     for (uint32_t e = 0; e < environments; e++)
       dw_init_state(&s->state[e],
                     joint_offsets ? joint_offsets + (size_t)e * DW_J : nullptr);
@@ -67,7 +71,7 @@ int dwc1_step(dwc1_scene* s, const float* targets, uint32_t n_ticks,
     *d = dwc1_diagnostic{};
     d->environment = e;
     dw_step_env(&s->state[e], targets + (size_t)e * DW_J, n_ticks, &s->params,
-                s->scratch.data() + (size_t)e * DW_SCRATCH_FLOATS, d);
+                &s->work[e], d);
     if (d->status != DWC1_OK && rc == DWC1_OK) rc = (int)d->status;
   }
   return rc;
@@ -151,8 +155,7 @@ int dwc1_step_policy(dwc1_scene* s, const float* actions, uint32_t n_ticks,
     *d = dwc1_diagnostic{};
     d->environment = e;
     dw_step_policy_env(&s->state[e], actions + (size_t)e * DW_J, n_ticks,
-                       &s->params,
-                       s->scratch.data() + (size_t)e * DW_SCRATCH_FLOATS,
+                       &s->params, &s->work[e],
                        obs + (size_t)e * DWP_OBS, reward + e, done + e, d);
   }
   return DWC1_OK;  // per-env faults surface via diagnostics + done flags
@@ -208,8 +211,9 @@ int dwc1_debug_eval(const float* q, const float* v, float* mass /*[N,N]*/,
                     float* jac /*[B,6,N]*/, float* smooth /*[N]*/,
                     const float* target /*[J] or NULL*/) {
   if (!q || !v) return DWC1_INVALID;
-  DwEval e;
-  if (!dw_evaluate(q, v, DW_GRAVITY_Z, &e)) return DWC1_DYNAMICS;
+  auto wk = std::make_unique<DwWork>();
+  if (!dw_evaluate(q, v, DW_GRAVITY_Z, wk.get())) return DWC1_DYNAMICS;
+  const DwEval& e = wk->e;
   if (mass) memcpy(mass, &e.M[0][0], sizeof(e.M));
   if (bias) memcpy(bias, e.bias, sizeof(e.bias));
   if (pose)
@@ -219,7 +223,7 @@ int dwc1_debug_eval(const float* q, const float* v, float* mass /*[N,N]*/,
     }
   if (jac) memcpy(jac, &e.J[0][0][0], sizeof(e.J));
   if (smooth && target) {
-    float L[DW_N][DW_N];
+    float (*L)[DW_N] = wk->L;
     if (!dw_chol(e.M, L)) return DWC1_DYNAMICS;
     for (int n = 0; n < DW_N; n++) smooth[n] = -e.bias[n];
     for (int j = 0; j < DW_J; j++) {

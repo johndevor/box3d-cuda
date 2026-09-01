@@ -13,6 +13,8 @@ target_compile_options(duck_cuda_serial PRIVATE
 #   -DDUCK_CUDA_FAST=ON       fmad on (throughput variant); OFF = parity build
 option(DUCK_CUDA "Build the CUDA library (requires nvcc)" OFF)
 option(DUCK_CUDA_FAST "Enable fmad (fast variant; parity builds keep it off)" OFF)
+option(DUCK_CUDA_THREAD_PER_ENV
+       "Legacy one-thread-per-env layout (default: 32-lane warp-per-env)" OFF)
 if(DUCK_CUDA)
   enable_language(CUDA)
   set(CMAKE_CUDA_STANDARD 17)
@@ -22,6 +24,9 @@ if(DUCK_CUDA)
   add_library(duck_cuda SHARED src/duck_cuda.cu)
   target_include_directories(duck_cuda PUBLIC include)
   target_compile_options(duck_cuda PRIVATE -O3)
+  if(DUCK_CUDA_THREAD_PER_ENV)
+    target_compile_definitions(duck_cuda PRIVATE DW_WARP_LANES=1)
+  endif()
   if(DUCK_CUDA_FAST)
     target_compile_options(duck_cuda PRIVATE --fmad=true)
   else()

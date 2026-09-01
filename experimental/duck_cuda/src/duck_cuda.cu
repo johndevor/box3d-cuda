@@ -1,55 +1,67 @@
 // SPDX-License-Identifier: MIT
-// Real CUDA driver for the batched duck lane: one grid-stride thread per
-// environment, state resident in one device buffer indexed by env
-// (DwState[E]). Host-memory copies at the ABI boundary at this stage; the
-// PPO driver later keeps everything device-resident.
+// Real CUDA driver for the batched duck lane, WARP-PER-ENV: 32 lanes
+// cooperate on one environment (DW_WARP_LANES=32; build with
+// -DDW_WARP_LANES=1 for the legacy thread-per-env layout). State lives in
+// one device buffer indexed by env (DwState[E]) plus one DwWork workspace
+// slice per env in global memory. Host-memory copies at the ABI boundary;
+// the PPO driver keeps everything device-resident between calls.
 //
 // Cannot be compiled or tested on the development Mac (no nvcc); the serial
 // build src/duck_cuda_serial.cpp shares every physics line via
-// duck_cuda_kernel.h and is the tested parity vehicle. Keep this file thin.
+// duck_cuda_kernel.h and is the tested parity vehicle. Cross-build numerics
+// are gated by tests/remote_gpu_parity.py (windowed tolerances + bitwise
+// on-device determinism). Keep this file thin.
 #include <cuda.h>
 #include <cuda_runtime.h>
 
 #define DW_HD __host__ __device__
+#ifndef DW_WARP_LANES
+#define DW_WARP_LANES 32
+#endif
 #include "duck_cuda_kernel.h"
 
 #include <cstddef>
+#include <memory>
 #include <new>
 #include <vector>
 
 namespace {
-constexpr int kThreadsPerBlock = 128;
-// dw_tick + dw_solve use ~45 KB of per-thread stack (fixed-size arrays, no
-// dynamic allocation); reserve headroom once per scene creation.
-constexpr size_t kStackBytes = 64 * 1024;
+constexpr int kLanesPerEnv = DW_WARP_LANES;   // 32 (warp) or 1 (legacy)
+constexpr int kThreadsPerBlock = 256;         // 8 envs per block at 32 lanes
+// Per-thread stack is small now: every tick-sized array lives in the per-env
+// DwWork global slice; locals are quat/vec temps, the lane-0 manifold reduce
+// (~1 KB) and the lane-0 policy FK. 16 KB leaves ample headroom.
+constexpr size_t kStackBytes = 16 * 1024;
 
 __global__ void dw_step_kernel(DwState* states, const float* targets,
                                uint32_t n_ticks, DwParams params,
-                               float* scratch, dwc1_diagnostic* diags,
+                               DwWork* work, dwc1_diagnostic* diags,
                                uint32_t E) {
-  for (uint32_t e = blockIdx.x * blockDim.x + threadIdx.x; e < E;
-       e += gridDim.x * blockDim.x) {
+  const uint32_t stride = (blockDim.x * gridDim.x) / kLanesPerEnv;
+  for (uint32_t e = (blockIdx.x * blockDim.x + threadIdx.x) / kLanesPerEnv;
+       e < E; e += stride) {
     dwc1_diagnostic d = {};
     d.environment = e;
     dw_step_env(&states[e], targets + (size_t)e * DW_J, n_ticks, &params,
-                scratch + (size_t)e * DW_SCRATCH_FLOATS, &d);
-    diags[e] = d;
+                &work[e], &d);
+    DW_LANE0 diags[e] = d;   // lane 0 holds the authoritative diag scalars
   }
 }
 
 __global__ void dw_step_policy_kernel(DwState* states, const float* actions,
                                       uint32_t n_ticks, DwParams params,
-                                      float* scratch, float* obs, float* rew,
+                                      DwWork* work, float* obs, float* rew,
                                       uint8_t* done, dwc1_diagnostic* diags,
                                       uint32_t E) {
-  for (uint32_t e = blockIdx.x * blockDim.x + threadIdx.x; e < E;
-       e += gridDim.x * blockDim.x) {
+  const uint32_t stride = (blockDim.x * gridDim.x) / kLanesPerEnv;
+  for (uint32_t e = (blockIdx.x * blockDim.x + threadIdx.x) / kLanesPerEnv;
+       e < E; e += stride) {
     dwc1_diagnostic d = {};
     d.environment = e;
     dw_step_policy_env(&states[e], actions + (size_t)e * DW_J, n_ticks,
-                       &params, scratch + (size_t)e * DW_SCRATCH_FLOATS,
+                       &params, &work[e],
                        obs + (size_t)e * DWP_OBS, rew + e, done + e, &d);
-    diags[e] = d;
+    DW_LANE0 diags[e] = d;
   }
 }
 }  // namespace
@@ -59,7 +71,7 @@ struct dwc1_scene {
   DwParams params{};
   DwState* device_state = nullptr;      // [E], authoritative
   float* device_targets = nullptr;      // [E, J] targets or actions
-  float* device_scratch = nullptr;      // [E, DW_SCRATCH_FLOATS] K + response
+  DwWork* device_scratch = nullptr;     // [E] per-env cooperative workspaces
   float* device_obs = nullptr;          // [E, 58]
   float* device_reward = nullptr;       // [E]
   uint8_t* device_done = nullptr;       // [E]
@@ -98,7 +110,13 @@ int dwc1_create(uint32_t environments, const float* joint_offsets,
   try {
     auto s = new dwc1_scene;
     s->E = environments;
-    if (!dw_reference_weights(s->params.refweight)) { delete s; return DWC1_DYNAMICS; }
+    {
+      auto tmp = std::make_unique<DwWork>();   // host-side workspace
+      if (!dw_reference_weights(s->params.refweight, tmp.get())) {
+        delete s;
+        return DWC1_DYNAMICS;
+      }
+    }
     s->params.tolerance = DW_SOLVE_TOLERANCE;
     s->params.max_iterations = DW_MAX_ITERATIONS;
     s->initial.resize(environments);
@@ -110,7 +128,7 @@ int dwc1_create(uint32_t environments, const float* joint_offsets,
         || cudaMalloc(&s->device_state, sizeof(DwState) * environments) != cudaSuccess
         || cudaMalloc(&s->device_targets, sizeof(float) * environments * DW_J) != cudaSuccess
         || cudaMalloc(&s->device_scratch,
-                      sizeof(float) * (size_t)environments * DW_SCRATCH_FLOATS) != cudaSuccess
+                      sizeof(DwWork) * (size_t)environments) != cudaSuccess
         || cudaMalloc(&s->device_obs,
                       sizeof(float) * (size_t)environments * DWP_OBS) != cudaSuccess
         || cudaMalloc(&s->device_reward, sizeof(float) * environments) != cudaSuccess
@@ -145,7 +163,8 @@ int dwc1_step(dwc1_scene* s, const float* targets, uint32_t n_ticks,
   if (cudaMemcpy(s->device_targets, targets, sizeof(float) * s->E * DW_J,
                  cudaMemcpyHostToDevice) != cudaSuccess)
     return DWC1_NUMERIC;
-  const int blocks = (int)((s->E + kThreadsPerBlock - 1) / kThreadsPerBlock);
+  const size_t lanes_total = (size_t)s->E * kLanesPerEnv;
+  const int blocks = (int)((lanes_total + kThreadsPerBlock - 1) / kThreadsPerBlock);
   dw_step_kernel<<<blocks, kThreadsPerBlock>>>(
       s->device_state, s->device_targets, n_ticks, s->params,
       s->device_scratch, s->device_diag, s->E);
@@ -262,7 +281,8 @@ int dwc1_step_policy(dwc1_scene* s, const float* actions, uint32_t n_ticks,
   if (cudaMemcpy(s->device_targets, actions, sizeof(float) * s->E * DW_J,
                  cudaMemcpyHostToDevice) != cudaSuccess)
     return DWC1_NUMERIC;
-  const int blocks = (int)((s->E + kThreadsPerBlock - 1) / kThreadsPerBlock);
+  const size_t lanes_total = (size_t)s->E * kLanesPerEnv;
+  const int blocks = (int)((lanes_total + kThreadsPerBlock - 1) / kThreadsPerBlock);
   dw_step_policy_kernel<<<blocks, kThreadsPerBlock>>>(
       s->device_state, s->device_targets, n_ticks, s->params,
       s->device_scratch, s->device_obs, s->device_reward, s->device_done,
