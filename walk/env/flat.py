@@ -280,6 +280,7 @@ class FlatFloorDuckEnv(DuckEnvBatch):
                 "action": np.asarray(action).copy(),
                 "torque": np.asarray(torque).copy(),
                 "foot_x": state.foot_pos[:, :, 0].copy(),
+                "joint_q": state.q[:, 7:].copy(),
                 # same clock the policy observes in obs[:, 56:58]
                 "phase": self._phase0
                 + 2.0 * math.pi

@@ -17,9 +17,20 @@ State dicts (numpy arrays over E envs):
 """
 from __future__ import annotations
 
+import json as _json
+from pathlib import Path as _Path
+
 import numpy as np
 
 CONTROL_DT = 0.02
+
+# Phase-indexed reference gait (self-imitation): extracted from our own best
+# verified 44-step alternating cycle (u5212 actor at 0.20 m/s). The policy is
+# rewarded for joint poses near the reference AT ITS OWN CLOCK PHASE, which
+# teaches the stepping shape at every speed. Modest weight: a guide, not a rail.
+_REF = _json.loads((_Path(__file__).parent / "reference_gait.json").read_text())
+REF_GAIT = np.asarray(_REF["table"], dtype=np.float64)      # [BINS, 14]
+REF_BINS = int(_REF["bins"])
 
 # ---- weights (one-line rationale each) -----------------------------------
 W_TRACK = 1.0            # primary objective: match commanded forward speed.
@@ -57,6 +68,8 @@ W_SAME_FOOT = 2.0        # penalty when a qualified touchdown REPEATS the last
                          # foot. At 0.5 a repeat still netted +1.0 with the step
                          # bonus (u2400: symmetric gait, repeats persisted); at
                          # 2.0 a repeat nets -0.5 vs +2.0 for alternating.
+W_IMIT = 0.5             # imitation: exp(-msq(q - ref(phase))/IMIT_SIGMA_SQ).
+IMIT_SIGMA_SQ = 0.04     # ~0.2 rad rms tolerance before the bonus halves.
 W_PHASE = 0.5            # per foot whose stance matches the observed 1.25 Hz
                          # phase clock (left: sin>=0, right: sin<0); breaks the
                          # one-legged-limp optimum where alternation never fires.
@@ -173,6 +186,14 @@ def reward(prev_state: dict, state: dict, action: np.ndarray, command: np.ndarra
 
     # 7. foot-clearance bonus: swing foot whose whole sole clears >= 10 mm
     r += W_CLEARANCE * ((~contact) & (sole >= CLEARANCE_M)).sum(1)
+
+    # 8a. self-imitation: joint pose near the reference cycle at own phase
+    jq = state.get("joint_q")
+    if jq is not None and phase is not None:
+        bins = (np.mod(np.asarray(phase, np.float64) / (2.0 * np.pi), 1.0)
+                * REF_BINS).astype(int) % REF_BINS
+        err = np.mean(np.square(np.asarray(jq, np.float64) - REF_GAIT[bins]), axis=1)
+        r += W_IMIT * np.exp(-err / IMIT_SIGMA_SQ) * (np.abs(cmd) > 0)
 
     # 8b. phase-locked stance: while commanded, each foot is rewarded for
     # matching its half of the observed gait clock (left stance sin>=0).
