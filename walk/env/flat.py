@@ -42,7 +42,7 @@ import os as _os
 # evaluator's 30 mm minimum step) -> 10.0. Base term lets low speeds keep a
 # workable cadence without knife-edging step length.
 PHASE_HZ_BASE = float(_os.environ.get("DUCK_PHASE_HZ_BASE", "0.0"))
-PHASE_HZ_PER_MPS = float(_os.environ.get("DUCK_PHASE_HZ_PER_MPS", "10.0"))
+PHASE_HZ_PER_MPS = float(_os.environ.get("DUCK_PHASE_HZ_PER_MPS", "16.67"))  # sweep winner
 COMMANDS_MPS = (0.10, 0.15, 0.20)                  # per-episode forward commands
 HORIZON_STEPS = 400                                # 8 s at 0.02 s per step
 MIN_HEIGHT_FRACTION = 0.7                          # of the HOME root height
@@ -120,7 +120,12 @@ class FlatFloorDuckEnv(DuckEnvBatch):
             self._lane.restore(m)
             for e in np.flatnonzero(m):
                 rng = _episode_rng(self._seed, int(e), int(self._episode[e]) + 1)
-                self._command[e] = COMMANDS_MPS[rng.integers(len(COMMANDS_MPS))]
+                # oversample the hardest command (0.10: slow walking = longest
+                # balance demands; it fails at every clock without extra data)
+                draw = rng.random()
+                self._command[e] = (COMMANDS_MPS[0] if draw < 0.5
+                                    else COMMANDS_MPS[1] if draw < 0.75
+                                    else COMMANDS_MPS[2])
                 # random gait-phase offset: without it every episode starts in
                 # the LEFT clock window, training a left-leading bias
                 self._phase0[e] = 2.0 * math.pi * rng.random()
