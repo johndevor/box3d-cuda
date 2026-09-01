@@ -73,6 +73,29 @@ fall back to nvcc). The bake overwrites `gpu/image-manifest.json`; old
 snapshots can be pruned in the Daytona dashboard. Deleting
 `gpu/image-manifest.json` disables the fast path entirely.
 
+Cold pulls and `warm`: idle snapshots transition to `inactive`
+(SnapshotState) and the next from-snapshot create pays a slow
+`PULLING_SNAPSHOT` (it once exceeded the create timeout). Mitigations:
+from-snapshot creation uses a 600 s create timeout (vs 300 s from image),
+bake ends with a best-effort `snapshot.activate()` (recorded as
+`activated_state` in the manifest), and you can re-pin on demand before a
+run session:
+
+```sh
+doppler run --project hallway --config dev --only-secrets DAYTONA_API_KEY --no-fallback -- \
+  /Users/john/.cache/box3d-cuda-host-runtime-0.207.0/bin/python -B \
+  gpu/run_daytona.py warm
+```
+
+Orphan protection: if `Daytona.create` itself raises (e.g. timeout while
+the sandbox is still provisioning/pulling), the sandbox can exist
+server-side without the launcher ever holding a handle. On ANY create
+exception the launcher now lists sandboxes by its exact label, deletes
+whatever it finds, and verifies — recorded as `orphan_cleanup` in
+`manifest.json`. If that verification fails, exit code 4 with a loud
+message. Manual cleanup is always: delete sandboxes labeled
+`launcher=duck-grid-walk-gpu[-<suffix>]` in the Daytona dashboard.
+
 ## Budget policy (hard limits)
 
 - **One sandbox at a time.** Before creating, the launcher lists sandboxes
@@ -222,7 +245,12 @@ Verified against the pinned host runtime
   gpu_type are carried by the snapshot, confirmed by the `Snapshot` model's
   fields); `Daytona.snapshot` is a `SnapshotService` with
   `get(name) -> Snapshot`, `list(...)`, `delete(snapshot)`,
-  `create(CreateSnapshotParams, ...)`, `activate(...)`.
+  `create(CreateSnapshotParams, ...)`, and
+  `activate(snapshot_or_name) -> Snapshot` (re-pins an `inactive` snapshot;
+  `SnapshotState` values include `active`, `inactive`, `pulling`,
+  `snapshotting`, `error`, `removing`). `activate` takes no region
+  argument, so a single call suffices — bake calls it automatically and
+  the `warm` subcommand re-runs it on demand.
 - Typed errors: `daytona.DaytonaError` base, plus `DaytonaTimeoutError`,
   `DaytonaNotFoundError`, `DaytonaRateLimitError`, etc.
 - `GpuType` is a str enum: `RTX_5090 = "RTX-5090"`, `RTX_4090`, `H100`,

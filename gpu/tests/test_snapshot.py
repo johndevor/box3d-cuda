@@ -25,15 +25,24 @@ class SnapshotFakeProvider(FakeProvider):
     """FakeProvider plus the snapshot surface used by bake/use_snapshot."""
 
     def __init__(self, *args, snapshot_id="snap-id-1", snapshot_lookup_ok=True,
-                 from_snapshot_exc=None, **kwargs):
+                 from_snapshot_exc=None, activate_exc=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.snapshot_id = snapshot_id
         self.snapshot_lookup_ok = snapshot_lookup_ok
         self.from_snapshot_exc = from_snapshot_exc
+        self.activate_exc = activate_exc
         self.snapshots_created = []
         self.from_snapshot_calls = []
+        self.activated = []
+        self.create_timeouts = []
+        self.deleted_by_id = []
+
+    def create(self, spec, gpu_types, timeout_s):
+        self.create_timeouts.append(("image", timeout_s))
+        return super().create(spec, gpu_types, timeout_s)
 
     def create_from_snapshot(self, spec, snapshot_name, timeout_s):
+        self.create_timeouts.append(("snapshot", timeout_s))
         if self.from_snapshot_exc:
             raise self.from_snapshot_exc
         self.from_snapshot_calls.append(snapshot_name)
@@ -46,6 +55,32 @@ class SnapshotFakeProvider(FakeProvider):
         if self.snapshot_lookup_ok and name in self.snapshots_created:
             return self.snapshot_id
         return None
+
+    def activate_snapshot(self, name):
+        if self.activate_exc:
+            raise self.activate_exc
+        self.activated.append(name)
+        return "active"
+
+    def delete_by_id(self, sandbox_id):
+        self.deleted_by_id.append(sandbox_id)
+
+
+class OrphanFakeProvider(SnapshotFakeProvider):
+    """Simulates a create that fails AFTER the sandbox exists server-side:
+    the concurrency guard sees nothing, but post-failure listing finds the
+    orphan (labels were attached at create)."""
+
+    def __init__(self, *args, orphan_ids=("sb-orphan-1",), **kwargs):
+        super().__init__(*args, **kwargs)
+        self.orphan_ids = list(orphan_ids)
+        self.list_calls = 0
+
+    def list_launcher_sandbox_ids(self):
+        self.list_calls += 1
+        if self.list_calls == 1:
+            return []  # concurrency guard: clean before create
+        return list(self.orphan_ids)
 
 
 class SnapshotTestCase(unittest.TestCase):
@@ -85,8 +120,9 @@ class SnapshotTestCase(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k != "DAYTONA_API_KEY"}
         if with_key:
             env["DAYTONA_API_KEY"] = FAKE_KEY
-        return rd.main(argv + ["--runs-dir", str(self.runs)],
-                       provider_factory=lambda: provider,
+        if argv[0] != "warm":
+            argv = argv + ["--runs-dir", str(self.runs)]
+        return rd.main(argv, provider_factory=lambda: provider,
                        repo_root=self.repo, env=env, log=self.log)
 
     def image_manifest(self):
@@ -295,6 +331,25 @@ class TestRunWithSnapshot(SnapshotTestCase):
         self.assertEqual(code, rd.EXIT_SPOT_UNAVAILABLE)
         self.assertFalse(provider.deleted)  # nothing was created
 
+    def test_snapshot_create_uses_longer_timeout_than_image_create(self):
+        self.seed_image_manifest()
+        provider = SnapshotFakeProvider()
+        code = self.call_main(["run", "--spec", str(self.snap_spec_path())],
+                              provider)
+        self.assertEqual(code, 0)
+        kind, timeout = provider.create_timeouts[0]
+        self.assertEqual(kind, "snapshot")
+        self.assertEqual(timeout, rd.SNAPSHOT_CREATE_TIMEOUT_S)
+
+        provider2 = SnapshotFakeProvider()
+        code = self.call_main(
+            ["run", "--spec", str(self.snap_spec_path(use_snapshot=False))],
+            provider2)
+        self.assertEqual(code, 0)
+        kind, timeout = provider2.create_timeouts[0]
+        self.assertEqual(kind, "image")
+        self.assertEqual(timeout, rd.CREATE_TIMEOUT_S)
+
     def test_run_dry_run_reports_snapshot_plan_without_key(self):
         snap = self.seed_image_manifest()
 
@@ -310,6 +365,146 @@ class TestRunWithSnapshot(SnapshotTestCase):
         )
         self.assertEqual(code, 0)
         self.assertTrue(self.logged(f"create from snapshot {snap}"))
+
+
+class TestOrphanCleanup(SnapshotTestCase):
+    """A create that raises after the sandbox exists server-side must not
+    leave an orphan blocking the concurrency guard."""
+
+    def execute(self, provider, spec=None):
+        spec = spec or rd.parse_spec(self.base_raw_spec())
+        return rd.execute_run(
+            spec, self.repo, self.tmp / "rundir", provider,
+            rd.Redactor([FAKE_KEY]), rd.Deadline(),
+            log=self.log, sleep_fn=lambda s: None,
+        )
+
+    def direct_manifest(self):
+        return json.loads((self.tmp / "rundir" / "manifest.json").read_text())
+
+    def test_create_timeout_orphan_is_deleted_and_verified(self):
+        provider = OrphanFakeProvider(
+            create_exc=rd.LauncherError("create timed out in PULLING_SNAPSHOT"))
+        code = self.execute(provider)
+        self.assertEqual(code, rd.EXIT_ERROR)  # original error still surfaces
+        self.assertEqual(provider.deleted_by_id, ["sb-orphan-1"])
+        oc = self.direct_manifest()["orphan_cleanup"]
+        self.assertEqual(oc["ids"], ["sb-orphan-1"])
+        self.assertTrue(oc["verified_gone"])
+        self.assertTrue(self.logged("deleting orphan"))
+        self.assertTrue(self.logged("verified gone"))
+
+    def test_orphan_cleanup_unverified_forces_exit_4_and_loud_message(self):
+        provider = OrphanFakeProvider(
+            create_exc=rd.LauncherError("create timed out"),
+            gone_after_delete=False)
+        code = self.execute(provider)
+        self.assertEqual(code, rd.EXIT_DELETE_UNVERIFIED)
+        oc = self.direct_manifest()["orphan_cleanup"]
+        self.assertFalse(oc["verified_gone"])
+        self.assertTrue(self.logged("ORPHAN SANDBOX CLEANUP NOT VERIFIED"))
+        self.assertTrue(self.logged("launcher=duck-grid-walk-gpu"))
+
+    def test_spot_failure_with_no_orphan_keeps_exit_3(self):
+        provider = OrphanFakeProvider(
+            create_exc=rd.SpotUnavailableError("no spot capacity"),
+            orphan_ids=())
+        code = self.execute(provider)
+        self.assertEqual(code, rd.EXIT_SPOT_UNAVAILABLE)
+        self.assertEqual(provider.deleted_by_id, [])
+        oc = self.direct_manifest()["orphan_cleanup"]
+        self.assertEqual(oc["ids"], [])
+        self.assertTrue(oc["verified_gone"])
+
+    def test_orphan_cleanup_also_covers_from_snapshot_create(self):
+        provider = OrphanFakeProvider(
+            from_snapshot_exc=rd.LauncherError("timeout pulling snapshot"))
+        spec = rd.parse_spec(self.base_raw_spec(use_snapshot=True))
+        code = rd.execute_run(
+            spec, self.repo, self.tmp / "rundir", provider,
+            rd.Redactor([FAKE_KEY]), rd.Deadline(),
+            log=self.log, sleep_fn=lambda s: None,
+            snapshot_name="duck-gpu-prebuilt-x",
+        )
+        self.assertEqual(code, rd.EXIT_ERROR)
+        self.assertEqual(provider.deleted_by_id, ["sb-orphan-1"])
+
+    def test_delete_by_id_error_marks_unverified_not_crash(self):
+        class BadDelete(OrphanFakeProvider):
+            def delete_by_id(self, sandbox_id):
+                raise ConnectionError(f"api 500 {FAKE_KEY}")
+
+        provider = BadDelete(create_exc=rd.LauncherError("boom"),
+                             gone_after_delete=False)
+        code = self.execute(provider)
+        self.assertEqual(code, rd.EXIT_DELETE_UNVERIFIED)
+        oc = self.direct_manifest()["orphan_cleanup"]
+        self.assertFalse(oc["verified_gone"])
+        self.assertTrue(any("delete sb-orphan-1" in e for e in oc["errors"]))
+        self.assertNotIn(FAKE_KEY, json.dumps(oc))
+
+    def test_guard_message_suggests_label_cleanup(self):
+        provider = SnapshotFakeProvider(existing_ids=["sb-old"])
+        code = self.execute(provider)
+        self.assertEqual(code, rd.EXIT_ERROR)
+        self.assertTrue(self.logged("label launcher=duck-grid-walk-gpu"))
+        self.assertTrue(self.logged("Manual cleanup"))
+
+
+class TestSnapshotActivation(SnapshotTestCase):
+    def bake_spec_path(self):
+        return self.write_spec(self.base_raw_spec(name="bake-act"))
+
+    def test_bake_activates_snapshot_and_records_state(self):
+        provider = SnapshotFakeProvider()
+        code = self.call_main(["bake", "--spec", str(self.bake_spec_path())],
+                              provider)
+        self.assertEqual(code, 0)
+        self.assertEqual(provider.activated, provider.snapshots_created)
+        self.assertEqual(self.image_manifest()["activated_state"], "active")
+
+    def test_bake_activation_failure_is_not_fatal(self):
+        provider = SnapshotFakeProvider(
+            activate_exc=rd.LauncherError("activation 500"))
+        code = self.call_main(["bake", "--spec", str(self.bake_spec_path())],
+                              provider)
+        self.assertEqual(code, 0)  # bake still succeeds
+        im = self.image_manifest()
+        self.assertIsNone(im["activated_state"])
+        self.assertTrue(self.logged("activation failed"))
+        self.assertTrue(self.logged("warm"))
+
+    def test_warm_activates_manifest_snapshot(self):
+        snap = "duck-gpu-prebuilt-20260901-000000"
+        p = rd.image_manifest_path(self.repo)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"snapshot": snap}))
+        provider = SnapshotFakeProvider()
+        code = self.call_main(["warm"], provider)
+        self.assertEqual(code, 0)
+        self.assertEqual(provider.activated, [snap])
+        self.assertTrue(self.logged("state: active"))
+
+    def test_warm_without_manifest_errors(self):
+        provider = SnapshotFakeProvider()
+        code = self.call_main(["warm"], provider)
+        self.assertEqual(code, rd.EXIT_ERROR)
+        self.assertEqual(provider.activated, [])
+        self.assertTrue(self.logged("run `bake` first"))
+
+    def test_warm_without_key_refuses_before_provider(self):
+        p = rd.image_manifest_path(self.repo)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"snapshot": "snap-x"}))
+
+        def forbidden():
+            raise AssertionError("provider factory called without key")
+
+        env = {k: v for k, v in os.environ.items() if k != "DAYTONA_API_KEY"}
+        code = rd.main(["warm"], provider_factory=forbidden,
+                       repo_root=self.repo, env=env, log=self.log)
+        self.assertEqual(code, rd.EXIT_ERROR)
+        self.assertTrue(self.logged("doppler run"))
 
 
 if __name__ == "__main__":

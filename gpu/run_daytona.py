@@ -115,6 +115,13 @@ MAX_POLL_FAILURES = 5
 JOB_TIMEOUT_EXIT_CODE = 124  # detached job exceeded its timeout_s
 DETACHED_SESSION_ID = "duck-launcher-jobs"
 
+# Sandbox creation timeouts. The first pull of a baked snapshot onto a
+# runner is cold (PULLING_SNAPSHOT can exceed 300 s), so from-snapshot
+# creation gets a longer budget; `warm` / bake-time snapshot activation
+# keeps subsequent pulls fast.
+CREATE_TIMEOUT_S = 300
+SNAPSHOT_CREATE_TIMEOUT_S = 600
+
 
 # --------------------------------------------------------------------------
 # Errors
@@ -522,6 +529,28 @@ class DaytonaProvider:
     def delete(self, handle):
         self._client.delete(handle.raw, wait=True)
 
+    def delete_by_id(self, sandbox_id):
+        """Delete a sandbox we only know by id (orphan cleanup after a
+        failed create). Already-gone is success."""
+        d = self._daytona
+        try:
+            sb = self._client.get(sandbox_id)
+            self._client.delete(sb, wait=True)
+        except d.DaytonaNotFoundError:
+            return
+        except d.DaytonaError as e:
+            raise LauncherError(f"orphan delete failed for {sandbox_id}: {e}") from e
+
+    def activate_snapshot(self, name):
+        """Activate (pin) a snapshot so sandbox pulls from it are fast.
+        Returns the snapshot state string."""
+        d = self._daytona
+        try:
+            snap = self._client.snapshot.activate(name)
+        except d.DaytonaError as e:
+            raise LauncherError(f"snapshot activation failed: {e}") from e
+        return str(getattr(snap, "state", "unknown"))
+
     def sandbox_gone(self, sandbox_id):
         for b in self._list_labeled():
             if b.id == sandbox_id:
@@ -599,6 +628,44 @@ def _collect_job_artifacts(provider, handle, job, run_dir, redactor):
             "sha256": hashlib.sha256(data).hexdigest(),
         }
     return arts
+
+
+def _cleanup_orphans(provider, redactor, log, sleep_fn=time.sleep):
+    """After a failed create, the sandbox may still exist server-side (e.g.
+    Daytona.create timed out while the sandbox was stuck PULLING_SNAPSHOT).
+    Labels are attached at create, so list by our exact label, delete
+    anything found, and verify. Never raises — returns a receipt dict."""
+    receipt = {"ids": [], "verified_gone": None, "errors": []}
+    try:
+        ids = provider.list_launcher_sandbox_ids()
+    except Exception as e:  # noqa: BLE001
+        receipt["errors"].append(f"orphan listing failed: {redactor.redact(str(e))}")
+        receipt["verified_gone"] = False
+        return receipt
+    receipt["ids"] = list(ids)
+    if not ids:
+        receipt["verified_gone"] = True
+        return receipt
+    all_gone = True
+    for sid in ids:
+        log(f"[launcher] create failed but left sandbox {sid} behind; deleting orphan")
+        try:
+            provider.delete_by_id(sid)
+        except Exception as e:  # noqa: BLE001 - still verify below
+            receipt["errors"].append(f"delete {sid}: {redactor.redact(str(e))}")
+        gone = False
+        try:
+            for _ in range(3):
+                gone = bool(provider.sandbox_gone(sid))
+                if gone:
+                    break
+                sleep_fn(2)
+        except Exception as e:  # noqa: BLE001
+            receipt["errors"].append(f"verify {sid}: {redactor.redact(str(e))}")
+            gone = False
+        all_gone = all_gone and gone
+    receipt["verified_gone"] = all_gone
+    return receipt
 
 
 def _run_job_detached(provider, handle, job, command, deadline, redactor,
@@ -689,22 +756,40 @@ def execute_run(spec, repo_root, run_dir, provider, redactor, deadline,
     collected_jobs = set()  # jobs whose artifacts were already downloaded
     try:
         deadline.check("sandbox creation")
+        label_value = dict(label or LAUNCHER_LABEL)["launcher"]
         existing = provider.list_launcher_sandbox_ids()
         if existing:
             raise ConcurrencyError(
-                f"another launcher sandbox already exists ({existing}); "
-                "one sandbox at a time — delete it first."
+                f"another launcher sandbox already exists ({existing}) under "
+                f"label launcher={label_value}; one sandbox at a time. "
+                f"Manual cleanup: delete sandboxes with label "
+                f"launcher={label_value} in the Daytona dashboard (or via the "
+                f"SDK: [d.delete(s) for s in "
+                f"Daytona().list(ListSandboxesQuery(labels="
+                f"{{'launcher': '{label_value}'}}))])."
             )
-        if snapshot_name:
-            log(f"[launcher] creating sandbox from snapshot {snapshot_name} "
-                f"(spot={spec.resources.spot}, ttl={spec.resources.ttl_minutes}m)")
-            handle = provider.create_from_snapshot(
-                spec, snapshot_name, timeout_s=deadline.clip(300))
-        else:
-            log(f"[launcher] creating sandbox (gpu_types={gpu_types}, "
-                f"image={spec.resources.image}, spot={spec.resources.spot}, "
-                f"ttl={spec.resources.ttl_minutes}m)")
-            handle = provider.create(spec, gpu_types, timeout_s=deadline.clip(300))
+        try:
+            if snapshot_name:
+                log(f"[launcher] creating sandbox from snapshot {snapshot_name} "
+                    f"(spot={spec.resources.spot}, ttl={spec.resources.ttl_minutes}m, "
+                    f"create timeout {SNAPSHOT_CREATE_TIMEOUT_S}s for cold pulls)")
+                handle = provider.create_from_snapshot(
+                    spec, snapshot_name,
+                    timeout_s=deadline.clip(SNAPSHOT_CREATE_TIMEOUT_S))
+            else:
+                log(f"[launcher] creating sandbox (gpu_types={gpu_types}, "
+                    f"image={spec.resources.image}, spot={spec.resources.spot}, "
+                    f"ttl={spec.resources.ttl_minutes}m)")
+                handle = provider.create(
+                    spec, gpu_types, timeout_s=deadline.clip(CREATE_TIMEOUT_S))
+        except Exception:
+            # The create call failed BEFORE we got a handle, but the sandbox
+            # may exist server-side (create timeout while provisioning left
+            # an orphan that then blocks the concurrency guard). Hunt it
+            # down by label, delete, verify — then re-raise the original.
+            manifest["orphan_cleanup"] = _cleanup_orphans(
+                provider, redactor, log, sleep_fn=sleep_fn)
+            raise
         manifest["sandbox_id"] = handle.sandbox_id
         log(f"[launcher] sandbox created: {handle.sandbox_id}")
 
@@ -825,6 +910,19 @@ def execute_run(spec, repo_root, run_dir, provider, redactor, deadline,
                 exit_code = EXIT_DELETE_UNVERIFIED
             else:
                 log(f"[launcher] sandbox {handle.sandbox_id} deleted and verified gone")
+        orphan = manifest.get("orphan_cleanup")
+        if orphan is not None and not orphan.get("verified_gone"):
+            lv = dict(label or LAUNCHER_LABEL)["launcher"]
+            log("=" * 70)
+            log(f"[launcher] !!! ORPHAN SANDBOX CLEANUP NOT VERIFIED: {orphan['ids']}")
+            log("[launcher] !!! A failed create may have left a sandbox running")
+            log(f"[launcher] !!! (and BILLING). Delete sandboxes labeled "
+                f"launcher={lv} in the Daytona dashboard NOW.")
+            log("=" * 70)
+            exit_code = EXIT_DELETE_UNVERIFIED
+        elif orphan is not None and orphan.get("ids"):
+            log(f"[launcher] orphan sandbox(es) {orphan['ids']} from failed "
+                "create deleted and verified gone")
         manifest["deletion"] = receipt
         manifest["exit_code"] = exit_code
         _write_json(run_dir / "deletion_receipt.json", receipt, redactor)
@@ -856,6 +954,17 @@ def make_bake_hook(spec, provider, redactor, deadline, manifest_path,
         source_sha = None
         for sha_file in sorted(Path(run_dir).glob("artifacts/*/prebuilt-sha.txt")):
             source_sha = sha_file.read_text().strip() or None
+        # Best-effort activation: pins the snapshot so later pulls are fast
+        # (idle snapshots go 'inactive' and the next create pays a cold
+        # PULLING_SNAPSHOT). Failure is not fatal — `warm` can redo it.
+        try:
+            activated_state = provider.activate_snapshot(snapshot_name)
+            log(f"[bake] snapshot activated (state: {activated_state})")
+        except Exception as e:  # noqa: BLE001
+            activated_state = None
+            log(f"[bake] warning: snapshot activation failed "
+                f"({redactor.redact(str(e))}); run the `warm` subcommand "
+                "before a run session if the first pull is slow")
         image_manifest = {
             "snapshot": snapshot_name,
             "snapshot_id": snapshot_id,
@@ -864,6 +973,7 @@ def make_bake_hook(spec, provider, redactor, deadline, manifest_path,
             "base_image": spec.resources.image,
             "bake_spec": spec.name,
             "prebuilt_dir": REMOTE_PREBUILT_DIR,
+            "activated_state": activated_state,
             "baked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         _write_json(Path(manifest_path), image_manifest, redactor)
@@ -944,6 +1054,14 @@ def _build_parser():
             p.add_argument("--no-snapshot", action="store_true",
                            help="ignore gpu/image-manifest.json and provision from "
                                 "the base image even if the spec sets use_snapshot")
+    sub.add_parser(
+        "warm",
+        help="activate (pin) the baked snapshot from gpu/image-manifest.json "
+             "so the next from-snapshot create pulls fast; no sandbox is "
+             "created",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Documented invocation:\n  " + DOPPLER_INVOCATION,
+    )
     return ap
 
 
@@ -951,6 +1069,26 @@ def main(argv=None, provider_factory=None, repo_root=None, env=None, log=print):
     args = _build_parser().parse_args(argv)
     env = os.environ if env is None else env
     repo_root = Path(repo_root or Path(__file__).resolve().parent.parent)
+
+    if args.cmd == "warm":
+        im = load_image_manifest(image_manifest_path(repo_root))
+        if not im:
+            log(f"[warm] no baked snapshot recorded in "
+                f"{image_manifest_path(repo_root)} — run `bake` first")
+            return EXIT_ERROR
+        if not env.get("DAYTONA_API_KEY"):
+            log("[warm] DAYTONA_API_KEY is not set. Run via doppler:")
+            log("  " + DOPPLER_INVOCATION)
+            return EXIT_ERROR
+        redactor = Redactor.from_env(env)
+        try:
+            provider = provider_factory() if provider_factory else DaytonaProvider()
+            state = provider.activate_snapshot(im["snapshot"])
+        except LauncherError as e:
+            log(f"[warm] {redactor.redact(str(e))}")
+            return EXIT_ERROR
+        log(f"[warm] snapshot {im['snapshot']} activated (state: {state})")
+        return EXIT_OK
 
     try:
         spec = load_spec(args.spec)
