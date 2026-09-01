@@ -67,17 +67,35 @@ class FlatFloorDuckEnv(DuckEnvBatch):
 
     def __init__(self, environments: int = 16, seed: int = 0,
                  perturbation_rad: float = 0.0,
-                 library_path=None, lane_factory=None):
+                 library_path=None, lane_factory=None,
+                 randomization: dict | None = None):
         if not 0.0 <= float(perturbation_rad) <= MAX_PERTURBATION_RAD:
             raise ValueError(f"perturbation_rad must be in [0, {MAX_PERTURBATION_RAD}]")
         self.E = int(environments)
         self._perturbation = float(perturbation_rad)
         self._seed = int(seed)
         self._library_path = library_path
+        # Domain randomization per walk/env/cuda_lane.py's normative spec:
+        # per-episode mass/friction/kp/damping scales + command latency,
+        # applied INSIDE the lane physics; requires a lane with
+        # set_randomization (the duck_cuda lanes; the CPU idv1 lane cannot).
+        rz = dict(randomization or {})
+        self._rz = {k: float(rz.pop(k, 0.0)) for k in
+                    ("r_mass", "r_friction", "r_kp", "r_damping")}
+        self._rz_latency = int(rz.pop("max_latency_steps", 0))
+        if rz:
+            raise ValueError(f"unknown randomization keys: {sorted(rz)}")
+        self._rz_on = any(v > 0 for v in self._rz.values()) or self._rz_latency > 0
         self._lane_factory = lane_factory or (
             lambda E, offsets: native_lane.NativeDuckLane(
                 E, joint_offsets=offsets, library_path=self._library_path))
         self._build_lane()
+        if self._rz_on and not hasattr(self._lane, "set_randomization"):
+            raise ValueError("randomization requires a lane with set_randomization")
+        self._rand_scales = np.ones((self.E, 4))
+        self._latency = np.zeros(self.E, np.int64)
+        self._ring_P = self._rz_latency + 1
+        self._ring = np.zeros((self.E, self._ring_P, ACT))
         self._tracker = reward_mod.GaitTracker(self.E)
         self._episode = np.zeros(self.E, np.int64)   # per-env episode counter
         self._command = np.zeros(self.E)
@@ -129,12 +147,25 @@ class FlatFloorDuckEnv(DuckEnvBatch):
                 # random gait-phase offset: without it every episode starts in
                 # the LEFT clock window, training a left-leading bias
                 self._phase0[e] = 2.0 * math.pi * rng.random()
+                if self._rz_on:
+                    # draws 3-6: scales in fixed order; draw 7: latency
+                    for k, key in enumerate(("r_mass", "r_friction",
+                                             "r_kp", "r_damping")):
+                        self._rand_scales[e, k] = \
+                            1.0 + self._rz[key] * (2.0 * rng.random() - 1.0)
+                    self._latency[e] = int(rng.integers(self._rz_latency + 1))
                 self._episode[e] += 1
             self._t[m] = 0
             self._done[m] = False
             self._prev_action[m] = 0.0
             self._targets[m] = HOME
             self._effective = self._clip_limits(self._targets)
+            if self._rz_on:
+                self._lane.set_randomization(
+                    m, self._rand_scales[:, 0], self._rand_scales[:, 1],
+                    self._rand_scales[:, 2], self._rand_scales[:, 3],
+                    self._latency)
+                self._ring[m] = self._effective[m][:, None, :]
             self._tracker.reset(m)
         state = self._lane.read()
         self._prev = self._reward_state(state, self._prev_action,
@@ -167,6 +198,15 @@ class FlatFloorDuckEnv(DuckEnvBatch):
         # done envs hold their previous targets (no auto-reset; frozen).
         self._targets = np.where(live[:, None], new_targets, self._targets)
         self._effective = self._clip_limits(self._targets)
+        if self._rz_on:
+            # latency ring: write eff[t], physics consumes eff[t - latency]
+            rows = np.arange(self.E)
+            t = self._t
+            self._ring[rows, t % self._ring_P] = self._effective
+            idx = (t + self._ring_P - self._latency) % self._ring_P
+            self._applied = self._ring[rows, idx]
+        else:
+            self._applied = self._effective
 
         iterations = np.zeros(self.E, np.int32)
         # per-tick foot contact: 2 ms flickers are invisible at the 20 ms
@@ -175,7 +215,7 @@ class FlatFloorDuckEnv(DuckEnvBatch):
         # Lanes with a native tick_block (CUDA) count contact ticks on device:
         # one launch + one readback per policy step instead of ten.
         if on_tick is None and hasattr(self._lane, "tick_block"):
-            rc, diagnostics = self._lane.tick_block(self._effective, TICKS_PER_STEP)
+            rc, diagnostics = self._lane.tick_block(self._applied, TICKS_PER_STEP)
             bad = [d for d in diagnostics if d["native_status"] != 0]
             if rc or bad:
                 self._raise_fault(rc, diagnostics, bad, 0, a)
@@ -185,7 +225,7 @@ class FlatFloorDuckEnv(DuckEnvBatch):
         else:
             contact_ticks = np.zeros((self.E, 2), np.int32)
             for tick in range(TICKS_PER_STEP):
-                rc, diagnostics = self._lane.tick(self._effective)
+                rc, diagnostics = self._lane.tick(self._applied)
                 bad = [d for d in diagnostics if d["native_status"] != 0]
                 if rc or bad:
                     self._raise_fault(rc, diagnostics, bad, tick, a)
@@ -222,7 +262,8 @@ class FlatFloorDuckEnv(DuckEnvBatch):
     # ------------------------------------------------------------------
     def _torque(self, state: native_lane.LaneState) -> np.ndarray:
         """Boundary PD torque estimate (same law the lane applies per tick)."""
-        raw = self._lane.kp * (self._effective - state.q[:, 7:]) \
+        raw = (self._lane.kp * self._rand_scales[:, 2:3]) \
+            * (self._applied - state.q[:, 7:]) \
             - self._lane.kv * state.v[:, 6:]
         return np.clip(raw, -self._lane.effort_cap, self._lane.effort_cap)
 
