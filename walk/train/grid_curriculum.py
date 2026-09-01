@@ -155,6 +155,19 @@ def _run_judge(cmd: list[str]) -> int:
     return subprocess.run(cmd).returncode
 
 
+def _judge_all_solver_fault(judge_json: Path) -> bool:
+    """True iff every judged episode was rejected by a solver fault.
+
+    A policy cannot learn around a solver bug that fires in ordinary
+    stances, so a 100%-fault verdict means the lane is blocked on an
+    engine fix, not on training."""
+    try:
+        episodes = json.loads(judge_json.read_text()).get("episodes", {})
+    except (OSError, ValueError):
+        return False
+    return bool(episodes) and all(e.get("solver_fault") for e in episodes.values())
+
+
 def run_stage(stage: str, stage_dir: Path, start_ckpt: Path, args,
               log_path: Path, run_trainer=_run_trainer_chunk,
               run_judge=_run_judge, clock=time.monotonic,
@@ -178,6 +191,7 @@ def run_stage(stage: str, stage_dir: Path, start_ckpt: Path, args,
     # (e.g. after flat training, or when re-entering a finished stage) must
     # advance without burning a training chunk.
     chunk = 0
+    fault_walls = 0          # consecutive judges where EVERY episode faulted
     while True:
         update = read_update(latest)
         snapshot = stage_dir / f"judge-u{update:06d}.pt"
@@ -195,6 +209,18 @@ def run_stage(stage: str, stage_dir: Path, start_ckpt: Path, args,
                                   "accepted": str(stage_dir / "accepted.pt")})
             return True
         snapshot.unlink(missing_ok=True)   # keep only passing snapshots
+        if _judge_all_solver_fault(judge_out / "grid_acceptance.json"):
+            fault_walls += 1
+            if fault_walls >= args.fault_wall_judges:
+                _log_event(log_path, {
+                    "event": "stage_halt_solver_faults", "stage": stage,
+                    "update": update, "consecutive": fault_walls})
+                raise RuntimeError(
+                    f"stage {stage}: {fault_walls} consecutive judges with "
+                    "100% solver-fault rejections — engine fix required; "
+                    "halting instead of training against a blocked lane")
+        else:
+            fault_walls = 0
         if clock() >= deadline:
             _log_event(log_path, {"event": "stage_timeout", "stage": stage,
                                   "update": update,
@@ -286,6 +312,9 @@ def build_argparser() -> argparse.ArgumentParser:
                    help="wall-clock budget PER STAGE")
     p.add_argument("--torch-threads", type=int, default=2)
     p.add_argument("--judge-jobs", type=int, default=4)
+    p.add_argument("--fault-wall-judges", type=int, default=3,
+                   help="halt the stage after this many consecutive judges "
+                        "whose episodes are ALL solver-fault rejections")
     p.add_argument("--impulse-tolerance", type=float, default=None,
                    help="grid-lane civ1 tolerance override (default: lane "
                         "defaults, 1e-8 static)")
