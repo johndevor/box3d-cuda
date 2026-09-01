@@ -13,7 +13,7 @@ Gates:
      header + generator are untouched by the humanoid work (the duck
      generator's own drift test is authoritative; here we double-lock that
      generate_model.py regenerates the duck header byte-identically);
- (b) home-hold, 480 ticks (2 s at 1/240): |root - CPU| < 2 mm, tilt
+ (b) home-hold, 1000 ticks (2 s at 0.002): |root - CPU| < 2 mm, tilt
      difference < 1 deg, both feet in contact on both lanes, fp32 momentum
      residual within the kernel's own DW_MOMENTUM_TOLERANCE (2e-4);
  (c) effort caps never bind on the oracle trajectory (the kernel now
@@ -95,13 +95,13 @@ class HumanoidSerialParityTests(unittest.TestCase):
                          "duck duck_model.h must stay byte-identical")
 
     # -- gate (b)+(c): home-hold parity ------------------------------------
-    def test_home_hold_480_ticks_parity(self):
+    def test_home_hold_1000_ticks_parity(self):
         cpu = hn.NativeHumanoidLane(1)
         gpu = hc.CudaHumanoidLane(1)
         try:
             home = cpu.home_joint_q[None, :]
             worst_torque = 0.0
-            for t in range(480):
+            for t in range(1000):
                 pre = cpu.read()
                 torque = np.clip(
                     cpu.kp * (home - pre.q[:, 7:]) - cpu.kv * pre.v[:, 6:],
@@ -160,7 +160,7 @@ class HumanoidSerialParityTests(unittest.TestCase):
                           np.zeros(3 * h0.J, np.float32))
             home = np.zeros((1, h0.J))
             worst_torque = 0.0
-            for t in range(40):                # 0.167 s: still > 0.17 m up
+            for t in range(40):        # 0.08 s: drop 0.064 m of the 0.5 m
                 pre = np.array(cpu.read().q[0])
                 prev = np.array(cpu.read().v[0])
                 torque = np.abs(h0.KP * (0.0 - pre[7:]) - h0.KV * prev[6:])

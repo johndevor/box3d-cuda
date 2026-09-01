@@ -21,12 +21,12 @@
 #define DW_MAXPOINTS 4     // manifold points per pair
 #define DW_MAXROWS 60      // 3*J + 3*DW_PAIRS*DW_MAXPOINTS
 #define DW_FOOT_VERTS 8    // exact box corners (single-OBB feet)
-#define DW_DT 0.00416666688f  // authored 1/120 x substeps 2 -> 1/240
+#define DW_DT 0.00200000009f  // duck-stack tick; 10 per 0.02 s step
 #define DW_GRAVITY_Z -20.0f  // authored -20 (y-up) -> z-up
-// Duck flat.py gait-clock pins: compile-only for the (invalid-for-
-// humanoid) policy layer; Phase 2 replaces them.
+// Humanoid gait clock (walk/env/humanoid_flat.py, sweepable via
+// HUMANOID_PHASE_HZ_* env vars at generation time, duck mechanism):
 #define DW_PHASE_HZ_BASE 0.0
-#define DW_PHASE_HZ_PER_MPS 16.67
+#define DW_PHASE_HZ_PER_MPS 3.33
 #define DW_ARMATURE 0.0f       // not authored for H0
 #define DW_DAMPING 0.0f // H0 damping is kv, not passive
 #define DW_FRICTION_LOSS 0.0f  // not authored for H0
@@ -62,25 +62,27 @@ DW_MODEL_CONST float DW_INITIAL_QPOS[DW_Q] = {0.0f,-0.0f,1.14999998f,0.707106769
 DW_MODEL_CONST float DW_INITIAL_VEL[DW_N] = {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f};
 DW_MODEL_CONST float DW_HOME_TARGETS[DW_J] = {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f};
 DW_MODEL_CONST double DW_HOME_TARGETS_F64[DW_J] = {0,0,0,0,0,0,0,0,0,0,0,0};
-// Duck reward.py pins: compile-only (policy layer invalid, above).
+// HUMANOID reward v1 pins (walk/env/humanoid_reward.py, duck v12
+// shape, NO imitation term -- empty hook, W_IMIT 0): generated so
+// any python-side change fails the drift test until regenerated.
 #define DW_RW_W_TRACK 1.0
-#define DW_RW_TRACK_SIGMA_SQ 0.01
-#define DW_RW_TRACK_EMA_S 0.4
+#define DW_RW_TRACK_SIGMA_SQ 0.25
+#define DW_RW_TRACK_EMA_S 0.2
 #define DW_RW_W_ALIVE 0.5
 #define DW_RW_W_LATERAL 0.5
 #define DW_RW_W_ACTION_RATE 0.01
-#define DW_RW_W_TORQUE 0.0002
+#define DW_RW_W_TORQUE 2e-07
 #define DW_RW_W_AIR_TIME 1.5
-#define DW_RW_AIR_TIME_MIN 0.08
-#define DW_RW_AIR_TIME_MAX 0.4
-#define DW_RW_PLACEMENT_MIN_M 0.03
+#define DW_RW_AIR_TIME_MIN 0.1
+#define DW_RW_AIR_TIME_MAX 0.5
+#define DW_RW_PLACEMENT_MIN_M 0.15
 #define DW_RW_OPP_SUPPORT_FRAC 0.9
 #define DW_RW_W_CHATTER 1.0
 #define DW_RW_CHATTER_MAX_S 0.06
 #define DW_RW_W_FLICKER 2.5
-#define DW_RW_STANCE_MIN_S 0.06
+#define DW_RW_STANCE_MIN_S 0.12
 #define DW_RW_W_CLEARANCE 0.1
-#define DW_RW_CLEARANCE_M 0.01
+#define DW_RW_CLEARANCE_M 0.03
 #define DW_RW_W_DOUBLE_SUPPORT 0.5
 #define DW_RW_DOUBLE_SUPPORT_GRACE 0.25
 #define DW_RW_W_ALTERNATE 0.5
@@ -88,9 +90,28 @@ DW_MODEL_CONST double DW_HOME_TARGETS_F64[DW_J] = {0,0,0,0,0,0,0,0,0,0,0,0};
 #define DW_RW_W_PHASE 0.5
 #define DW_RW_TICKS_FULL 10u
 #define DW_REF_BINS 64
-#define DW_IMIT_W 0.5
+#define DW_IMIT_W 0.0
 #define DW_IMIT_SIGMA_SQ 0.04
-// ALL-ZERO placeholder: no humanoid reference gait exists (Phase 2).
+// HUMANOID env contract pins (walk/env/humanoid_flat.py). The
+// kernel's duck policy layer does NOT consume these yet (its
+// DWP_OBS/offsets/action macros are duck-hardcoded -- the pending
+// kernel edit, FEASIBILITY.md section 2); they pin the env<->header
+// contract for that edit. Obs layout (52 = 3*J + 16):
+//   [0:12] q-HOME  [12:24] 0.05*qdot  [24:36] prev action
+//   [36:39] gravity body (-R[2])  [39:42] R^T omega  [42:45] R^T v
+//   [45] command  [46:48] zeros  [48:50] contacts  [50:52] phase
+#define DW_ENV_OBS 52
+#define DW_ENV_ACT 12
+#define DW_ENV_TICKS_PER_STEP 10u
+#define DW_ENV_CONTROL_DT 0.02
+#define DW_ENV_ACTION_SCALE 0.5
+#define DW_ENV_MAX_TARGET_INCREMENT 0.16
+#define DW_ENV_QDOT_OBS_SCALE 0.05
+#define DW_ENV_HORIZON_STEPS 400u
+#define DW_ENV_MIN_HEIGHT_FRACTION 0.7
+#define DW_ENV_MAX_TILT_RAD 0.7853981633974483
+DW_MODEL_CONST double DW_ENV_COMMANDS_MPS[3] = {0.5,0.75,1.0};
+// ALL-ZERO placeholder: no humanoid reference gait exists (empty 8a hook).
 DW_MODEL_CONST double DW_REF_GAIT[DW_REF_BINS][DW_J] = {{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0},{0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0}};
 DW_MODEL_CONST unsigned DW_PAIR_BODY_A[DW_PAIRS] = {6u,9u};
 DW_MODEL_CONST unsigned DW_PAIR_BODY_B[DW_PAIRS] = {0u,0u};

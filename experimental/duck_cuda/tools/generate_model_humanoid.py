@@ -13,14 +13,16 @@ walk/env/humanoid_cuda_lane.py) passes -Ihumanoid/include AHEAD of
 -Iexperimental/duck_cuda/include so this header shadows the duck's without
 touching any kernel source. The duck build never sees humanoid/include.
 
-PHYSICS-ONLY HEADER. The kernel's device policy layer (dw_policy_observe /
-dw_policy_reward / dw_step_policy_env) compiles against this header but is
-NOT valid for the humanoid: its 58-wide observation layout hardcodes the
-duck's 14-joint offsets, DW_REF_GAIT below is an all-zero placeholder (no
-humanoid reference gait exists), and the flat.py-derived termination and
-phase-clock constants are the duck's. Phase 1 uses only dwc1_create /
-dwc1_step / dwc1_read / dwc1_reset / dwc1_set_state / dwc1_query, which
-never touch the policy layer (see humanoid/FEASIBILITY.md sections 1.4, 2).
+PHYSICS + PINNED POLICY CONSTANTS. The physics tables drive the working
+dwc1 physics path. Phase 2 additionally pins the HUMANOID reward v1
+(walk/env/humanoid_reward.py) and env contract (walk/env/humanoid_flat.py)
+constants into DW_RW_* / DW_ENV_* / DW_PHASE_HZ_* so python-side changes
+fail the drift test until regenerated. The kernel's device policy layer
+(dw_policy_observe / dw_step_policy_env) still hardcodes the DUCK's 58-wide
+obs offsets and action constants, so dwc1_step_policy/dwc1_observe remain
+INVALID for the humanoid until the enumerated kernel edit lands
+(humanoid/FEASIBILITY.md section 2); DW_REF_GAIT stays an all-zero
+placeholder (no humanoid reference gait exists -- empty imitation hook).
 
 Effort caps: the kernel consumes the per-joint DW_EFFORT_CAP_TABLE
 (authored H0 tiers 180/140/70, world/crates/sim/src/humanoid.rs:778-784);
@@ -65,8 +67,8 @@ def load_lowering():
 
 
 def emit(h0) -> str:
-    from walk.env import flat  # noqa: PLC0415  (compile-only policy pins)
-    from walk.env import reward as reward_mod  # noqa: PLC0415
+    from walk.env import humanoid_flat as env_mod  # noqa: PLC0415
+    from walk.env import humanoid_reward as reward_mod  # noqa: PLC0415
 
     J, B = h0.J, h0.B
     assert (J, B) == (12, 14)
@@ -104,12 +106,12 @@ def emit(h0) -> str:
         "#define DW_MAXPOINTS 4     // manifold points per pair",
         f"#define DW_MAXROWS {maxrows}      // 3*J + 3*DW_PAIRS*DW_MAXPOINTS",
         "#define DW_FOOT_VERTS 8    // exact box corners (single-OBB feet)",
-        f"#define DW_DT {f32(h0.SIM_DT)}  // authored 1/120 x substeps 2 -> 1/240",
+        f"#define DW_DT {f32(h0.SIM_DT)}  // duck-stack tick; 10 per 0.02 s step",
         f"#define DW_GRAVITY_Z {f32(-h0.GRAVITY)}  // authored -20 (y-up) -> z-up",
-        "// Duck flat.py gait-clock pins: compile-only for the (invalid-for-",
-        "// humanoid) policy layer; Phase 2 replaces them.",
-        f"#define DW_PHASE_HZ_BASE {float(flat.PHASE_HZ_BASE)!r}",
-        f"#define DW_PHASE_HZ_PER_MPS {float(flat.PHASE_HZ_PER_MPS)!r}",
+        "// Humanoid gait clock (walk/env/humanoid_flat.py, sweepable via",
+        "// HUMANOID_PHASE_HZ_* env vars at generation time, duck mechanism):",
+        f"#define DW_PHASE_HZ_BASE {float(env_mod.PHASE_HZ_BASE)!r}",
+        f"#define DW_PHASE_HZ_PER_MPS {float(env_mod.PHASE_HZ_PER_MPS)!r}",
         f"#define DW_ARMATURE {f32(h0.ARMATURE)}       // not authored for H0",
         f"#define DW_DAMPING {f32(h0.PASSIVE_DAMPING)} // H0 damping is kv, not passive",
         f"#define DW_FRICTION_LOSS {f32(h0.FRICTION_LOSS)}  // not authored for H0",
@@ -158,7 +160,9 @@ def emit(h0) -> str:
         + row(h0.HOME_TARGETS) + ";",
         "DW_MODEL_CONST double DW_HOME_TARGETS_F64[DW_J] = {"
         + ",".join(f"{float(x):.17g}" for x in h0.HOME_TARGETS) + "};",
-        "// Duck reward.py pins: compile-only (policy layer invalid, above).",
+        "// HUMANOID reward v1 pins (walk/env/humanoid_reward.py, duck v12",
+        "// shape, NO imitation term -- empty hook, W_IMIT 0): generated so",
+        "// any python-side change fails the drift test until regenerated.",
         *[f"#define DW_RW_{name} {float(getattr(reward_mod, name))!r}"
           for name in [
               "W_TRACK", "TRACK_SIGMA_SQ", "TRACK_EMA_S", "W_ALIVE",
@@ -172,7 +176,30 @@ def emit(h0) -> str:
         f"#define DW_REF_BINS {int(reward_mod.REF_BINS)}",
         f"#define DW_IMIT_W {float(reward_mod.W_IMIT)!r}",
         f"#define DW_IMIT_SIGMA_SQ {float(reward_mod.IMIT_SIGMA_SQ)!r}",
-        "// ALL-ZERO placeholder: no humanoid reference gait exists (Phase 2).",
+        "// HUMANOID env contract pins (walk/env/humanoid_flat.py). The",
+        "// kernel's duck policy layer does NOT consume these yet (its",
+        "// DWP_OBS/offsets/action macros are duck-hardcoded -- the pending",
+        "// kernel edit, FEASIBILITY.md section 2); they pin the env<->header",
+        "// contract for that edit. Obs layout (52 = 3*J + 16):",
+        "//   [0:12] q-HOME  [12:24] 0.05*qdot  [24:36] prev action",
+        "//   [36:39] gravity body (-R[2])  [39:42] R^T omega  [42:45] R^T v",
+        "//   [45] command  [46:48] zeros  [48:50] contacts  [50:52] phase",
+        f"#define DW_ENV_OBS {int(env_mod.OBS)}",
+        f"#define DW_ENV_ACT {int(env_mod.ACT)}",
+        f"#define DW_ENV_TICKS_PER_STEP {int(env_mod.TICKS_PER_STEP)}u",
+        f"#define DW_ENV_CONTROL_DT {float(env_mod.CONTROL_DT)!r}",
+        f"#define DW_ENV_ACTION_SCALE {float(env_mod.ACTION_SCALE)!r}",
+        "#define DW_ENV_MAX_TARGET_INCREMENT "
+        + f"{float(env_mod.MAX_TARGET_INCREMENT)!r}",
+        f"#define DW_ENV_QDOT_OBS_SCALE {float(env_mod.QDOT_OBS_SCALE)!r}",
+        f"#define DW_ENV_HORIZON_STEPS {int(env_mod.HORIZON_STEPS)}u",
+        "#define DW_ENV_MIN_HEIGHT_FRACTION "
+        + f"{float(env_mod.MIN_HEIGHT_FRACTION)!r}",
+        f"#define DW_ENV_MAX_TILT_RAD {float(env_mod.MAX_TILT_RAD)!r}",
+        "DW_MODEL_CONST double DW_ENV_COMMANDS_MPS[3] = {"
+        + ",".join(f"{float(c)!r}" for c in env_mod.COMMANDS_MPS) + "};",
+        "// ALL-ZERO placeholder: no humanoid reference gait exists"
+        " (empty 8a hook).",
         "DW_MODEL_CONST double DW_REF_GAIT[DW_REF_BINS][DW_J] = {"
         + ",".join("{" + ",".join("0.0" for _ in range(J)) + "}"
                    for _ in range(int(reward_mod.REF_BINS))) + "};",

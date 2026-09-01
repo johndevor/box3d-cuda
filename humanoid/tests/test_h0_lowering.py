@@ -96,10 +96,15 @@ class LoweringTests(unittest.TestCase):
              m * (half[0] ** 2 + half[2] ** 2) / 3.0,
              m * (half[0] ** 2 + half[1] ** 2) / 3.0))
 
-    def test_sim_dt_is_authored_per_substep_cadence(self):
+    def test_sim_dt_cadence_pins(self):
+        # Phase 2: duck env contract cadence (0.02 s = 10 x 0.002 s); must
+        # stay at or below the authored per-substep stability bound 1/240
+        # (FEASIBILITY.md section 5).
         self.assertEqual(h0.AUTHORED_DT, 1.0 / 120.0)
-        self.assertEqual(h0.SIM_DT, 1.0 / 240.0)
-        self.assertEqual(h0.CONTROL_DT, 1.0 / 60.0)
+        self.assertEqual(h0.AUTHORED_SUBSTEPS, 2)
+        self.assertEqual(h0.SIM_DT, 0.002)
+        self.assertLessEqual(h0.SIM_DT, h0.AUTHORED_DT / h0.AUTHORED_SUBSTEPS)
+        self.assertEqual(h0.CONTROL_DT, 0.02)
         self.assertEqual(h0.TICKS_PER_CONTROL * h0.SIM_DT, h0.CONTROL_DT)
 
     # -- FK / reset -----------------------------------------------------------

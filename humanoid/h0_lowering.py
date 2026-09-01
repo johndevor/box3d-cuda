@@ -98,17 +98,23 @@ AUTHORED_DT = 1.0 / 120.0             # [HR]:181 step_seconds (World engine)
 AUTHORED_SUBSTEPS = 2                 # world/crates/box3d-cuda-client/src/
 #                                       lib.rs:117-147 RegistrationConfig
 # This stack applies the PD drive once per tick (no substeps), so its tick
-# must equal the authored engine's effective PER-SUBSTEP drive cadence
+# must be at most the authored engine's effective PER-SUBSTEP drive cadence
 # (native-flatfloor-readiness.md:23-33: drive applied per substep with
-# h = dt/substeps). At the raw 1/120 the explicit per-tick PD is numerically
-# UNSTABLE here: kv*dt / I_effective = 2.33 (elbow) / 2.07 (ankle) > 2,
-# linearized spectral radius 1.79 (measured; blows up ~0.6 s in). At the
-# authored per-substep 1/240 the spectral radius is 1.0 (free-root modes)
-# and the 2 s home-hold holds to 3.7e-15 momentum residual. See
-# humanoid/FEASIBILITY.md section 5.
-SIM_DT = AUTHORED_DT / AUTHORED_SUBSTEPS          # = 1/240 s
-CONTROL_DT = AUTHORED_DT * 2.0        # [H0]:124 action_repeat=2 -> 1/60 s
-TICKS_PER_CONTROL = 4                 # CONTROL_DT / SIM_DT
+# h = dt/substeps = 1/240). At the raw 1/120 the explicit per-tick PD is
+# numerically UNSTABLE here: kv*dt / I_effective = 2.33 (elbow) / 2.07
+# (ankle) > 2, linearized spectral radius 1.79 (measured; blows up ~0.6 s
+# in). Any tick <= 1/240 is stable (spectral radius 1.0 = free-root modes;
+# measured at 1/240, 1/480 and 0.002). See humanoid/FEASIBILITY.md sec. 5.
+#
+# Phase 2 pins SIM_DT to the duck stack's proven 0.002 s so ONE policy step
+# is exactly the duck env contract's 0.02 s (10 ticks) -- every 0.02 s-based
+# reward/env constant and the kernel policy layer's hardcoded control dt
+# stay valid, and stability margin strictly improves (kv*dt/I_eff max 0.56).
+# The authored control cadence (1/60, action_repeat 2 [H0]:124) belongs to
+# World's engine; control cadence here follows the duck env contract.
+SIM_DT = 0.002                        # duck stack tick (walk/env/flat.py)
+CONTROL_DT = 0.02                     # duck env contract policy step
+TICKS_PER_CONTROL = 10                # CONTROL_DT / SIM_DT
 MAX_EPISODE_STEPS = 1200              # [HR]:182
 GRAVITY = 20.0                        # [LIB]:48; z-up lowering: (0, 0, -20)
 FRICTION = 0.8                        # [HR]:734 (humanoid-rubberized)

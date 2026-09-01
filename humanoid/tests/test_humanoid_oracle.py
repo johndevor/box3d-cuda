@@ -3,7 +3,8 @@
 Run: .venv/bin/python -B humanoid/tests/test_humanoid_oracle.py
 
 THE GATE (mission spec): zero-action home-hold for 2 simulated seconds
-(480 ticks x 1/240 s) on the f64 idv1 CPU lane, with
+(1000 ticks x 0.002 s -- Phase 2 pinned the duck-stack tick, see
+h0_lowering.py SIM_DT note) on the f64 idv1 CPU lane, with
   - every native step accepted (rc == 0, native_status == 0),
   - momentum residual <= 1e-8 at EVERY step,
   - both feet in contact at every post-step read,
@@ -28,7 +29,7 @@ sys.path.insert(0, str(ROOT / "humanoid"))
 from walk.env import humanoid_native_lane as hn  # noqa: E402
 import h0_lowering as h0  # noqa: E402
 
-TICKS = 480                       # 2.0 s at SIM_DT = 1/240
+TICKS = 1000                      # 2.0 s at SIM_DT = 0.002
 MOMENTUM_GATE = 1e-8
 TILT_GATE_DEG = 5.0
 # duck home-hold health bounds (run_home_hold.py:21), same physical meaning
@@ -120,8 +121,9 @@ class HumanoidOracleHomeHold(unittest.TestCase):
 
         The linearized one-tick map of this stack's semi-implicit update at
         the authored engine dt (1/120, PD applied once per tick) has
-        spectral radius > 1.5; at the per-substep 1/240 it is <= 1 + 1e-9.
-        Uses av1's mass matrix at the reset pose; no stepping.
+        spectral radius > 1.5; at SIM_DT (0.002, below the authored
+        per-substep 1/240 bound) it is <= 1 + 1e-9. Uses av1's mass matrix
+        at the reset pose; no stepping.
         """
         native = hn.native_lane._native()
         lib = native.library(str(hn.build_library()))

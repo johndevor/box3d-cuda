@@ -49,12 +49,9 @@ BUILD_DIR = ROOT / "build"
 # Identical flags AND identical fp32 certificates to the duck build
 # (DW_SOLVE_TOLERANCE 5e-6 / DW_MOMENTUM_TOLERANCE 2e-4 defaults): the
 # home-hold regime converges to the duck absolutes despite the humanoid's
-# ~413x larger impulse scale (68*20/240 = 5.67 N*s per weight-tick vs the
-# duck's 1.37e-2). Perturbed STANDING targets stall the solve on BOTH
-# lanes -- the pre-existing, documented degenerate flat-foot contact
-# failure (walk/env/flat.py:55-61, "workstream A"), amplified by the
-# humanoid's exactly-coplanar 4-corner box feet; see
-# humanoid/FEASIBILITY.md section 6 and the containment gate in
+# much larger impulse scale. Perturbed standing targets -- which stalled
+# both lanes before the workstream-A solver repair (humanoid/FEASIBILITY.md
+# section 6, now resolved) -- tick through clean and are gate-pinned by
 # humanoid/tests/test_humanoid_serial_parity.py.
 _FLAGS = ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
           "-ffp-contract=off"]

@@ -1,11 +1,13 @@
 # H0 humanoid on the duck stack — Phase 1 feasibility memo
 
-Status: COMPLETE. Verdict: **pure regeneration** for the Phase 1 physics
-lane (both the f64 CPU oracle and the fp32 serial kernel build) — zero
-kernel-source edits; all gates pass (section 7). Kernel edits are required
-only for the Phase 2 policy layer (enumerated in section 2), and Phase 2
-walking is blocked on the pre-existing workstream-A solver repair
-(section 6).
+Status: COMPLETE (Phase 1 record; see humanoid/PHASE2.md for the Phase 2
+bring-up). Verdict: **pure regeneration** for the Phase 1 physics lane
+(both the f64 CPU oracle and the fp32 serial kernel build) — zero
+kernel-source edits; all gates pass (section 7). Since then, upstream
+landed the workstream-A solver repair (section 6, now resolved) and the
+per-joint effort-cap kernel edit (section 2 item 1, done); the remaining
+kernel edits (section 2 items 2-4, in-kernel policy layer) are still
+pending — the Phase 2 env/reward run on the CPU lane meanwhile.
 
 Scope: can the frozen H0 humanoid (14 bodies incl. floor, 12 revolute
 joints, 2 box-foot/floor contact pairs — the B14/J12/P2 contract of
@@ -127,14 +129,13 @@ humanoid header shadows the duck one. Zero kernel-source edits; the duck
 build and its committed header are untouched.
 
 **Kernel edits ARE required for Phase 2** (training on device):
-1. **Per-joint effort caps**: H0 authors tiers 180/140/70
-   (humanoid.rs:778-784) but the kernel consumes a scalar `DW_EFFORT_CAP`
-   (dw_tick, dw_policy_reward, dw_fill_info, dwc1_debug_eval). Phase 1
-   bakes the MIN (70) and proves the clamp never binds in the home-hold /
-   in-air regimes (tests assert torque ≤ 0.7 N·m worst case); any walking
-   policy WILL saturate hips, so the edit (consume the already-emitted
-   `DW_EFFORT_CAP_TABLE[DW_J]`) is mandatory before training. The CPU
-   oracle already honors per-joint caps natively (av1 Hinge.cap).
+1. **Per-joint effort caps** — DONE upstream: the kernel now consumes
+   `DW_EFFORT_CAP_TABLE[DW_J]` at the PD clamp and the reward torque
+   estimate (duck bit-identity proven there); the scalar `DW_EFFORT_CAP`
+   remains only as the `dwc1_info` summary field. (Original finding: H0
+   authors tiers 180/140/70, humanoid.rs:778-784; Phase 1 baked the MIN
+   and proved the clamp never binds in its gate regimes. The CPU oracle
+   always honored per-joint caps natively, av1 Hinge.cap.)
 2. `dw_policy_observe`: obs width 3*J+16 = 52 and J-derived offsets
    (currently hardcoded duck offsets 14/28/42… and `DWP_OBS 58`).
 3. Humanoid `DW_REF_GAIT` (no humanoid reference gait exists — Phase 2
@@ -245,12 +246,23 @@ linearized one-tick map at the reset pose has kv·dt/I_eff = 2.33 (elbow) /
 2.07 (ankle) and spectral radius 1.79 — measured blow-up: arms oscillate,
 elbow slams its −0.10 limit and the solve stalls ~0.6 s in. At the
 authored per-substep cadence 1/240 the spectral radius is 1.0 (free-root
-modes only) and the 2 s home-hold holds to 3.7e-15 momentum residual.
-Lowered as SIM_DT = 1/240 with CONTROL_DT = 1/60 (= authored dt ×
-action_repeat 2) = 4 ticks per control step. Pinned by
+modes only) and the 2 s home-hold holds to ~1e-15 momentum residual.
+Phase 1 ran the oracle at 1/240; **Phase 2 pinned SIM_DT = 0.002 s** (the
+duck stack's tick, strictly below the 1/240 stability bound, spectral
+radius 1.0) so one policy step is exactly the duck env contract's 0.02 s =
+10 ticks and every 0.02 s-based constant stays valid — see
+humanoid/PHASE2.md §1. The instability finding is pinned by
 `test_humanoid_oracle.py::test_authored_dt_would_be_unstable_documented`.
 
-## 6. Pre-existing solver-robustness gap (workstream A) — Phase 2 blocker
+## 6. Pre-existing solver-robustness gap (workstream A) — RESOLVED upstream
+
+STATUS UPDATE: the workstream-A repair landed (civ1 + fp32 kernel:
+per-call APGD budget, damping schedule, best-iterate polish, load-aware
+exhaustion ceiling; CPU lane raised to 16384 iterations). The reproducers
+below now tick through clean on both lanes — the pinning test was updated
+accordingly (`test_perturbed_standing_ticks_through_both_lanes`: fp32
+240/240, f64 240/240). The original Phase 1 finding is kept for the
+record:
 
 The humanoid home-hold and all in-air dynamics solve cleanly at the duck's
 own fp32 certificates. But ANY perturbed **standing** target (even a held
@@ -264,34 +276,38 @@ un-ported rank-1 null-direction repair). The humanoid amplifies it: two
 exactly-coplanar 4-corner box soles (8 rank-deficient contact rows) and a
 ~413× larger impulse scale (68 kg × 20 m/s² / 240 Hz = 5.67 N·s per
 weight-tick vs the duck's 1.37e-2). The fault is detected and contained
-identically on both lanes (clean status 3, state frozen finite) — pinned
-by `test_humanoid_serial_parity.py::
-test_perturbed_standing_stall_contained_both_lanes`, which is written to
-flag when the repair lands. **Phase 2 training cannot start until
-workstream A fixes this** (or the model owner authorizes a chamfered,
-non-authored sole geometry, which we did NOT do).
+identically on both lanes (clean status 3, state frozen finite). Falling /
+piled states remain EXPENSIVE (up to the 16384-iteration ceiling per 2 ms
+tick) even though they no longer fault — training infrastructure resets
+done envs immediately (walk/train/vec.py) so only the falling step itself
+pays; anything that keeps ticking a fallen humanoid (e.g. flat.py-style
+frozen-target stepping of done envs outside VecEnv) will crawl.
 
 ## 7. Gate results (all enforced by committed tests)
 
+(Figures below re-measured at the Phase 2 tick SIM_DT = 0.002; the Phase 1
+run at 1/240 had the same character: momentum ~3.7e-15, drift 0.13 mm.)
+
 CPU oracle (humanoid/tests/test_humanoid_oracle.py), zero-action home-hold
-2 s = 480 ticks @ 1/240, E=1:
-- 480/480 ticks accepted (rc=0, native_status=0)
-- momentum residual ≤ 3.7e-15 every step (gate 1e-8)
+2 s = 1000 ticks @ 0.002, E=1:
+- 1000/1000 ticks accepted (rc=0, native_status=0)
+- momentum residual ≤ 2.2e-15 every step (gate 1e-8)
 - both feet in contact at every post-step read
-- final tilt 0.00° (gate < 5°), height 1.15 m held, drift 1.3e-7 m
-- max |PD torque| 4.2e-5 N·m (min effort tier 70 → scalar-cap licensing)
+- final tilt 0.00° (gate < 5°), height 1.15 m held
+- max |PD torque| 1.8e-4 N·m (min effort tier 70 → scalar-cap licensing;
+  moot since the kernel now consumes DW_EFFORT_CAP_TABLE)
 - health bounds (duck run_home_hold GATES) all clear; solver ≤ 64 iters
 
 fp32 serial parity (humanoid/tests/test_humanoid_serial_parity.py), duck
 flags AND duck default certificates (5e-6 / 2e-4), zero -D overrides:
 - header drift: committed humanoid header == fresh regeneration; duck
   header regenerates byte-identical (untouched)
-- home-hold 480 ticks: root drift 0.13 mm (gate 2 mm), tilt diff 0.0°
-  (gate 1°), fp32 momentum ≤ 2.5e-6, both lanes both-feet-in-contact
+- home-hold 2 s: root drift < 2 mm gate, tilt diff < 1° gate, both lanes
+  both-feet-in-contact (Phase 1 measured 0.13 mm / 0.0°)
 - in-air dynamics parity (random joint poses dropped from +0.5 m, PD to
   home, 40 ticks, no contact): root 2.3e-4 mm, joints 1.8e-8 rad
 - bit-identical determinism across two scenes in one build
-- stall containment (section 6) pinned on both lanes
+- perturbed standing ticks through clean on both lanes (section 6)
 
 Lowering gates (humanoid/tests/test_h0_lowering.py): topology, 68 kg,
 effort tiers, FK reset == authored centers to 1e-12 (anchors close
