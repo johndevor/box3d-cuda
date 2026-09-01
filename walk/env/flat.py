@@ -34,10 +34,15 @@ SIM_DT = 0.002
 TICKS_PER_STEP = 10
 ACTION_SCALE = 0.25
 MAX_TARGET_INCREMENT = 5.24 * CONTROL_DT          # 0.1048 rad per policy step
-PHASE_HZ_PER_MPS = 10.0   # speed-proportional gait clock. At 16.67 the clock
-                          # demanded EXACTLY the evaluator's 30 mm minimum per
-                          # step (knife-edge: half of natural steps disqualify);
-                          # 10.0 asks ~50 mm steps, within the observed 40-58 mm.
+import os as _os
+# Affine gait clock: phase_hz = BASE + PER_MPS * command. Sweepable via env
+# vars (read once at import; the kernel bakes the same values through the
+# generated header, drift-checked by the duck_cuda test suite).
+# History: fixed 2.5 Hz -> per-mps 16.67 (knife-edge: demanded exactly the
+# evaluator's 30 mm minimum step) -> 10.0. Base term lets low speeds keep a
+# workable cadence without knife-edging step length.
+PHASE_HZ_BASE = float(_os.environ.get("DUCK_PHASE_HZ_BASE", "0.0"))
+PHASE_HZ_PER_MPS = float(_os.environ.get("DUCK_PHASE_HZ_PER_MPS", "10.0"))
 COMMANDS_MPS = (0.10, 0.15, 0.20)                  # per-episode forward commands
 HORIZON_STEPS = 400                                # 8 s at 0.02 s per step
 MIN_HEIGHT_FRACTION = 0.7                          # of the HOME root height
@@ -231,7 +236,8 @@ class FlatFloorDuckEnv(DuckEnvBatch):
                 "foot_x": state.foot_pos[:, :, 0].copy(),
                 # same clock the policy observes in obs[:, 56:58]
                 "phase": self._phase0
-                + 2.0 * math.pi * (PHASE_HZ_PER_MPS * self._command)
+                + 2.0 * math.pi
+                * (PHASE_HZ_BASE + PHASE_HZ_PER_MPS * self._command)
                 * self._t * CONTROL_DT}
 
     def _observe(self, state: native_lane.LaneState) -> np.ndarray:
@@ -245,7 +251,8 @@ class FlatFloorDuckEnv(DuckEnvBatch):
         obs[:, 48:51] = np.einsum("eji,ej->ei", rot, state.v[:, 0:3])
         obs[:, 51] = self._command
         obs[:, 54:56] = state.foot_contact
-        phase = self._phase0 + 2.0 * math.pi * (PHASE_HZ_PER_MPS * self._command) \
+        phase = self._phase0 + 2.0 * math.pi \
+            * (PHASE_HZ_BASE + PHASE_HZ_PER_MPS * self._command) \
             * self._t * CONTROL_DT
         obs[:, 56] = np.sin(phase)
         obs[:, 57] = np.cos(phase)
