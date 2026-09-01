@@ -121,6 +121,50 @@ class GridFaultCorpusTests(unittest.TestCase):
         print(f"grid_fault_corpus phase3 {clean}/{len(phase3)} clean fresh; "
               "rest stall in civ1 only (documented floor)", file=sys.stderr)
 
+    def test_degenerate_stall_corpus_19_replays_clean(self):
+        """The 20260901T19* stall family must replay COMPLETELY clean.
+
+        These artifacts (cube-grid curriculum blocker, backend
+        duck_world_v1, phase 3, duck-only islands with 2-6 contacts) are
+        duck-impulse-scale members of the degenerate multi-support family:
+        exactly singular contact blocks whose Gauss-Seidel/Tresca iterates
+        limit-cycle around certificate floors between 1e-8 and a few 1e-5.
+        civ1's repair stack closes them: per-call APGD budget grants, a
+        cap-refresh damping schedule, best-iterate memory, a last-window
+        certificate-descent polish, and the load-aware exhaustion ceiling
+        (joint rows and the 1e-8 momentum gate stay strict). At fix time
+        the FULL corpus replayed 2157/2157 clean; this gate pins a
+        deterministic stride-sample of ~48 so regressions surface fast.
+        """
+        files = sorted(FAULTS.glob("20260901T19*.json"))
+        if not files:
+            raise unittest.SkipTest("no 20260901T19* artifacts")
+        stride = max(1, len(files) // 48)
+        sample = files[::stride]
+        failures, replayed = [], 0
+        for f in sample:
+            artifact = json.loads(f.read_text())
+            if artifact.get("backend") != "duck_world_v1":
+                continue
+            replayed += 1
+            scene = self._scene(artifact)
+            try:
+                for tick in range(10):
+                    rc, diag = scene.step(
+                        dt=artifact["dt"],
+                        target=[artifact["effective_targets"]],
+                        max_iterations=16384, tolerance=1e-8, jtol=1e-8)
+                    if rc:
+                        failures.append((f.name, tick, rc, diag[0]["phase"]))
+                        break
+            finally:
+                scene.close()
+        self.assertGreaterEqual(replayed, 20, "19* sample shrank unexpectedly")
+        self.assertEqual(failures, [],
+                         f"{len(failures)}/{replayed} stall-family dumps faulted")
+        print(f"grid_fault_corpus 19* {replayed}/{replayed} clean "
+              f"(strided sample of {len(files)})", file=sys.stderr)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

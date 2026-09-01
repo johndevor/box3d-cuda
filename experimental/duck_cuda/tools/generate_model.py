@@ -129,6 +129,11 @@ def emit(native, fixture, cm) -> str:
         f"#define DW_KP {f32(shared['kp'])}",
         f"#define DW_KV {f32(shared['kv'])}",
         f"#define DW_EFFORT_CAP {f32(shared['cap'])}",
+        "// per-joint effort caps: the duck's are uniform, so the table is a",
+        "// broadcast of DW_EFFORT_CAP and kernel behavior is BIT-IDENTICAL;",
+        "// the H0 humanoid emits its authored 180/140/70 tiers here.",
+        "DW_MODEL_CONST float DW_EFFORT_CAP_TABLE[DW_J] = "
+        + row([shared['cap']] * J) + ";",
         f"#define DW_FRICTION_D0 {f32(shared['d0'])}",
         f"#define DW_FRICTION_DWIDTH {f32(shared['dw'])}",
         f"#define DW_FRICTION_TIMECONST {f32(shared['tc'])}",

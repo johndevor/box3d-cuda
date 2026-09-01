@@ -22,13 +22,11 @@ phase-clock constants are the duck's. Phase 1 uses only dwc1_create /
 dwc1_step / dwc1_read / dwc1_reset / dwc1_set_state / dwc1_query, which
 never touch the policy layer (see humanoid/FEASIBILITY.md sections 1.4, 2).
 
-Known scalar-vs-table limitation (the ONE modeled difference vs the CPU
-oracle): the kernel's DW_EFFORT_CAP is a scalar while H0 authors per-joint
-effort tiers 180/140/70 (world/crates/sim/src/humanoid.rs:778-784). We emit
-the MINIMUM (70) so the fp32 lane never applies torque the authored model
-forbids, plus the full DW_EFFORT_CAP_TABLE for the Phase 2 kernel edit. The
-parity test proves the clamp never binds during the home-hold gate (oracle
-max |torque| ~ 4e-5 N*m), so Phase 1 parity is exact-model parity.
+Effort caps: the kernel consumes the per-joint DW_EFFORT_CAP_TABLE
+(authored H0 tiers 180/140/70, world/crates/sim/src/humanoid.rs:778-784);
+the scalar DW_EFFORT_CAP is still emitted as the MINIMUM tier (70) for
+diagnostics/back-compat (dwc1_info reports it). The duck generator emits a
+uniform table equal to its scalar cap, so duck builds are bit-identical.
 
 Usage: .venv/bin/python -B experimental/duck_cuda/tools/generate_model_humanoid.py \
            [--output PATH]     (default: <repo>/humanoid/include/duck_model.h)
@@ -117,9 +115,9 @@ def emit(h0) -> str:
         f"#define DW_FRICTION_LOSS {f32(h0.FRICTION_LOSS)}  // not authored for H0",
         f"#define DW_KP {f32(h0.KP)}",
         f"#define DW_KV {f32(h0.KV)}",
-        "// Scalar cap = MIN of the authored per-joint tiers (180/140/70);",
-        "// never binds in the home-hold regime (parity-test-asserted).",
-        "// Phase 2 kernel edit: consume DW_EFFORT_CAP_TABLE instead.",
+        "// Scalar cap = MIN of the authored per-joint tiers (180/140/70),",
+        "// kept for diagnostics/back-compat; the kernel clamps with the",
+        "// per-joint DW_EFFORT_CAP_TABLE below.",
         f"#define DW_EFFORT_CAP {f32(min(caps))}",
         "DW_MODEL_CONST float DW_EFFORT_CAP_TABLE[DW_J] = " + row(caps) + ";",
         f"#define DW_FRICTION_D0 {f32(0.9)}",

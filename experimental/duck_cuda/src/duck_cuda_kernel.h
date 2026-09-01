@@ -46,6 +46,15 @@
 #ifndef DW_APGD_BUDGET
 #define DW_APGD_BUDGET 65536u
 #endif
+// Exhaustion-tier certificate ceiling for the degenerate CONTACT block,
+// mirroring civ1: a provably-stuck solve with the full Tresca arsenal spent
+// is accepted at the ceiling rather than faulted (joint rows stay strict;
+// ratio ceiling/tolerance matches civ1's 1e-5/1e-8 certificate range scaled
+// to fp32). Duck-scale problems converge strictly in tens of sweeps and
+// never reach it (bit-identical).
+#ifndef DW_TIER_CEILING
+#define DW_TIER_CEILING 1e-3f
+#endif
 
 // ==================== execution model: warp-per-env ========================
 // DW_WARP_LANES lanes cooperate on ONE environment. Three build modes off the
@@ -926,14 +935,17 @@ static DW_HD int dw_solve(DwWork* w, float tolerance, uint32_t max_iterations,
       jr = sj0; nr = sn0; tr = st0; numeric = numeric0;
     }
   };
-  uint32_t apgd_budget = DW_APGD_BUDGET;
   // Tresca fixed-point acceleration (civ1's block_accelerate): freeze the
   // friction caps at the current normals, solve the resulting convex box/disk
   // QP by accelerated projected gradient with adaptive restart, refresh the
   // caps; keep the trial only when the unchanged certificate strictly
   // improves. This is the proven repair for the exactly rank-deficient
-  // flat-foot contact blocks in the fault corpus.
-  auto block_accelerate = [&]() {
+  // flat-foot contact blocks in the fault corpus. Mirrors civ1: the inner
+  // budget is granted FRESH per call (a shared pool let the first call eat
+  // everything, leaving the remaining arsenal as no-ops on degenerate
+  // duck-scale grid islands that ~10 full-budget calls solve strictly).
+  auto block_accelerate = [&](uint32_t apgd_budget = DW_APGD_BUDGET,
+                              int damping = 0) {
     if (R < 1 || !apgd_budget) return;
     snap_take();
     const float sj0 = jr, sn0 = nr, st0 = tr, cert0 = fmaxf(fmaxf(jr, nr), tr);
@@ -954,8 +966,17 @@ static DW_HD int dw_solve(DwWork* w, float tolerance, uint32_t max_iterations,
       float beste = cert0;
       bool bad = false;
       for (int outer = 0; outer < 64 && apgd_budget && !bad; outer++) {
-        DW_LANE0 for (int c = 0; c < C; c++)
-          cap[c] = rows->cmu[c] * fmaxf(0.0f, x[rows->cfirst[c]]);
+        // Cap-refresh damping schedule mirrors civ1: 0 = classical undamped
+        // (always used by the first call, preserving old trajectories
+        // bit-exactly), 1 = half-averaged, 2 = Cesaro; later calls rotate to
+        // break outer-map limit cycles on degenerate multi-support blocks.
+        DW_LANE0 for (int c = 0; c < C; c++) {
+          const float cw = rows->cmu[c] * fmaxf(0.0f, x[rows->cfirst[c]]);
+          const float th = !outer ? 1.0f
+                                  : damping == 1 ? 0.5f
+                                  : damping == 2 ? 1.0f / (outer + 1) : 1.0f;
+          cap[c] = (1 - th) * cap[c] + th * cw;
+        }
         float t = 1;
         DW_FOR(i, R) y[i] = x[i];
         DW_SYNC();
@@ -1080,9 +1101,23 @@ static DW_HD int dw_solve(DwWork* w, float tolerance, uint32_t max_iterations,
         converged = fmaxf(fmaxf(jr, nr), tr) <= tolerance;
         if (!converged && accelerations && err > 0.25f * reference) {
           accelerations--;
-          block_accelerate();
+          block_accelerate(DW_APGD_BUDGET, (int)((15u - accelerations) % 3u));
           converged = fmaxf(fmaxf(jr, nr), tr) <= tolerance;
         }
+        // Exhaustion tier (mirrors civ1): the full repair arsenal is spent
+        // on a stalled degenerate block and this window made no meaningful
+        // progress -> accept the degenerate CONTACT block at the ceiling
+        // instead of faulting (joint rows stay at the strict tolerance:
+        // regularized, diagonal, always convergent). Same error measures;
+        // duck-scale problems never reach this branch.
+        // civ1's best-iterate memory and last-window certificate polish are
+        // deliberately NOT mirrored: they close the band between 1e-5 and
+        // the residual limit cycle (~1e-4) in f64, which lies entirely BELOW
+        // this kernel's fp32 tier ceiling (1e-3); the tier alone already
+        // contains that family here, and a sub-1e-5 walk is beneath fp32
+        // certificate resolution at these impulse scales.
+        if (!converged && !accelerations && err > 0.99f * reference)
+          converged = jr <= tolerance && fmaxf(nr, tr) <= DW_TIER_CEILING;
         if (numeric) return DWC1_NUMERIC;
       }
       DW_FOR(i, R) { w->wprev2[i] = w->wprev[i]; w->wprev[i] = lambda[i]; }
@@ -1163,7 +1198,10 @@ static DW_HD int dw_tick(DwState* s, const float* target,
     float tj = dw_clampf(target[j], DW_LIMIT_LOWER[j], DW_LIMIT_UPPER[j]);
     float motor = kpf * (tj - s->q[7 + j]) + DW_KV * (0.0f - s->v[6 + j]);
     if (!isfinite(motor)) bad = true;
-    w->smooth[6 + j] += dw_clampf(motor, -DW_EFFORT_CAP, DW_EFFORT_CAP)
+    // per-joint effort caps (H0 tiers 180/140/70); the duck table is a
+    // uniform broadcast of DW_EFFORT_CAP, keeping duck builds bit-identical
+    w->smooth[6 + j] += dw_clampf(motor, -DW_EFFORT_CAP_TABLE[j],
+                                  DW_EFFORT_CAP_TABLE[j])
                       - dampf * s->v[6 + j];
   }
   DW_SYNC();
@@ -1622,7 +1660,8 @@ static DW_HD float dw_policy_reward(DwState* s, const double* a,
   for (int j = 0; j < DW_J; j++) {
     double m = ((double)DW_KP * s->kp_scale) * (eff[j] - (double)s->q[7 + j])
              - (double)DW_KV * (double)s->v[6 + j];
-    m = fmin((double)DW_EFFORT_CAP, fmax(-(double)DW_EFFORT_CAP, m));
+    m = fmin((double)DW_EFFORT_CAP_TABLE[j],
+             fmax(-(double)DW_EFFORT_CAP_TABLE[j], m));
     tq += m * m;
   }
   r -= DWP_W_TORQUE * tq;

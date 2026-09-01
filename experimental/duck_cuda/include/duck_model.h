@@ -35,6 +35,10 @@
 #define DW_KP 13.3699999f
 #define DW_KV 0.0f
 #define DW_EFFORT_CAP 3.23000002f
+// per-joint effort caps: the duck's are uniform, so the table is a
+// broadcast of DW_EFFORT_CAP and kernel behavior is BIT-IDENTICAL;
+// the H0 humanoid emits its authored 180/140/70 tiers here.
+DW_MODEL_CONST float DW_EFFORT_CAP_TABLE[DW_J] = {3.23000002f,3.23000002f,3.23000002f,3.23000002f,3.23000002f,3.23000002f,3.23000002f,3.23000002f,3.23000002f,3.23000002f,3.23000002f,3.23000002f,3.23000002f,3.23000002f};
 #define DW_FRICTION_D0 0.899999976f
 #define DW_FRICTION_DWIDTH 0.949999988f
 #define DW_FRICTION_TIMECONST 0.0199999996f

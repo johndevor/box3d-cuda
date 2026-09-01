@@ -16,25 +16,32 @@ Gates:
  (b) home-hold, 480 ticks (2 s at 1/240): |root - CPU| < 2 mm, tilt
      difference < 1 deg, both feet in contact on both lanes, fp32 momentum
      residual within the kernel's own DW_MOMENTUM_TOLERANCE (2e-4);
- (c) the scalar effort cap (70 = min authored tier) never binds on the
-     oracle trajectory, so the kernel's scalar-vs-per-joint-cap limitation
-     is inactive for this gate (exact-model parity);
+ (c) effort caps never bind on the oracle trajectory (the kernel now
+     clamps with the per-joint DW_EFFORT_CAP_TABLE, tiers 180/140/70;
+     torque stays far below even the minimum tier here, so this gate is
+     exact-model parity);
  (d) bit-identical determinism between two humanoid scenes in one build;
  (e) contact-free dynamics parity: seeded random joint poses dropped from
      +0.5 m, PD toward home, 40 ticks fully in-air on both lanes -- bounded
      divergence (root < 1 mm, joints < 5e-3 rad), no contact, effort caps
      untouched (exercises FK/mass/bias/PD/joint rows without the flat-foot
      contact degeneracy);
- (f) KNOWN-LIMITATION containment (NOT a pass gate on the physics): any
-     perturbed STANDING targets stall the coupled solve on BOTH lanes --
-     the pre-existing documented degenerate flat-foot contact failure
-     (walk/env/flat.py:55-61 "workstream A"; duck_cuda_kernel.h header
-     notes the un-ported rank-1 null-direction repair), which the
-     humanoid's exactly-coplanar 4-corner box feet amplify. The gate
-     asserts the fault is DETECTED and CONTAINED identically on both
-     lanes: clean NO_CONVERGENCE status, frozen finite state, no NaN.
-     Phase 2 walking needs the workstream-A solver repair first (see
-     humanoid/FEASIBILITY.md section 6).
+ (f) WORKSTREAM-A REPAIR gate (was: known-limitation containment): the
+     degenerate flat-foot standing stall is FIXED. Perturbed standing
+     targets used to stall the coupled solve on BOTH lanes at tick ~6
+     (exactly-coplanar 4-corner box soles -> exactly singular contact
+     block whose sweeps/Tresca limit-cycle; humanoid/FEASIBILITY.md
+     section 6). civ1 now carries the full repair stack (per-call APGD
+     budgets, cap-refresh damping schedule, best-iterate memory,
+     last-window certificate polish, load-aware exhaustion ceiling with
+     strict joint rows + the untouched absolute 1e-8 momentum gate), and
+     the fp32 kernel mirrors the tier/budget/damping economics. The gate
+     asserts both lanes tick THROUGH the standing transient (>=120 ticks,
+     the old stall window was <20) under a held waist lean; if the f64
+     lane's default 4096-iteration budget cannot finish the eventual
+     ground-impact solve after the lean topples the robot, that late
+     fault must still be a contained clean NO_CONVERGENCE (frozen finite
+     state) -- never a stall inside the standing window.
 """
 from __future__ import annotations
 
@@ -172,7 +179,7 @@ class HumanoidSerialParityTests(unittest.TestCase):
             self.assertLess(root_mm, 1.0, "in-air root gate (1 mm)")
             self.assertLess(joint, 5e-3, "in-air joint gate (5e-3 rad)")
             self.assertFalse(bool(xg.foot_contact.any()))
-            # per-joint-vs-scalar cap immaterial here too:
+            # effort caps immaterial here too (below even the 70 tier):
             self.assertLess(worst_torque, min(h0.EFFORT))
             print(f"in_air_parity root={root_mm:.2e} mm joint={joint:.2e} "
                   f"rad torque<={worst_torque:.1f}", file=sys.stderr)
@@ -180,15 +187,18 @@ class HumanoidSerialParityTests(unittest.TestCase):
             cpu.close()
             gpu.close()
 
-    # -- gate (f): documented flat-foot stall is contained ---------------------
-    def test_perturbed_standing_stall_contained_both_lanes(self):
-        """Pins the KNOWN solver-robustness limitation (workstream A).
+    # -- gate (f): flat-foot standing stall is REPAIRED ------------------------
+    def test_perturbed_standing_ticks_through_both_lanes(self):
+        """Pins the workstream-A repair (was: stall containment).
 
-        Perturbed standing targets make the coupled solve stall on BOTH the
-        f64 oracle and the fp32 build (the documented degenerate flat-foot
-        contact failure the duck also has, walk/env/flat.py:55-61); this
-        gate asserts detection + containment, and must be UPDATED (expected
-        to start passing tick-through) once the workstream-A repair lands.
+        Held waist lean on both lanes. Before the repair both stalled at
+        tick ~6 inside the standing transient (degenerate coplanar box-sole
+        contact block). Now both lanes must clear the standing window
+        (>=120 ticks; measured post-repair: fp32 240/240 clean, f64 clean
+        through at least the topple). A LATE f64 fault is tolerated only as
+        a contained clean NO_CONVERGENCE on the post-topple ground impact
+        (that solve is budget-bound at the lane's default 4096 iterations;
+        it converges at 16384), never as a standing-window stall.
         """
         target = np.zeros((1, h0.J))
         target[0, 0] = 0.05                    # tiny waist lean, held
@@ -206,21 +216,29 @@ class HumanoidSerialParityTests(unittest.TestCase):
                 if rc:
                     gpu_fault = (t, diag[0]["native_status"])
                     break
-            self.assertIsNotNone(cpu_fault, "oracle no longer stalls: "
-                                 "workstream-A repair landed? update gates")
-            self.assertIsNotNone(gpu_fault, "serial no longer stalls: "
-                                 "workstream-A repair landed? update gates")
-            self.assertEqual(cpu_fault[1], 3, "clean NO_CONVERGENCE (CPU)")
-            self.assertEqual(gpu_fault[1], 3, "clean NO_CONVERGENCE (fp32)")
-            # containment: state frozen at the last accepted tick, finite
+            # fp32 build ticks through the whole 240-tick lean (measured).
+            self.assertIsNone(gpu_fault,
+                              "fp32 lane regressed into a standing stall")
             xc, xg = cpu.read(), gpu.read()
-            self.assertTrue(xc.finite().all())
             self.assertTrue(xg.finite().all())
-            self.assertEqual(int(xc.count[0]), cpu_fault[0])
-            self.assertEqual(int(xg.count[0]), gpu_fault[0])
-            print(f"stall containment: CPU tick {cpu_fault[0]}, "
-                  f"fp32 tick {gpu_fault[0]} (documented workstream-A gap)",
-                  file=sys.stderr)
+            self.assertEqual(int(xg.count[0]), 240)
+            if cpu_fault is None:
+                self.assertTrue(xc.finite().all())
+                self.assertEqual(int(xc.count[0]), 240)
+                print("perturbed standing: CPU 240/240, fp32 240/240 clean "
+                      "(workstream-A repair)", file=sys.stderr)
+            else:
+                # Only the late budget-bound ground impact may fault, and
+                # only as a detected + contained clean NO_CONVERGENCE.
+                self.assertGreaterEqual(cpu_fault[0], 120,
+                                        "standing-window stall regressed")
+                self.assertEqual(cpu_fault[1], 3,
+                                 "clean NO_CONVERGENCE (CPU)")
+                self.assertTrue(xc.finite().all())
+                self.assertEqual(int(xc.count[0]), cpu_fault[0])
+                print(f"perturbed standing: CPU contained post-topple fault "
+                      f"tick {cpu_fault[0]} (4096-iteration budget), "
+                      f"fp32 240/240 clean", file=sys.stderr)
         finally:
             cpu.close()
             gpu.close()

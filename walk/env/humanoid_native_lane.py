@@ -39,7 +39,9 @@ LEFT_FOOT_BODY, RIGHT_FOOT_BODY = h0.FOOT_BODIES
 FOOT_BODIES = h0.FOOT_BODIES
 FLOOR_PAIRS = (0, 1)
 SIM_DT = h0.SIM_DT
-MAX_SOLVER_ITERATIONS = 4096          # same certificates as the duck lane
+MAX_SOLVER_ITERATIONS = 16384         # same certificates as the duck lane;
+# 16384 matches the grid lane and lets the degenerate flat-foot repair
+# certify post-topple impacts that stay budget-bound at 4096
 IMPULSE_TOLERANCE = 1e-8
 
 

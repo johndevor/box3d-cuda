@@ -279,7 +279,8 @@ int dwc1_debug_eval(const float* q, const float* v, float* mass /*[N,N]*/,
     for (int j = 0; j < DW_J; j++) {
       float tj = dw_clampf(target[j], DW_LIMIT_LOWER[j], DW_LIMIT_UPPER[j]);
       float motor = DW_KP * (tj - q[7 + j]) + DW_KV * (0.0f - v[6 + j]);
-      smooth[6 + j] += dw_clampf(motor, -DW_EFFORT_CAP, DW_EFFORT_CAP)
+      smooth[6 + j] += dw_clampf(motor, -DW_EFFORT_CAP_TABLE[j],
+                                 DW_EFFORT_CAP_TABLE[j])
                      - DW_DAMPING * v[6 + j];
     }
     dw_chol_solve(L, smooth);

@@ -32,9 +32,9 @@
 #define DW_FRICTION_LOSS 0.0f  // not authored for H0
 #define DW_KP 90.0f
 #define DW_KV 8.0f
-// Scalar cap = MIN of the authored per-joint tiers (180/140/70);
-// never binds in the home-hold regime (parity-test-asserted).
-// Phase 2 kernel edit: consume DW_EFFORT_CAP_TABLE instead.
+// Scalar cap = MIN of the authored per-joint tiers (180/140/70),
+// kept for diagnostics/back-compat; the kernel clamps with the
+// per-joint DW_EFFORT_CAP_TABLE below.
 #define DW_EFFORT_CAP 70.0f
 DW_MODEL_CONST float DW_EFFORT_CAP_TABLE[DW_J] = {180.0f,70.0f,180.0f,140.0f,140.0f,180.0f,140.0f,140.0f,70.0f,70.0f,70.0f,70.0f};
 #define DW_FRICTION_D0 0.899999976f
