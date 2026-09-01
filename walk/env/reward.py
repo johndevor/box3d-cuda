@@ -49,10 +49,10 @@ AIR_TIME_MIN = 0.08      # evaluator floor is 60 ms; leave margin above it.
 AIR_TIME_MAX = 0.40      # above this the duck is hopping/ballistic, not walking.
 PLACEMENT_MIN_M = 0.030  # evaluator: forward placement >= 30 mm per footfall.
 OPP_SUPPORT_FRAC = 0.90  # evaluator: opposite foot supports >= 90% of the swing.
-W_CHATTER = 0.2          # penalty per touchdown after a sub-60 ms micro-swing;
+W_CHATTER = 1.0          # penalty per touchdown after a sub-60 ms micro-swing;
                          # contact chatter destroys the 40 ms support windows.
 CHATTER_MAX_S = 0.06
-W_FLICKER = 1.5          # penalty per foot in stance at both step boundaries but
+W_FLICKER = 2.5          # penalty per foot in stance at both step boundaries but
                          # not in contact for all 10 native ticks: marginal
                          # loading flickers at 2 ms scale and breaks the
                          # evaluator's 40 ms continuous-support windows. Raised
