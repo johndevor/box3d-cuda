@@ -10,7 +10,15 @@ walk.train.ppo.ppo_update with the PPOConfig defaults.
     python -B -m walk.train.gpu_train --envs 4096 --horizon 32 --updates 300 \
         --seed 917 --device cuda --library <path-to-libduck_cuda.so> \
         --out <dir> [--resume <ckpt>] [--max-wall-s 900] [--lr 3e-4] \
-        [--perturbation 0.02] [--policy {ff,gru}] [--gamma G] [--gae-lambda L]
+        [--perturbation 0.02] [--policy {ff,gru}] [--gamma G] [--gae-lambda L] \
+        [--robot {duck,humanoid}]
+
+--robot selects the env/lane contract (robot_classes): duck (default) is
+byte-identical to the pre-switch trainer (same classes, same OBS/ACT 58/14,
+same RNG streams); humanoid wires FlatFloorHumanoidEnv / CudaHumanoidLane
+(OBS/ACT 52/12) over the robot-generic dwc1 kernel. --accept-every and
+--randomization are duck-only (strict gait evaluator / DR surface) and are
+rejected for other robots.
 
 --policy gru swaps in the tiny recurrent policy (walk.train.ppo
 RecurrentActor/RecurrentCritic: 1-layer GRU + reduced MLP head) for implicit
@@ -70,6 +78,7 @@ from walk.train.vec import derive_seed
 
 @dataclasses.dataclass
 class GpuTrainConfig:
+    robot: str = "duck"              # "duck" (default, byte-identical) or "humanoid"
     envs: int = 4096
     lane_env: bool = False
     randomization: dict | None = None
@@ -106,21 +115,40 @@ class Rollout:
     episodes: list          # list[(return, length)] finished this window
 
 
+def robot_classes(robot: str):
+    """(obs_dim, act_dim, lane_cls, flat_env_cls) for a robot.
+
+    The duck row returns exactly the module-level contract dims and the
+    classes the pre-robot-switch trainer used, so --robot duck (the default)
+    is behavior-identical to the old hardcoded path. Humanoid classes import
+    lazily (they build/load the humanoid serial dylib on first use)."""
+    if robot == "duck":
+        return OBS, ACT, CudaDuckLane, FlatFloorDuckEnv
+    if robot == "humanoid":
+        from walk.env import humanoid_flat
+        from walk.env.humanoid_cuda_lane import CudaHumanoidLane
+        return (humanoid_flat.OBS, humanoid_flat.ACT, CudaHumanoidLane,
+                humanoid_flat.FlatFloorHumanoidEnv)
+    raise SystemExit(f"--robot must be duck or humanoid, got {robot!r}")
+
+
 class LanePolicyEnv:
-    """Duck-typed drop-in for FlatFloorDuckEnv over the ABI-v3 device policy
+    """Duck-typed drop-in for the flat env over the ABI-v3 device policy
     path: one kernel launch + tiny transfers per policy step. Solver faults
     freeze+finish the env in-kernel (no exception); counted in fault_count."""
 
-    OBS, ACT = 58, 14
+    OBS, ACT = 58, 14                # legacy duck defaults (class-level)
 
     def __init__(self, cfg):
-        from walk.env.cuda_lane import CudaDuckLane
+        robot = getattr(cfg, "robot", "duck")
+        self.OBS, self.ACT, lane_cls, _ = robot_classes(robot)
         self.E = cfg.envs
-        self._lane = CudaDuckLane(
-            self.E,
+        kwargs = dict(
             joint_offsets=_perturbation_offsets(cfg) if cfg.perturbation else None,
-            library_path=cfg.library,
-            randomization=cfg.randomization)
+            library_path=cfg.library)
+        if robot == "duck":          # only the duck lane has a DR surface
+            kwargs["randomization"] = cfg.randomization
+        self._lane = lane_cls(self.E, **kwargs)
         self._seed = cfg.seed
         self.fault_count = 0
 
@@ -145,19 +173,21 @@ class LanePolicyEnv:
 
 def _perturbation_offsets(cfg):
     import numpy as _np
+    act = robot_classes(getattr(cfg, "robot", "duck"))[1]   # duck: 14, as before
     return _np.stack([
         _np.random.default_rng([cfg.seed & 0xFFFFFFFF, e, 0]).uniform(
-            -cfg.perturbation, cfg.perturbation, 14) for e in range(cfg.envs)])
+            -cfg.perturbation, cfg.perturbation, act) for e in range(cfg.envs)])
 
 
 def make_env(cfg: GpuTrainConfig):
     if cfg.lane_env:
         return LanePolicyEnv(cfg)
-    return FlatFloorDuckEnv(
+    _, _, lane_cls, flat_env_cls = robot_classes(getattr(cfg, "robot", "duck"))
+    return flat_env_cls(
         environments=cfg.envs,
         seed=cfg.seed,
         perturbation_rad=cfg.perturbation,
-        lane_factory=lambda E, offsets: CudaDuckLane(
+        lane_factory=lambda E, offsets: lane_cls(
             E, joint_offsets=offsets, library_path=cfg.library),
     )
 
@@ -573,13 +603,21 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
 
     if cfg.policy not in ("ff", "gru"):
         raise SystemExit(f"--policy must be ff or gru, got {cfg.policy!r}")
+    obs_dim, act_dim, _, _ = robot_classes(cfg.robot)   # duck: exactly OBS, ACT
+    if cfg.robot != "duck":
+        if cfg.accept_every > 0:
+            raise SystemExit("--accept-every uses the duck-only strict gait "
+                             "evaluator; not available for --robot humanoid")
+        if cfg.randomization:
+            raise SystemExit("--randomization is duck-only (the humanoid lane "
+                             "has no domain-randomization surface yet)")
     recurrent = cfg.policy == "gru"
     ppo_cfg = PPOConfig(lr=cfg.lr, gamma=cfg.gamma, lam=cfg.gae_lambda)
     torch.manual_seed(derive_seed(cfg.seed, 0x11))       # net init (matches run.py)
     if recurrent:
-        actor, critic = make_recurrent_nets(OBS, ACT, ppo_cfg)
+        actor, critic = make_recurrent_nets(obs_dim, act_dim, ppo_cfg)
     else:
-        actor, critic = make_nets(OBS, ACT, ppo_cfg)
+        actor, critic = make_nets(obs_dim, act_dim, ppo_cfg)
     actor.to(device)
     critic.to(device)
     optimizer = torch.optim.Adam(
@@ -833,8 +871,11 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="walk.train.gpu_train",
-        description="Single-process PPO trainer over the batched CUDA duck lane")
+        description="Single-process PPO trainer over the batched CUDA lane")
     d = GpuTrainConfig()
+    p.add_argument("--robot", choices=("duck", "humanoid"), default=d.robot,
+                   help="robot contract: env/lane classes and OBS/ACT dims "
+                        "(duck = the original byte-identical path)")
     p.add_argument("--envs", type=int, default=d.envs)
     p.add_argument("--horizon", type=int, default=d.horizon)
     p.add_argument("--updates", type=int, default=d.updates)
@@ -874,6 +915,7 @@ def build_argparser() -> argparse.ArgumentParser:
 
 def config_from_args(args: argparse.Namespace) -> GpuTrainConfig:
     return GpuTrainConfig(
+        robot=args.robot,
         envs=args.envs, horizon=args.horizon, updates=args.updates, seed=args.seed,
         device=args.device, library=args.library, lane_env=args.lane_env, randomization=(json.loads(args.randomization) if args.randomization else None), out=args.out, resume=args.resume,
         max_wall_s=args.max_wall_s, policy=args.policy, lr=args.lr,

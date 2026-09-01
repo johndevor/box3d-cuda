@@ -17,8 +17,10 @@ generator/tests I own):
 - regenerated `humanoid/include/duck_model.h` with all reward/env/clock
   constants pinned (`DW_RW_*`, `DW_ENV_*`, `DW_PHASE_HZ_*`), drift-tested.
 - `humanoid/tests/test_humanoid_env.py` (obs layout, header pins, reward,
-  termination) and `humanoid/tests/test_humanoid_train_smoke.py`
-  (end-to-end CPU PPO smoke).
+  termination), `humanoid/tests/test_humanoid_train_smoke.py`
+  (end-to-end CPU PPO smoke) and `humanoid/tests/test_humanoid_gpu_train.py`
+  (robot switch, env-vs-kernel policy parity, gpu_train lane-env smoke,
+  actor 52→…→12 round-trip; see §6).
 
 ## 1. Cadence
 
@@ -97,15 +99,40 @@ modules and the committed header is enforced by
 `test_humanoid_env.py::test_header_pins_bit_parity`, and full-text drift by
 `test_humanoid_serial_parity.py::test_humanoid_header_drift`.
 
-## 6. Still-pending kernel edits (unchanged from FEASIBILITY.md §2)
+## 6. Kernel policy path + training adapter (LANDED)
 
-The in-kernel policy path (`dwc1_step_policy` / `dwc1_observe`) remains
-duck-only: obs offsets (58/14-wide), `DWP_ACTION_SCALE 0.25`,
-`DWP_MAX_TARGET_INCREMENT`, duck termination up-axis. All humanoid values
-it needs are now pinned in the header (`DW_ENV_*`); the edit is mechanical.
-GPU training goes through the orchestrator once that lands; CPU-lane
-training uses `walk.env.humanoid_flat:FlatFloorHumanoidEnv` via
-`walk/train/run.py` unmodified (OBS/ACT read off the env class).
+The kernel edit landed upstream (commit b063a3b): the device policy layer
+is robot-generic via the `DW_ENV_*` contract block (`DWP_OBS = DW_ENV_OBS`,
+J-derived obs offsets, `DW_ENV_UP_AXIS` termination, per-joint
+`DW_EFFORT_CAP_TABLE`, zero-cost empty `DW_REF_GAIT` at `W_IMIT 0`), so
+`dwc1_step_policy` / `dwc1_observe` / `dwc1_reset_policy` are valid for the
+humanoid build. On top of that:
+
+- `walk/env/humanoid_cuda_lane.py` gained the policy-path wrappers
+  (`step_policy` / `observe` / `set_command` / `reset_policy` with
+  humanoid_flat's exact counter-based command+phase stream) and
+  `effort_cap_per_joint` (authored tiers; `effort_cap` stays the
+  `dwc1_info` scalar summary).
+- `walk/train/gpu_train.py` is parameterized by `--robot {duck,humanoid}`
+  through one `robot_classes()` indirection (obs/act dims + lane/env
+  classes). The duck path is behavior-identical (same classes, same
+  constructor calls, same RNG streams; fingerprint-verified byte-identical
+  metrics + actor weights on a 2-env lane-env smoke). `--accept-every`
+  (duck strict evaluator) and `--randomization` (duck DR surface) are
+  rejected for `--robot humanoid`.
+- Parity gate: `FlatFloorHumanoidEnv` over the fp32 lane vs
+  `dwc1_step_policy`, same seed stream + actions, 40 steps: **obs
+  bit-identical (0.0)**, reward ≤ 1.9e-4 (f32-vs-f64 reward summation),
+  done flags identical
+  (`test_humanoid_gpu_train.py::EnvVsKernelPolicyParity`).
+- Envelope note: the fp32 solve (5e-6 / 4096) has less stall headroom than
+  the f64 oracle (1e-8 / 16384): sustained ±0.3-flail while standing can
+  still fault fp32 where f64 survives; the in-kernel path freezes+finishes
+  such envs (counted, not raised), which is the intended training-time
+  behavior.
+
+CPU-lane training also works via `walk/train/run.py` unmodified (OBS/ACT
+read off the env class). GPU (Daytona) bring-up is the orchestrator's leg.
 
 ## 7. Smoke results (measured)
 

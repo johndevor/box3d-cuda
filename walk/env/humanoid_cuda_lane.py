@@ -1,10 +1,13 @@
 """Batched fp32 H0 humanoid lane over the single-source dwc1 kernel (serial).
 
-The humanoid twin of walk/env/cuda_lane.py's CudaDuckLane, PHYSICS PATH ONLY
-(tick / tick_block / read / restore / state_dump / set_state / query): the
-kernel's device policy layer is duck-specific and not valid for this model
-(see experimental/duck_cuda/tools/generate_model_humanoid.py and
-humanoid/FEASIBILITY.md section 1.4), so no step_policy/observe here.
+The humanoid twin of walk/env/cuda_lane.py's CudaDuckLane: physics path
+(tick / tick_block / read / restore / state_dump / set_state / query) AND,
+since the kernel went robot-generic via the DW_ENV_* contract block, the
+device policy path (step_policy / observe / set_command / reset_policy):
+obs (52) + humanoid_reward v1 + termination in-kernel, bit-exact vs
+FlatFloorHumanoidEnv running over this same lane build. No domain
+randomization surface yet (the humanoid env v1 has none); reset_policy
+draws command + phase0 with humanoid_flat's exact counter-based stream.
 
 Build: the UNCHANGED kernel sources (src/duck_cuda_serial.cpp ->
 src/duck_cuda_kernel.h) compiled with -Ihumanoid/include ahead of
@@ -23,6 +26,7 @@ from __future__ import annotations
 
 import ctypes as C
 import hashlib
+import math
 import os
 import shutil
 import subprocess
@@ -33,7 +37,7 @@ import numpy as np
 
 from . import cuda_lane
 from .cuda_lane import (  # reuse the model-size-independent dwc1 ctypes ABI
-    Diagnostic, Info, Manifold, load_library, _fp, _manifold_json,
+    DIAG_DTYPE, Diagnostic, Info, Manifold, load_library, _fp, _manifold_json,
 )
 from .cuda_lane import CudaLaneState
 
@@ -64,6 +68,7 @@ _SOURCES = [
 ]
 
 J, B, P, Q, N, JROWS = h0.J, h0.B, 2, 7 + h0.J, 6 + h0.J, 3 * h0.J
+OBS = 3 * J + 16                       # 52; pinned as DW_ENV_OBS in the header
 SIM_DT = h0.SIM_DT
 FOOT_BODIES = h0.FOOT_BODIES
 
@@ -147,9 +152,14 @@ class CudaHumanoidLane:
         self.home_root_height = float(info.home_root_height)
         self.kp = float(info.kp)
         self.kv = float(info.kv)
-        self.effort_cap = float(info.effort_cap)  # scalar MIN tier; the
-        # authored per-joint tiers live in h0_lowering.EFFORT (see the
-        # generator docstring for the Phase 2 kernel edit).
+        # dwc1_info's effort_cap is a scalar summary (the MIN tier); the
+        # kernel's PD clamp and reward estimate consume the per-joint
+        # DW_EFFORT_CAP_TABLE (authored tiers 180/140/70). Expose both.
+        self.effort_cap = float(info.effort_cap)
+        self.effort_cap_per_joint = np.array(h0.EFFORT, dtype=np.float64)
+        # device policy path bookkeeping (mirrors FlatFloorHumanoidEnv seeding)
+        self._seed = 0
+        self._episode = np.zeros(self.E, np.int64)
 
     # -- stepping ----------------------------------------------------------
     def tick_block(self, targets: np.ndarray, n_ticks: int):
@@ -166,6 +176,85 @@ class CudaHumanoidLane:
 
     def tick(self, targets: np.ndarray):
         return self.tick_block(targets, 1)
+
+    # -- device policy path (obs + reward + termination in-kernel) ----------
+    def step_policy(self, actions: np.ndarray, n_ticks: int = 10):
+        """One full policy step in-kernel: action -> slew-limited targets ->
+        n_ticks physics -> humanoid_reward v1 -> termination -> 52-dim obs.
+
+        Returns (obs [E,52] f32, reward [E] f32, done [E] bool, diagnostics
+        structured array). A nonzero `status` entry means that env hit a
+        solver fault, froze at its last accepted tick and was marked done
+        (FlatFloorHumanoidEnv raises SolverFault instead)."""
+        a = np.ascontiguousarray(actions, dtype=np.float32).reshape(self.E, J)
+        obs = np.empty((self.E, OBS), np.float32)
+        reward = np.empty(self.E, np.float32)
+        done = np.empty(self.E, np.uint8)
+        diag = (Diagnostic * self.E)()
+        rc = self._lib.dwc1_step_policy(self._h, _fp(a), int(n_ticks),
+                                        _fp(obs), _fp(reward),
+                                        done.ctypes.data_as(U8P), diag)
+        if rc:
+            raise RuntimeError(f"dwc1_step_policy status={rc}")
+        diagnostics = np.frombuffer(diag, dtype=DIAG_DTYPE).copy()
+        return obs, reward, done.astype(bool), diagnostics
+
+    def observe(self) -> np.ndarray:
+        """Current 52-dim observations (no stepping); reset()-style read."""
+        obs = np.empty((self.E, OBS), np.float32)
+        rc = self._lib.dwc1_observe(self._h, _fp(obs))
+        if rc:
+            raise RuntimeError(f"dwc1_observe status={rc}")
+        return obs
+
+    def set_command(self, commands) -> np.ndarray:
+        """Override every env's commanded forward velocity (m/s)."""
+        c = np.ascontiguousarray(
+            np.broadcast_to(np.asarray(commands, np.float64), (self.E,)))
+        rc = self._lib.dwc1_set_command(self._h, c.ctypes.data_as(DP))
+        if rc:
+            raise RuntimeError(f"dwc1_set_command status={rc}")
+        return self.observe()
+
+    def reset_policy(self, mask: np.ndarray | None = None,
+                     seed: int | None = None, commands=None,
+                     phase_offsets=None) -> np.ndarray:
+        """Masked policy reset mirroring FlatFloorHumanoidEnv.reset():
+        physics and tracker state back to creation; per-env command AND
+        per-episode gait phase offset resampled with humanoid_flat's exact
+        counter-based (seed, env, episode) stream -- draw = rng.random()
+        picks the command with the duck's slowest-oversampling split
+        (0.50 if draw < 0.5 else 0.75 if draw < 0.75 else 1.00), then
+        phase0 = 2*pi*rng.random(). No randomization draws (the humanoid
+        env v1 has no DR surface). Pass `commands`/`phase_offsets` [E] to
+        override the drawn values. Returns fresh observations."""
+        from .humanoid_flat import COMMANDS_MPS, _episode_rng  # noqa: PLC0415
+        if seed is not None:
+            self._seed = int(seed)
+        m = np.ones(self.E, bool) if mask is None \
+            else np.asarray(mask, bool).reshape(self.E)
+        cmd = np.zeros(self.E, np.float64)
+        ph0 = np.zeros(self.E, np.float64)
+        for e in np.flatnonzero(m):
+            rng = _episode_rng(self._seed, int(e), int(self._episode[e]) + 1)
+            draw = rng.random()
+            cmd[e] = (COMMANDS_MPS[0] if draw < 0.5
+                      else COMMANDS_MPS[1] if draw < 0.75
+                      else COMMANDS_MPS[2])
+            ph0[e] = 2.0 * math.pi * rng.random()
+            self._episode[e] += 1
+        if commands is not None:
+            cmd[:] = np.broadcast_to(np.asarray(commands, np.float64),
+                                     (self.E,))
+        if phase_offsets is not None:
+            ph0[:] = np.broadcast_to(np.asarray(phase_offsets, np.float64),
+                                     (self.E,))
+        mc = (C.c_uint8 * self.E)(*[1 if x else 0 for x in m])
+        rc = self._lib.dwc1_reset_policy(self._h, mc, cmd.ctypes.data_as(DP),
+                                         ph0.ctypes.data_as(DP))
+        if rc:
+            raise RuntimeError(f"dwc1_reset_policy status={rc}")
+        return self.observe()
 
     # -- reads --------------------------------------------------------------
     def read(self) -> CudaLaneState:
