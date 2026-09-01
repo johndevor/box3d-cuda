@@ -1,0 +1,106 @@
+{
+ "schema": "duckgridwalk.multiseed-acceptance/1",
+ "actor": "runs/gpu/20260901-120136-continue-ff-short/artifacts/train/gpu-train-out/accepted/actor_accepted.pt",
+ "seeds": [
+  4242,
+  7,
+  1913,
+  90210
+ ],
+ "commands": [
+  0.1,
+  0.15,
+  0.2
+ ],
+ "episodes": {
+  "seed4242-cmd0.10": {
+   "passed": true,
+   "qualified": 25,
+   "left": 12,
+   "right": 13,
+   "failed_criteria": []
+  },
+  "seed4242-cmd0.15": {
+   "passed": true,
+   "qualified": 38,
+   "left": 19,
+   "right": 19,
+   "failed_criteria": []
+  },
+  "seed4242-cmd0.20": {
+   "passed": true,
+   "qualified": 51,
+   "left": 26,
+   "right": 25,
+   "failed_criteria": []
+  },
+  "seed7-cmd0.10": {
+   "passed": true,
+   "qualified": 25,
+   "left": 13,
+   "right": 12,
+   "failed_criteria": []
+  },
+  "seed7-cmd0.15": {
+   "passed": true,
+   "qualified": 38,
+   "left": 19,
+   "right": 19,
+   "failed_criteria": []
+  },
+  "seed7-cmd0.20": {
+   "passed": true,
+   "qualified": 51,
+   "left": 26,
+   "right": 25,
+   "failed_criteria": []
+  },
+  "seed1913-cmd0.10": {
+   "passed": false,
+   "qualified": 25,
+   "left": 12,
+   "right": 13,
+   "failed_criteria": [
+    "footfalls_alternate"
+   ]
+  },
+  "seed1913-cmd0.15": {
+   "passed": true,
+   "qualified": 39,
+   "left": 20,
+   "right": 19,
+   "failed_criteria": []
+  },
+  "seed1913-cmd0.20": {
+   "passed": false,
+   "qualified": 51,
+   "left": 25,
+   "right": 26,
+   "failed_criteria": [
+    "footfalls_alternate"
+   ]
+  },
+  "seed90210-cmd0.10": {
+   "passed": true,
+   "qualified": 24,
+   "left": 12,
+   "right": 12,
+   "failed_criteria": []
+  },
+  "seed90210-cmd0.15": {
+   "passed": true,
+   "qualified": 38,
+   "left": 19,
+   "right": 19,
+   "failed_criteria": []
+  },
+  "seed90210-cmd0.20": {
+   "passed": true,
+   "qualified": 52,
+   "left": 26,
+   "right": 26,
+   "failed_criteria": []
+  }
+ },
+ "accepted": false
+}

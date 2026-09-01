@@ -43,9 +43,14 @@ def main():
                          "'{\"nx\":8,\"nz\":8,\"cube_size\":0.06,\"spacing\":0.06,\"height_jitter\":0.005}'")
     a = ap.parse_args()
 
-    ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
+    from walk.train.ppo import unpack_actor_file
+    raw = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
+    if isinstance(raw, dict) and "actor" in raw:
+        raw = raw["actor"]
+    arch, sd = unpack_actor_file(raw)
+    ck = {"update": "accepted"}
     actor = Actor(58, 14)
-    actor.load_state_dict(ck["actor"])
+    actor.load_state_dict(sd)
     actor.eval()
 
     @torch.no_grad()
