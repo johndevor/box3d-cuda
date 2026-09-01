@@ -252,6 +252,90 @@ class TestDeriveSpec(unittest.TestCase):
                          self.job(sweep.derive_spec(self.base), "build")["command"])
 
 
+class TestParseParamConfigs(unittest.TestCase):
+    def test_valid(self):
+        got = sweep.parse_param_configs(
+            '[{"gamma":0.995},{"gamma":0.99,"lr":1.5e-4},'
+            '{"horizon":128,"envs":2048,"policy":"gru"}]')
+        self.assertEqual(got, [{"gamma": 0.995}, {"gamma": 0.99, "lr": 1.5e-4},
+                               {"horizon": 128, "envs": 2048, "policy": "gru"}])
+
+    def test_unknown_key_rejected_with_allowlist(self):
+        with self.assertRaises(sweep.SweepError) as ctx:
+            sweep.parse_param_configs('[{"batchsize":64}]')
+        self.assertIn("gamma", str(ctx.exception))   # message names the allowlist
+
+    def test_int_keys_enforced(self):
+        for bad in ('[{"horizon":64.5}]', '[{"envs":"many"}]',
+                    '[{"horizon":0}]', '[{"envs":true}]'):
+            with self.assertRaises(sweep.SweepError):
+                sweep.parse_param_configs(bad)
+
+    def test_policy_values(self):
+        self.assertEqual(sweep.parse_param_configs('[{"policy":"ff"}]'),
+                         [{"policy": "ff"}])
+        with self.assertRaises(sweep.SweepError):
+            sweep.parse_param_configs('[{"policy":"lstm"}]')
+
+    def test_shape_errors(self):
+        for bad in ("nope", "[]", "[{}]", "[[1,2]]", '[{"gamma":-0.5}]',
+                    '[{"lr":true}]'):
+            with self.assertRaises(sweep.SweepError):
+                sweep.parse_param_configs(bad)
+
+    def test_param_flags_and_tag(self):
+        params = {"gamma": 0.995, "lr": 3e-4, "envs": 2048, "policy": "ff"}
+        self.assertEqual(sweep.param_flags(params),
+                         "--gamma 0.995 --lr 0.0003 --envs 2048 --policy ff")
+        self.assertEqual(sweep.param_tag(1, {"gamma": 0.99, "gae_lambda": 0.95}),
+                         "p1-gamma0.99-gae_lambda0.95")
+
+
+class TestDeriveParamSpec(unittest.TestCase):
+    def setUp(self):
+        self.base = sweep.validate_spec()
+
+    def job(self, raw, name):
+        matches = [j for j in raw["jobs"] if j["name"] == name]
+        return matches[0] if matches else None
+
+    def derive(self, **kw):
+        kw.setdefault("params", {"gamma": 0.995, "lr": 3e-4})
+        kw.setdefault("keep_header", False)
+        kw.setdefault("keep_warmstart", False)
+        kw.setdefault("name_tag", "pcfg")
+        return sweep.derive_spec(self.base, **kw)
+
+    def test_flags_appended_before_redirection_tail(self):
+        cmd = self.job(self.derive(), "train")["command"]
+        self.assertIn("--gamma 0.995 --lr 0.0003", cmd)
+        self.assertLess(cmd.index("--gamma 0.995"), cmd.index(" 2>&1"))
+        self.assertTrue(cmd.rstrip().endswith("| tee gpu-train.log"))
+
+    def test_fresh_init_strips_resume_and_warmstart_upload(self):
+        raw = self.derive()
+        self.assertNotIn("--resume", self.job(raw, "train")["command"])
+        self.assertEqual(raw["upload_extra"], [])
+
+    def test_header_job_and_upload_removed(self):
+        raw = self.derive()
+        self.assertIsNone(self.job(raw, "inject-header"))
+        self.assertNotIn("duck_model.h", json.dumps(raw))
+
+    def test_warmstart_kept_when_requested(self):
+        raw = self.derive(keep_warmstart=True)
+        self.assertIn("--resume runs/sweep-tmp/warmstart.pt",
+                      self.job(raw, "train")["command"])
+        self.assertEqual(raw["upload_extra"], ["runs/sweep-tmp/warmstart.pt"])
+
+    def test_parallel_naming_and_paths(self):
+        raw = self.derive(cfg_index=2, keep_warmstart=True)
+        self.assertEqual(raw["name"], "sweep-train-pcfg2")
+        self.assertEqual(raw["upload_extra"], ["runs/sweep-tmp-2/warmstart.pt"])
+        self.assertIn("--resume runs/sweep-tmp-2/warmstart.pt",
+                      self.job(raw, "train")["command"])
+
+
 # --------------------------------------------------------------------------
 # Header regeneration
 # --------------------------------------------------------------------------
@@ -529,6 +613,196 @@ class TestParallel(SweepTestCase):
         code, _ = self.run_main(runner, extra=["--parallel", "0"])
         self.assertEqual(code, 1)
         self.assertEqual(runner.calls, [])
+
+
+class TestParamSweep(SweepTestCase):
+    PCONFIGS = '[{"gamma":0.995},{"gamma":0.99,"lr":1.5e-4}]'
+
+    def test_combined_configs_and_param_configs_rejected(self):
+        runner = FakeRunner(sweep)
+        code, logs = self.run_main(
+            runner, extra=["--param-configs", self.PCONFIGS])
+        self.assertEqual(code, 1)
+        self.assertTrue(any("mutually exclusive" in line for line in logs))
+        self.assertEqual(runner.calls, [])
+
+    def test_neither_config_flag_rejected(self):
+        code = sweep.main(["--out", str(self.out)],
+                          runner=FakeRunner(sweep), log=lambda *_: None)
+        self.assertEqual(code, 1)
+
+    def test_param_sweep_fresh_init_default_clock_eval(self):
+        runner = FakeRunner(sweep)
+        code, _ = self.run_param_main(runner, self.PCONFIGS)
+        self.assertEqual(code, 0)
+        # no header regeneration in param mode
+        self.assertEqual(runner.of("generate"), [])
+        # derived specs: params appended, no resume, no uploads, no header job
+        launches = runner.of("launch")
+        self.assertEqual(len(launches), 2)
+        raws = []
+        for _, cmd, _kw in launches:
+            raws.append(json.loads(Path(cmd[cmd.index("--spec") + 1]).read_text()))
+        train0 = [j for j in raws[0]["jobs"] if j["name"] == "train"][0]
+        train1 = [j for j in raws[1]["jobs"] if j["name"] == "train"][0]
+        self.assertIn("--gamma 0.995", train0["command"])
+        self.assertIn("--gamma 0.99 --lr 0.00015", train1["command"])
+        for raw, train in ((raws[0], train0), (raws[1], train1)):
+            self.assertNotIn("--resume", train["command"])
+            self.assertEqual(raw["upload_extra"], [])
+            self.assertNotIn("inject-header", [j["name"] for j in raw["jobs"]])
+        # nothing staged (fresh init, no header)
+        self.assertFalse((self.tmp / "runs" / "sweep-tmp").exists())
+        # eval ran under the DEFAULT clock: no DUCK overrides in its env
+        evals = runner.of("eval")
+        self.assertEqual(len(evals), 2)
+        for _, _cmd, kw in evals:
+            self.assertNotIn(sweep.ENV_BASE, kw["env"])
+            self.assertNotIn(sweep.ENV_PER_MPS, kw["env"])
+        # records carry the params dict as the config field
+        lines = self.results()
+        self.assertEqual(lines[0]["config"], {"gamma": 0.995})
+        self.assertEqual(lines[1]["config"], {"gamma": 0.99, "lr": 1.5e-4})
+        self.assertEqual([r["status"] for r in lines], ["ok", "ok"])
+        self.assertEqual(lines[0]["legs"][0]["resume"], None)
+
+    def test_param_sweep_honors_warmstart(self):
+        runner = FakeRunner(sweep)
+        code, _ = self.run_param_main(runner, '[{"gamma":0.995}]', warmstart=True)
+        self.assertEqual(code, 0)
+        _, cmd, _ = runner.of("launch")[0]
+        raw = json.loads(Path(cmd[cmd.index("--spec") + 1]).read_text())
+        train = [j for j in raw["jobs"] if j["name"] == "train"][0]
+        self.assertIn("--resume runs/sweep-tmp/warmstart.pt", train["command"])
+        self.assertEqual(raw["upload_extra"], ["runs/sweep-tmp/warmstart.pt"])
+        self.assertEqual((self.tmp / "runs/sweep-tmp/warmstart.pt").read_bytes(),
+                         b"fake-checkpoint")
+
+    def test_fresh_init_multi_leg_rejected(self):
+        runner = FakeRunner(sweep)
+        code, logs = self.run_param_main(runner, '[{"gamma":0.995}]',
+                                         extra=["--legs-per-config", "2"])
+        self.assertEqual(code, 1)
+        self.assertTrue(any("--warmstart" in line for line in logs))
+        self.assertEqual(runner.calls, [])
+
+    def test_parallel_param_sweep_uses_pcfg_labels(self):
+        runner = FakeRunner(sweep)
+        code, _ = self.run_param_main(
+            runner, '[{"gamma":0.995},{"gamma":0.99},{"gamma":0.97}]',
+            extra=["--parallel", "3"])
+        self.assertEqual(code, 0)
+        launches = runner.of("launch")
+        suffixes = {c[1][c[1].index("--label-suffix") + 1] for c in launches}
+        self.assertEqual(suffixes, {"pcfg0", "pcfg1", "pcfg2"})
+        names = set()
+        for _, cmd, _kw in launches:
+            names.add(json.loads(Path(cmd[cmd.index("--spec") + 1])
+                                 .read_text())["name"])
+        self.assertEqual(names, {"sweep-train-pcfg0", "sweep-train-pcfg1",
+                                 "sweep-train-pcfg2"})
+        self.assertEqual({r["status"] for r in self.results()}, {"ok"})
+
+    def test_one_param_config_failing_continues(self):
+        runner = FakeRunner(sweep, launch_exits=[3, 0])
+        code, _ = self.run_param_main(runner, self.PCONFIGS)
+        self.assertEqual(code, 0)
+        lines = self.results()
+        self.assertEqual([r["status"] for r in lines], ["leg_failed", "ok"])
+
+
+class TestGruEvalScript(unittest.TestCase):
+    """Run the inline eval script in-process with the env/capture/gait modules
+    mocked and a REAL RecurrentActor checkpoint: proves the unpack_actor_file
+    + gru hidden-state policy path end to end (no native lib, no sandbox)."""
+
+    def test_gru_actor_eval_path(self):
+        import importlib
+        import numpy as np
+        torch = importlib.import_module("torch")
+        ppo = importlib.import_module("walk.train.ppo")
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            actor = ppo.RecurrentActor(58, 14)
+            actor_path = d / "actor_final.pt"
+            torch.save({"arch": "gru", "state_dict": actor.state_dict()},
+                       actor_path)
+            policies, steps = [], []
+
+            class FakeEnv:
+                def __init__(self, environments=1, seed=0, library_path=None):
+                    self.E = environments
+                def close(self):
+                    pass
+
+            def fake_capture(env, policy, command=None, seconds=8.0, seed=None):
+                policies.append(policy)
+                for _ in range(3):  # hidden state must carry within an episode
+                    a = policy(np.zeros((1, 58), dtype=np.float32))
+                    steps.append(a.shape)
+                return [{"command_mps": command}]
+
+            def fake_eval(trace):
+                return {"command_mps": trace["command_mps"], "passed": True,
+                        "footfalls": []}
+
+            mods = {
+                "walk.env.contract": SimpleNamespace(OBS=58, ACT=14),
+                "walk.env.flat": SimpleNamespace(FlatFloorDuckEnv=FakeEnv),
+                "walk.eval.capture": SimpleNamespace(capture_episodes=fake_capture),
+                "walk.eval.gait": SimpleNamespace(evaluate_episode=fake_eval),
+            }
+            out_json = d / "eval.json"
+            argv = ["eval", str(actor_path), "libfake.dylib", str(out_json),
+                    "4242", "0.1,0.15,0.2", "8.0"]
+            with mock.patch.dict(sys.modules, mods), \
+                    mock.patch.object(sys, "argv", argv):
+                exec(compile(sweep.EVAL_SCRIPT, "<eval-script>", "exec"),
+                     {"__name__": "__main__"})
+            episodes = json.loads(out_json.read_text())
+            self.assertEqual([e["command_mps"] for e in episodes],
+                             [0.1, 0.15, 0.2])
+            self.assertEqual(steps, [(1, 14)] * 9)
+            # fresh policy (fresh gru hidden state) per commanded episode
+            self.assertEqual(len(set(map(id, policies))), 3)
+
+    def test_legacy_ff_state_dict_still_loads(self):
+        import importlib
+        import numpy as np
+        torch = importlib.import_module("torch")
+        ppo = importlib.import_module("walk.train.ppo")
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            actor_path = d / "actor_final.pt"
+            torch.save(ppo.Actor(58, 14).state_dict(), actor_path)  # legacy
+            outputs = []
+
+            class FakeEnv:
+                def __init__(self, environments=1, seed=0, library_path=None):
+                    self.E = environments
+                def close(self):
+                    pass
+
+            def fake_capture(env, policy, command=None, seconds=8.0, seed=None):
+                outputs.append(policy(np.zeros((1, 58), dtype=np.float32)).shape)
+                return [{"command_mps": command}]
+
+            mods = {
+                "walk.env.contract": SimpleNamespace(OBS=58, ACT=14),
+                "walk.env.flat": SimpleNamespace(FlatFloorDuckEnv=FakeEnv),
+                "walk.eval.capture": SimpleNamespace(capture_episodes=fake_capture),
+                "walk.eval.gait": SimpleNamespace(
+                    evaluate_episode=lambda t: {"command_mps": t["command_mps"]}),
+            }
+            out_json = d / "eval.json"
+            argv = ["eval", str(actor_path), "lib", str(out_json),
+                    "4242", "0.1", "8.0"]
+            with mock.patch.dict(sys.modules, mods), \
+                    mock.patch.object(sys, "argv", argv):
+                exec(compile(sweep.EVAL_SCRIPT, "<eval-script>", "exec"),
+                     {"__name__": "__main__"})
+            self.assertEqual(outputs, [(1, 14)])
+            self.assertEqual(len(json.loads(out_json.read_text())), 1)
 
 
 class TestSummaryFormat(SweepTestCase):
