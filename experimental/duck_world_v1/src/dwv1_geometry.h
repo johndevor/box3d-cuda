@@ -120,19 +120,27 @@ inline bcv1_manifold convex_contact(const Hull& ah,const bcv1_body& a,const Hull
  if(s.kind==2){
   float am=-1e30f,bm=1e30f;for(auto v:av)am=std::max(am,dot(s.n,v));for(auto v:bv)bm=std::min(bm,dot(s.n,v));
   float distance=1e30f;V cp{};uint64_t id=0;
-  // contact_v1 uses the 4*EPS support band only; a grazing hull-hull contact
-  // (the duck foot overhanging a neighbouring cube) can leave it empty, so
-  // widen once before deciding, and validate the witness distance against
-  // the reported depth: an axis whose closest supporting edges are far apart
-  // is a degenerate SAT winner, not a contact.
-  for(float tol:{4*EPS,64*EPS}){
-   for(size_t i=0;i<ah.edges.size();i++){auto ae=ah.edges[i];if(std::fabs(dot(s.n,av[ae[0]])-am)>tol||std::fabs(dot(s.n,av[ae[1]])-am)>tol)continue;
-    for(size_t j=0;j<bh.edges.size();j++){auto be=bh.edges[j];if(std::fabs(dot(s.n,bv[be[0]])-bm)>tol||std::fabs(dot(s.n,bv[be[1]])-bm)>tol)continue;
+  const float reach=s.depth+2e-4f;
+  // contact_v1 uses the 4*EPS support band only. Near-parallel grazing
+  // hull-hull contact (the duck foot edge-on a cube edge, walker corpus
+  // 20260901T18*) starves it three ways: the band is empty (the sole facets
+  // tilt a few mrad-0.3 rad off the axis, pushing edge endpoints of the true
+  // witness outside any fixed band), the band holds only a FAR edge pair, or
+  // a far pair found at a narrow rung used to end the search prematurely.
+  // Repair discipline: the band is only a CANDIDATE prefilter, so widen it
+  // progressively and finish with an exhaustive edge-pair scan; acceptance
+  // stays the unchanged physical certificate (witness distance <= reach =
+  // depth + 2e-4), which wider candidate sets can only satisfy honestly. The
+  // global best is kept across rungs; a deep axis with NO edge pair within
+  // reach anywhere remains the hard numeric failure it always was.
+  auto scan=[&](float tol,bool banded){
+   for(size_t i=0;i<ah.edges.size();i++){auto ae=ah.edges[i];if(banded&&(std::fabs(dot(s.n,av[ae[0]])-am)>tol||std::fabs(dot(s.n,av[ae[1]])-am)>tol))continue;
+    for(size_t j=0;j<bh.edges.size();j++){auto be=bh.edges[j];if(banded&&(std::fabs(dot(s.n,bv[be[0]])-bm)>tol||std::fabs(dot(s.n,bv[be[1]])-bm)>tol))continue;
      auto x=closest(av[ae[0]],av[ae[1]],bv[be[0]],bv[be[1]]);float d2=dot(x[0]-x[1],x[0]-x[1]);if(d2<distance){distance=d2;cp=(x[0]+x[1])*.5f;id=0x200000000ull+(i<<16)+j+1;}}
    }
-   if(id)break;
-  }
-  float reach=s.depth+2e-4f;
+  };
+  for(float tol:{4*EPS,64*EPS}){scan(tol,true);if(id&&distance<=reach*reach)break;}
+  if(!(id&&distance<=reach*reach))scan(0,false);
   if(id==0||distance>reach*reach){geo_need(s.depth<=8*EPS,BCV1_NUMERIC);return {};}
   pts.push_back({cp,s.depth,id});return reduce(s.n,pts);
  }
