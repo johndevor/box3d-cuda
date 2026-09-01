@@ -26,7 +26,7 @@
     },
     {
       "name": "build",
-      "command": "set -o pipefail; cd experimental/duck_cuda && { if [ \"${SWEEP_FAST_BUILD:-0}\" = \"1\" ]; then mkdir -p build-remote && nvcc -std=c++17 -O3 --fmad=true -gencode arch=compute_89,code=sm_89 -gencode arch=compute_120,code=sm_120 -Iinclude -Xcompiler -fPIC -shared src/duck_cuda.cu -o build-remote/libduck_cuda_fast.so; else ./build_remote.sh; fi; } 2>&1 | tee ../../build.log",
+      "command": "set -o pipefail; DSHA=$(find experimental/duck_cuda -type f -not -path '*/build-remote/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1); PRE=/opt/duck/prebuilt/$DSHA; if ls \"$PRE\"/libduck_cuda*.so >/dev/null 2>&1; then echo \"prebuilt cache HIT $DSHA (skipping nvcc)\" | tee build.log && mkdir -p experimental/duck_cuda/build-remote && cp -f \"$PRE\"/libduck_cuda*.so experimental/duck_cuda/build-remote/; else echo \"prebuilt cache MISS $DSHA (rebuilding; expected after source changes)\" | tee build.log; (cd experimental/duck_cuda && { if [ \"${SWEEP_FAST_BUILD:-0}\" = \"1\" ]; then mkdir -p build-remote && nvcc -std=c++17 -O3 --fmad=true -gencode arch=compute_89,code=sm_89 -gencode arch=compute_120,code=sm_120 -Iinclude -Xcompiler -fPIC -shared src/duck_cuda.cu -o build-remote/libduck_cuda_fast.so; else ./build_remote.sh; fi; }) 2>&1 | tee -a build.log; fi",
       "timeout_s": 600,
       "artifacts": [
         "build.log"
@@ -57,5 +57,6 @@
     "spot": false,
     "ttl_minutes": 25,
     "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
-  }
+  },
+  "use_snapshot": true
 }

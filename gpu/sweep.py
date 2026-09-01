@@ -33,6 +33,15 @@ Documented invocation (the Daytona key must come from Doppler, never argv):
         [--legs-per-config 1] [--parallel N] [--train-wall-s 780] \
         [--fast-build] [--runs-dir runs/gpu] [--dry-run]
 
+Alternatively --param-configs '[{"gamma":0.995},{"gamma":0.99,"lr":1.5e-4}]'
+sweeps TRAINER hyperparameters instead of the clock: header regeneration is
+skipped (the clock stays baked at HEAD defaults), the params are appended as
+CLI flags to the derived spec's train command (allowlist: gamma, lr,
+ent_coef, gae_lambda, horizon, envs, policy), training is fresh-init by
+default (--resume stripped; --warmstart still honored if passed), labels are
+pcfg<i>, and the strict eval runs with the DEFAULT env clock. --configs and
+--param-configs are mutually exclusive.
+
 --parallel N runs configs through a thread pool of N concurrent sandboxes:
 each config gets a unique launcher label suffix (cfg<i>, scoping the
 launcher's one-sandbox concurrency guard), staging dir (runs/sweep-tmp-<i>/)
@@ -93,6 +102,13 @@ EVAL_SECONDS = 8.0
 ENV_BASE = "DUCK_PHASE_HZ_BASE"
 ENV_PER_MPS = "DUCK_PHASE_HZ_PER_MPS"
 
+# Trainer hyperparameters sweepable via --param-configs. Keys map to
+# walk.train.gpu_train CLI flags (underscore -> dash); horizon/envs are ints.
+PARAM_ALLOWLIST = ("gamma", "lr", "ent_coef", "gae_lambda", "horizon",
+                   "envs", "policy")
+PARAM_INT_KEYS = ("horizon", "envs")
+PARAM_POLICIES = ("ff", "gru")
+
 # Strict local evaluation, run in a FRESH .venv subprocess because
 # walk/env/flat.py reads the phase env vars at import time. The CPU idv1 lane
 # itself has no phase dependence (only the env obs/reward clock does), so the
@@ -107,25 +123,44 @@ from walk.env.contract import ACT, OBS
 from walk.env.flat import FlatFloorDuckEnv
 from walk.eval.capture import capture_episodes
 from walk.eval.gait import evaluate_episode
-from walk.train.ppo import Actor
+from walk.train.ppo import Actor, RecurrentActor, unpack_actor_file
 
 actor_path, library, out_path, seed_s, commands_s, seconds_s = sys.argv[1:7]
 seed = int(seed_s)
 commands = [float(x) for x in commands_s.split(",")]
-actor = Actor(OBS, ACT)
-actor.load_state_dict(torch.load(actor_path, map_location="cpu"))
+raw = torch.load(actor_path, map_location="cpu", weights_only=False)
+if isinstance(raw, dict) and "actor" in raw:       # full training checkpoint
+    raw = raw["actor"]
+arch, sd = unpack_actor_file(raw)                  # {"arch","state_dict"} or legacy
+actor = RecurrentActor(OBS, ACT) if arch == "gru" else Actor(OBS, ACT)
+actor.load_state_dict(sd)
 actor.eval()
 
-def policy(obs):
-    with torch.no_grad():
-        t = torch.as_tensor(np.asarray(obs, dtype=np.float32))
-        return actor.deterministic(t).numpy()
+def make_policy():
+    # Fresh policy per episode; the gru variant carries hidden state across
+    # steps WITHIN an episode (mirrors walk/eval/acceptance.py make_policy).
+    if arch == "ff":
+        @torch.no_grad()
+        def policy(obs):
+            o = torch.from_numpy(np.ascontiguousarray(obs, dtype=np.float32))
+            return actor.deterministic(o).numpy()
+        return policy
+    state = {"h": None}
+
+    @torch.no_grad()
+    def policy(obs):
+        o = torch.from_numpy(np.ascontiguousarray(obs, dtype=np.float32))
+        if state["h"] is None:
+            state["h"] = actor.initial_state(o.shape[0])
+        act, state["h"] = actor.deterministic(o, state["h"])
+        return act.numpy()
+    return policy
 
 env = FlatFloorDuckEnv(environments=1, seed=seed, library_path=library)
 episodes = []
 try:
     for cmd in commands:
-        traces = capture_episodes(env, policy, command=cmd,
+        traces = capture_episodes(env, make_policy(), command=cmd,
                                   seconds=float(seconds_s), seed=seed)
         episodes.append(evaluate_episode(traces[0]))
 finally:
@@ -166,6 +201,63 @@ def parse_configs(text):
     return configs
 
 
+def _param_cli_value(value):
+    """Exact CLI text for a validated param value."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return str(value)
+    return repr(float(value))
+
+
+def parse_param_configs(text):
+    """'[{"gamma":0.995},{"gamma":0.99,"lr":1.5e-4}]' -> list of dicts,
+    validated against the trainer-flag allowlist."""
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise SweepError(f"--param-configs is not valid JSON: {e}") from e
+    if not isinstance(raw, list) or not raw:
+        raise SweepError("--param-configs must be a non-empty JSON list of "
+                         "{param: value} objects")
+    configs = []
+    for i, params in enumerate(raw):
+        if not isinstance(params, dict) or not params:
+            raise SweepError(f"--param-configs[{i}] must be a non-empty object")
+        for key, value in params.items():
+            if key not in PARAM_ALLOWLIST:
+                raise SweepError(
+                    f"--param-configs[{i}]: unknown param {key!r}; allowed: "
+                    f"{', '.join(PARAM_ALLOWLIST)}")
+            if key == "policy":
+                if value not in PARAM_POLICIES:
+                    raise SweepError(f"--param-configs[{i}]: policy must be one "
+                                     f"of {PARAM_POLICIES}, got {value!r}")
+            elif key in PARAM_INT_KEYS:
+                if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                    raise SweepError(f"--param-configs[{i}]: {key} must be a "
+                                     f"positive int, got {value!r}")
+            else:
+                if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                        or not value > 0:
+                    raise SweepError(f"--param-configs[{i}]: {key} must be a "
+                                     f"positive number, got {value!r}")
+        configs.append(dict(params))
+    return configs
+
+
+def param_flags(params):
+    """Trainer CLI flags for one param config, in the given key order."""
+    return " ".join(f"--{k.replace('_', '-')} {_param_cli_value(v)}"
+                    for k, v in params.items())
+
+
+def param_tag(index, params):
+    """Filesystem-safe per-config tag, e.g. p0-gamma0.995-lr0.0003."""
+    return f"p{index}-" + "-".join(f"{k}{_param_cli_value(v)}"
+                                   for k, v in params.items())
+
+
 def validate_spec(spec_path=None):
     """Check the sweep spec references the fixed staging paths and injects
     the header before the build. (Full schema validation is the launcher's.)"""
@@ -199,26 +291,50 @@ def stage_rel_for(cfg_index=None):
     return DEFAULT_STAGE_REL if cfg_index is None else f"{DEFAULT_STAGE_REL}-{cfg_index}"
 
 
+def _append_train_flags(command, flags):
+    """Insert extra trainer flags before the output-redirection tail."""
+    if not flags:
+        return command
+    cut = command.find(" 2>&1")
+    if cut < 0:
+        return command + " " + flags
+    return command[:cut] + " " + flags + command[cut:]
+
+
 def derive_spec(base_raw, cfg_index=None, train_wall_s=DEFAULT_TRAIN_WALL_S,
-                fast_build=False):
+                fast_build=False, params=None, keep_header=True,
+                keep_warmstart=True, name_tag="cfg"):
     """Per-config spec derived in-memory from the base sweep-train spec.
 
     cfg_index is not None (parallel mode): unique spec name (-> unique run
-    dir stamp suffix) and per-config staging paths runs/sweep-tmp-<i>/ in
-    upload_extra and every job command. train_wall_s flows into the train
-    job's --max-wall-s and its remote timeout. fast_build prepends
-    SWEEP_FAST_BUILD=1 so the build job compiles only libduck_cuda_fast.so.
+    dir stamp suffix, tagged name_tag<i>) and per-config staging paths
+    runs/sweep-tmp-<i>/ in upload_extra and every job command. train_wall_s
+    flows into the train job's --max-wall-s and its remote timeout.
+    fast_build prepends SWEEP_FAST_BUILD=1 so the build job compiles only
+    libduck_cuda_fast.so.
+
+    Hyperparameter sweeps (--param-configs): params are appended as trainer
+    CLI flags; keep_header=False drops the header upload + inject-header job
+    (the clock stays baked at HEAD defaults); keep_warmstart=False strips
+    --resume and drops the warmstart upload (fresh-init training).
     """
     raw = copy.deepcopy(base_raw)
     if not 60 <= int(train_wall_s) <= LAUNCHER_WALL_CAP_S - TRAIN_TIMEOUT_SLACK_S:
         raise SweepError(f"--train-wall-s must be in [60, "
                          f"{LAUNCHER_WALL_CAP_S - TRAIN_TIMEOUT_SLACK_S}]")
     if cfg_index is not None:
-        raw["name"] = f"{base_raw['name']}-cfg{cfg_index}"
+        raw["name"] = f"{base_raw['name']}-{name_tag}{cfg_index}"
         old, new = DEFAULT_STAGE_REL + "/", stage_rel_for(cfg_index) + "/"
         raw["upload_extra"] = [x.replace(old, new) for x in raw.get("upload_extra", [])]
         for job in raw["jobs"]:
             job["command"] = job["command"].replace(old, new)
+    if not keep_header:
+        raw["upload_extra"] = [x for x in raw.get("upload_extra", [])
+                               if "duck_model.h" not in x]
+        raw["jobs"] = [j for j in raw["jobs"] if j["name"] != "inject-header"]
+    if not keep_warmstart:
+        raw["upload_extra"] = [x for x in raw.get("upload_extra", [])
+                               if "warmstart.pt" not in x]
     for job in raw["jobs"]:
         if job["name"] == "train":
             if not re.search(r"--max-wall-s \d+", job["command"]):
@@ -228,6 +344,11 @@ def derive_spec(base_raw, cfg_index=None, train_wall_s=DEFAULT_TRAIN_WALL_S,
                                     job["command"])
             job["timeout_s"] = min(int(train_wall_s) + TRAIN_TIMEOUT_SLACK_S,
                                    LAUNCHER_WALL_CAP_S)
+            if not keep_warmstart:
+                job["command"] = re.sub(r" --resume \S+", "", job["command"])
+            if params:
+                job["command"] = _append_train_flags(job["command"],
+                                                     param_flags(params))
         if fast_build and job["name"] == "build":
             if "SWEEP_FAST_BUILD" not in job["command"]:
                 raise SweepError("base spec's build job lacks the "
@@ -240,11 +361,18 @@ def derive_spec(base_raw, cfg_index=None, train_wall_s=DEFAULT_TRAIN_WALL_S,
 # Per-config plumbing
 # --------------------------------------------------------------------------
 
-def config_env(base, per_mps, base_env=None):
-    """Inherited environment plus the two phase-clock vars. Never printed."""
+def config_env(base=None, per_mps=None, base_env=None):
+    """Inherited environment plus the two phase-clock vars. Never printed.
+
+    base None (hyperparameter sweeps): STRIP any inherited clock overrides so
+    the subprocess sees exactly the HEAD-default clock."""
     env = dict(os.environ if base_env is None else base_env)
-    env[ENV_BASE] = repr(float(base))
-    env[ENV_PER_MPS] = repr(float(per_mps))
+    if base is None:
+        env.pop(ENV_BASE, None)
+        env.pop(ENV_PER_MPS, None)
+    else:
+        env[ENV_BASE] = repr(float(base))
+        env[ENV_PER_MPS] = repr(float(per_mps))
     return env
 
 
@@ -315,8 +443,10 @@ def find_new_run_dir(before, runs_dir=None, pattern=RUN_DIR_GLOB):
     return max(new, key=lambda p: p.name)
 
 
-def run_eval(base, per_mps, actor_path, out_json, runner=None, log=print):
-    """Strict local eval in a fresh .venv subprocess (env vars = config)."""
+def run_eval(actor_path, out_json, clock=None, runner=None, log=print):
+    """Strict local eval in a fresh .venv subprocess. clock=(base, per_mps)
+    pins the swept gait clock; clock=None evaluates with the DEFAULT env
+    clock (hyperparameter sweeps)."""
     runner = runner or subprocess.run
     out_json = Path(out_json)
     out_json.parent.mkdir(parents=True, exist_ok=True)
@@ -325,7 +455,8 @@ def run_eval(base, per_mps, actor_path, out_json, runner=None, log=print):
            str(EVAL_SEED), ",".join(f"{c:g}" for c in EVAL_COMMANDS),
            str(EVAL_SECONDS)]
     log(f"[sweep] strict eval: {actor_path}")
-    proc = runner(cmd, env=config_env(base, per_mps), cwd=str(REPO_ROOT))
+    env = config_env(*clock) if clock else config_env()
+    proc = runner(cmd, env=env, cwd=str(REPO_ROOT))
     if proc.returncode != 0:
         raise SweepError(f"strict eval failed (exit {proc.returncode})")
     if not out_json.is_file():
@@ -394,8 +525,11 @@ _TABLE_HEADER = (f"{'config (base,per)':<20} {'status':<14} "
 
 
 def table_row(rec):
-    base, per = rec["config"]
-    cfg = f"({base:g}, {per:g})"
+    c = rec["config"]
+    if isinstance(c, dict):
+        cfg = rec.get("tag", "params")
+    else:
+        cfg = f"({c[0]:g}, {c[1]:g})"
     m = rec.get("metrics")
     if not m:
         return f"{cfg:<20} {rec.get('status', '?'):<14} {'-':<5} {'-':<5} {'-':<5} {'-':<7} {'-':<7} {'-':<6}"
@@ -412,39 +546,57 @@ def table_row(rec):
 # Per-config driver
 # --------------------------------------------------------------------------
 
-def run_config(base, per_mps, warmstart, out_dir, legs=1, dry_run=False,
+def _cfg_identity(cfg):
+    """(clock-or-None, tag, jsonable config field) for one sweep config."""
+    if cfg["kind"] == "clock":
+        return ((cfg["base"], cfg["per_mps"]),
+                f"base{cfg['base']:g}-per{cfg['per_mps']:g}",
+                [cfg["base"], cfg["per_mps"]])
+    return None, cfg["tag"], dict(cfg["params"])
+
+
+def run_config(cfg, warmstart, out_dir, legs=1, dry_run=False,
                runner=None, log=print, *, spec_path=None, spec_name="sweep-train",
                stage_rel=DEFAULT_STAGE_REL, label_suffix=None, runs_dir=None):
     """Header -> stage -> leg(s) -> strict eval; returns the config record.
     Any leg failure is recorded and ends this config without raising.
 
+    cfg is {"kind": "clock", "base": B, "per_mps": P} (gait-clock sweep) or
+    {"kind": "param", "params": {...}, "tag": ...} (trainer hyperparameter
+    sweep: no header regeneration, eval under the DEFAULT clock, warmstart
+    optional / fresh-init when None).
+
     In --parallel mode each config gets its own spec_path / spec_name /
     stage_rel / label_suffix so N configs can run in N concurrent sandboxes
     without sharing staging files, run-dir detection globs, or the
     launcher's one-sandbox-per-label concurrency guard."""
-    tag = f"base{base:g}-per{per_mps:g}"
+    clock, tag, config_field = _cfg_identity(cfg)
     rec = {"schema": "duckgridwalk.sweep_config/1",
-           "config": [base, per_mps], "tag": tag,
+           "config": config_field, "tag": tag,
            "status": None, "legs": [], "metrics": None,
            "label_suffix": label_suffix, "spec": str(spec_path or SPEC_PATH)}
     run_pattern = f"*-{spec_name}"
-    header_path = REPO_ROOT / stage_rel / "duck_model.h"
-    try:
-        regenerate_header(base, per_mps, header_path, runner=runner, log=log)
-    except SweepError as e:
-        rec["status"], rec["error"] = "header_failed", str(e)
-        return rec
+    if clock:
+        header_path = REPO_ROOT / stage_rel / "duck_model.h"
+        try:
+            regenerate_header(clock[0], clock[1], header_path,
+                              runner=runner, log=log)
+        except SweepError as e:
+            rec["status"], rec["error"] = "header_failed", str(e)
+            return rec
 
-    resume_src = Path(warmstart)
+    resume_src = Path(warmstart) if warmstart else None
     last_success = None
     for leg in range(int(legs)):
-        leg_rec = {"leg": leg, "resume": str(resume_src)}
+        leg_rec = {"leg": leg,
+                   "resume": str(resume_src) if resume_src else None}
         rec["legs"].append(leg_rec)
-        try:
-            stage_warmstart(resume_src, stage_rel)
-        except SweepError as e:
-            rec["status"], leg_rec["error"] = "leg_failed", str(e)
-            return rec
+        if resume_src is not None:
+            try:
+                stage_warmstart(resume_src, stage_rel)
+            except SweepError as e:
+                rec["status"], leg_rec["error"] = "leg_failed", str(e)
+                return rec
         if dry_run:
             rc = launch_leg(spec_path, dry_run=True, label_suffix=label_suffix,
                             runs_dir=runs_dir, runner=runner, log=log)
@@ -472,7 +624,7 @@ def run_config(base, per_mps, warmstart, out_dir, legs=1, dry_run=False,
             break
         last_success = run_dir
         latest = run_dir / LATEST_REL
-        if latest.is_file():
+        if resume_src is not None and latest.is_file():
             resume_src = latest  # chain legs from the full checkpoint
 
     if dry_run:
@@ -483,9 +635,9 @@ def run_config(base, per_mps, warmstart, out_dir, legs=1, dry_run=False,
         return rec
 
     try:
-        episodes = run_eval(base, per_mps, last_success / ACTOR_REL,
+        episodes = run_eval(last_success / ACTOR_REL,
                             Path(out_dir) / f"eval-{tag}.json",
-                            runner=runner, log=log)
+                            clock=clock, runner=runner, log=log)
         rec["metrics"] = summarize_eval(episodes)
         rec["eval_json"] = str(Path(out_dir) / f"eval-{tag}.json")
         rec["status"] = "ok"
@@ -502,10 +654,17 @@ def _build_parser():
     ap = argparse.ArgumentParser(
         prog="sweep.py", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--configs", required=True,
+    ap.add_argument("--configs", default=None,
                     help="JSON list of [phase_hz_base, phase_hz_per_mps] pairs")
-    ap.add_argument("--warmstart", required=True,
-                    help="full training checkpoint to resume each config from")
+    ap.add_argument("--param-configs", default=None,
+                    help="JSON list of trainer hyperparameter objects, e.g. "
+                         '\'[{"gamma":0.995},{"gamma":0.99,"lr":1.5e-4}]\'; '
+                         f"allowed keys: {', '.join(PARAM_ALLOWLIST)}. "
+                         "Mutually exclusive with --configs.")
+    ap.add_argument("--warmstart", default=None,
+                    help="full training checkpoint to resume each config from "
+                         "(required for --configs; optional for --param-configs, "
+                         "which is fresh-init by default)")
     ap.add_argument("--out", required=True,
                     help="output dir for sweep-results.jsonl / summary.json")
     ap.add_argument("--legs-per-config", type=int, default=1,
@@ -532,9 +691,27 @@ def _build_parser():
 def main(argv=None, runner=None, log=print):
     args = _build_parser().parse_args(argv)
     try:
-        configs = parse_configs(args.configs)
+        if args.configs and args.param_configs:
+            raise SweepError(
+                "--configs and --param-configs are mutually exclusive: run the "
+                "gait-clock sweep and the trainer-hyperparameter sweep as two "
+                "separate invocations")
+        if not args.configs and not args.param_configs:
+            raise SweepError("one of --configs or --param-configs is required")
         base_raw = validate_spec()
-        if not Path(args.warmstart).is_file():
+        if args.configs:
+            clock_configs = parse_configs(args.configs)
+            param_configs = None
+            if not args.warmstart:
+                raise SweepError("--warmstart is required for --configs sweeps")
+        else:
+            clock_configs = None
+            param_configs = parse_param_configs(args.param_configs)
+            if not args.warmstart and args.legs_per_config > 1:
+                raise SweepError(
+                    "--legs-per-config > 1 with --param-configs requires "
+                    "--warmstart (fresh-init legs cannot chain checkpoints)")
+        if args.warmstart and not Path(args.warmstart).is_file():
             raise SweepError(f"warmstart checkpoint not found: {args.warmstart}")
         if args.legs_per_config < 1:
             raise SweepError("--legs-per-config must be >= 1")
@@ -558,24 +735,46 @@ def main(argv=None, runner=None, log=print):
     spec_dir.mkdir(parents=True, exist_ok=True)
     tasks = []
     try:
-        for i, (base, per_mps) in enumerate(configs):
-            idx = i if parallel_mode else None
-            raw = derive_spec(base_raw, cfg_index=idx,
-                              train_wall_s=args.train_wall_s,
-                              fast_build=args.fast_build)
-            spec_path = spec_dir / f"cfg{i}-{raw['name']}.json"
-            spec_path.write_text(json.dumps(raw, indent=2) + "\n")
-            tasks.append({"index": i, "base": base, "per_mps": per_mps,
-                          "spec_path": spec_path, "spec_name": raw["name"],
-                          "stage_rel": stage_rel_for(idx),
-                          "label_suffix": f"cfg{i}" if parallel_mode else None})
+        if clock_configs is not None:
+            for i, (base, per_mps) in enumerate(clock_configs):
+                idx = i if parallel_mode else None
+                raw = derive_spec(base_raw, cfg_index=idx,
+                                  train_wall_s=args.train_wall_s,
+                                  fast_build=args.fast_build)
+                spec_path = spec_dir / f"cfg{i}-{raw['name']}.json"
+                spec_path.write_text(json.dumps(raw, indent=2) + "\n")
+                tasks.append({"index": i,
+                              "cfg": {"kind": "clock", "base": base,
+                                      "per_mps": per_mps},
+                              "spec_path": spec_path, "spec_name": raw["name"],
+                              "stage_rel": stage_rel_for(idx),
+                              "label_suffix": f"cfg{i}" if parallel_mode else None})
+        else:
+            for i, params in enumerate(param_configs):
+                idx = i if parallel_mode else None
+                raw = derive_spec(base_raw, cfg_index=idx,
+                                  train_wall_s=args.train_wall_s,
+                                  fast_build=args.fast_build,
+                                  params=params, keep_header=False,
+                                  keep_warmstart=args.warmstart is not None,
+                                  name_tag="pcfg")
+                spec_path = spec_dir / f"pcfg{i}-{raw['name']}.json"
+                spec_path.write_text(json.dumps(raw, indent=2) + "\n")
+                tasks.append({"index": i,
+                              "cfg": {"kind": "param", "params": params,
+                                      "tag": param_tag(i, params)},
+                              "spec_path": spec_path, "spec_name": raw["name"],
+                              "stage_rel": stage_rel_for(idx),
+                              "label_suffix": f"pcfg{i}" if parallel_mode else None})
     except SweepError as e:
         log(f"[sweep] error: {e}")
         return EXIT_ERROR
 
-    log(f"[sweep] {len(configs)} config(s), {args.legs_per_config} leg(s) each, "
-        f"mode={mode}, parallel={args.parallel}, train_wall_s={args.train_wall_s}, "
-        f"fast_build={args.fast_build}, out={out_dir}")
+    sweep_kind = "clock" if clock_configs is not None else "param"
+    log(f"[sweep] {len(tasks)} {sweep_kind} config(s), {args.legs_per_config} "
+        f"leg(s) each, mode={mode}, parallel={args.parallel}, "
+        f"train_wall_s={args.train_wall_s}, fast_build={args.fast_build}, "
+        f"out={out_dir}")
     log("[sweep] " + _TABLE_HEADER)
 
     io_lock = threading.Lock()
@@ -585,7 +784,7 @@ def main(argv=None, runner=None, log=print):
             log(msg)
 
     def one(task):
-        return run_config(task["base"], task["per_mps"], args.warmstart, out_dir,
+        return run_config(task["cfg"], args.warmstart, out_dir,
                           legs=args.legs_per_config, dry_run=args.dry_run,
                           runner=runner, log=emit,
                           spec_path=task["spec_path"],
@@ -602,9 +801,9 @@ def main(argv=None, runner=None, log=print):
             try:
                 rec = fut.result()
             except Exception as e:  # a crashed config must not sink the others
+                _clock, tag, config_field = _cfg_identity(task["cfg"])
                 rec = {"schema": "duckgridwalk.sweep_config/1",
-                       "config": [task["base"], task["per_mps"]],
-                       "tag": f"base{task['base']:g}-per{task['per_mps']:g}",
+                       "config": config_field, "tag": tag,
                        "status": "error", "error": f"{type(e).__name__}: {e}",
                        "legs": [], "metrics": None,
                        "label_suffix": task["label_suffix"]}
@@ -632,7 +831,8 @@ def main(argv=None, runner=None, log=print):
         "parallel": args.parallel,
         "train_wall_s": args.train_wall_s,
         "fast_build": args.fast_build,
-        "warmstart": str(args.warmstart),
+        "sweep_kind": sweep_kind,
+        "warmstart": str(args.warmstart) if args.warmstart else None,
         "configs_total": len(records),
         "configs_completed": len(completed),
         "rank_key": ["commands_passed", "alt_sum"],

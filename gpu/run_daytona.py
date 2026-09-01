@@ -4,6 +4,15 @@
 Runs a job spec (compile / parity / bench / train) on an ephemeral spot GPU
 sandbox, downloads artifacts, and always deletes the sandbox (verified).
 
+Two modes:
+  run  — execute a spec. If the spec sets "use_snapshot": true and
+         gpu/image-manifest.json records a baked snapshot, the sandbox is
+         created from that snapshot (deps + prebuilt CUDA libs already in
+         place), skipping the ~2-3 min provision/nvcc/pip overhead.
+  bake — execute a bake spec (deps + prebuild into /opt/duck/prebuilt/<sha>),
+         snapshot the sandbox, verify the snapshot exists, record it in
+         gpu/image-manifest.json, then delete the sandbox as usual.
+
 Documented invocation (the API key must come from Doppler, never argv):
 
     doppler run --project hallway --config dev --only-secrets DAYTONA_API_KEY \
@@ -69,6 +78,13 @@ def label_with_suffix(suffix=None):
     return label
 REMOTE_WORKDIR = "/tmp/duckwork"
 REMOTE_TAR = "/tmp/duck-payload.tar"
+# Baked-snapshot support: `bake` provisions from the base image, preinstalls
+# deps + prebuilds the CUDA libs under this remote prefix, snapshots the
+# sandbox and records it here; `run` uses the snapshot when the spec sets
+# "use_snapshot": true and the manifest exists.
+REMOTE_PREBUILT_DIR = "/opt/duck/prebuilt"
+IMAGE_MANIFEST_NAME = "image-manifest.json"
+SNAPSHOT_NAME_PREFIX = "duck-gpu-prebuilt"
 DEFAULT_IMAGE = "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
 KNOWN_GPU_TYPES = ("RTX-5090", "RTX-4090", "H100", "H200", "RTX-PRO-6000")
 
@@ -166,6 +182,8 @@ class Spec:
     upload_extra: list
     jobs: list           # list[JobSpec]
     resources: ResourceSpec
+    use_snapshot: bool = False  # create from the baked snapshot in
+                                # gpu/image-manifest.json when available
 
 
 def _require(cond, msg):
@@ -234,7 +252,9 @@ def parse_spec(raw):
     _require(isinstance(res.image, str) and res.image, "resources.image must be a non-empty string")
     _require(res.gpu_types and all(g in KNOWN_GPU_TYPES for g in res.gpu_types),
              f"resources.gpu_types entries must be one of {KNOWN_GPU_TYPES}")
-    return Spec(raw["name"], tar_globs, upload_extra, jobs, res)
+    use_snapshot = raw.get("use_snapshot", False)
+    _require(isinstance(use_snapshot, bool), "spec.use_snapshot must be a boolean")
+    return Spec(raw["name"], tar_globs, upload_extra, jobs, res, use_snapshot)
 
 
 # --------------------------------------------------------------------------
@@ -278,6 +298,28 @@ def build_payload_tar(repo_root, spec, out_path):
 def tar_member_names(tar_path):
     with tarfile.open(tar_path, "r") as tf:
         return [m.name for m in tf.getmembers() if m.isfile()]
+
+
+# --------------------------------------------------------------------------
+# Baked-image manifest (gpu/image-manifest.json)
+# --------------------------------------------------------------------------
+
+def image_manifest_path(repo_root):
+    return Path(repo_root) / "gpu" / IMAGE_MANIFEST_NAME
+
+
+def load_image_manifest(path):
+    """Return the baked-image manifest dict, or None if absent/unreadable."""
+    p = Path(path)
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict) or not data.get("snapshot"):
+        return None
+    return data
 
 
 # --------------------------------------------------------------------------
@@ -352,6 +394,24 @@ class DaytonaProvider:
             auto_delete_interval=0,
             labels=dict(self._label, spec=spec.name),
         )
+        return self._create(params, timeout_s)
+
+    def create_from_snapshot(self, spec, snapshot_name, timeout_s):
+        """Create a sandbox from a baked snapshot. Resources/GPU type come
+        from the snapshot itself (the SDK's from-snapshot params carry no
+        resources); spot/ttl/labels still apply."""
+        d = self._daytona
+        params = d.CreateSandboxFromSnapshotParams(
+            snapshot=snapshot_name,
+            spot=spec.resources.spot,
+            ttl_minutes=spec.resources.ttl_minutes,
+            auto_delete_interval=0,
+            labels=dict(self._label, spec=spec.name),
+        )
+        return self._create(params, timeout_s)
+
+    def _create(self, params, timeout_s):
+        d = self._daytona
         try:
             sb = self._client.create(params, timeout=timeout_s)
         except d.DaytonaError as e:
@@ -360,6 +420,25 @@ class DaytonaProvider:
                 raise SpotUnavailableError(f"spot GPU capacity unavailable: {e}") from e
             raise LauncherError(f"sandbox creation failed: {e}") from e
         return SandboxHandle(sandbox_id=sb.id, raw=sb)
+
+    def create_snapshot(self, handle, name, timeout_s):
+        """Snapshot the sandbox filesystem into a reusable named snapshot."""
+        d = self._daytona
+        try:
+            handle.raw.create_snapshot(name, timeout=timeout_s)
+        except d.DaytonaError as e:
+            raise LauncherError(f"snapshot creation failed: {e}") from e
+
+    def snapshot_exists(self, name):
+        """Return the snapshot id if the named snapshot exists, else None."""
+        d = self._daytona
+        try:
+            snap = self._client.snapshot.get(name)
+        except d.DaytonaNotFoundError:
+            return None
+        except d.DaytonaError as e:
+            raise LauncherError(f"snapshot lookup failed: {e}") from e
+        return getattr(snap, "id", None) or name
 
     def upload(self, handle, local_path, remote_path):
         handle.raw.fs.upload_file(str(local_path), remote_path)
@@ -431,9 +510,15 @@ def _write_json(path, obj, redactor):
 
 
 def execute_run(spec, repo_root, run_dir, provider, redactor, deadline,
-                extra_gpu_types=(), log=print, label=None):
+                extra_gpu_types=(), log=print, label=None,
+                snapshot_name=None, post_success_hook=None):
     """Full lifecycle: tar -> create -> upload -> jobs -> artifacts ->
-    manifest -> delete (finally, verified). Returns process exit code."""
+    manifest -> delete (finally, verified). Returns process exit code.
+
+    snapshot_name: create the sandbox from this baked snapshot instead of
+    the spec's base image (resources then come from the snapshot).
+    post_success_hook(handle, run_dir, manifest): runs after all jobs
+    succeed, before deletion — used by `bake` to snapshot the sandbox."""
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     tar_path = run_dir / "payload.tar"
@@ -449,6 +534,7 @@ def execute_run(spec, repo_root, run_dir, provider, redactor, deadline,
         "commit": commit,
         "label": dict(label or LAUNCHER_LABEL),
         "gpu_types": gpu_types,
+        "snapshot_used": snapshot_name,
         "sandbox_id": None,
         "payload_tar_sha256": _sha256(tar_path),
         "jobs": [],
@@ -467,9 +553,16 @@ def execute_run(spec, repo_root, run_dir, provider, redactor, deadline,
                 f"another launcher sandbox already exists ({existing}); "
                 "one sandbox at a time — delete it first."
             )
-        log(f"[launcher] creating spot sandbox (gpu_types={gpu_types}, "
-            f"image={spec.resources.image}, ttl={spec.resources.ttl_minutes}m)")
-        handle = provider.create(spec, gpu_types, timeout_s=deadline.clip(300))
+        if snapshot_name:
+            log(f"[launcher] creating sandbox from snapshot {snapshot_name} "
+                f"(spot={spec.resources.spot}, ttl={spec.resources.ttl_minutes}m)")
+            handle = provider.create_from_snapshot(
+                spec, snapshot_name, timeout_s=deadline.clip(300))
+        else:
+            log(f"[launcher] creating sandbox (gpu_types={gpu_types}, "
+                f"image={spec.resources.image}, spot={spec.resources.spot}, "
+                f"ttl={spec.resources.ttl_minutes}m)")
+            handle = provider.create(spec, gpu_types, timeout_s=deadline.clip(300))
         manifest["sandbox_id"] = handle.sandbox_id
         log(f"[launcher] sandbox created: {handle.sandbox_id}")
 
@@ -477,7 +570,10 @@ def execute_run(spec, repo_root, run_dir, provider, redactor, deadline,
         provider.upload(handle, tar_path, REMOTE_TAR)
         unpack = provider.exec(
             handle,
-            f"mkdir -p {REMOTE_WORKDIR} && tar -xf {REMOTE_TAR} -C {REMOTE_WORKDIR}",
+            # rm -rf first: a baked snapshot may carry the bake's stale
+            # workdir; runs must start from exactly the uploaded payload
+            f"rm -rf {REMOTE_WORKDIR} && mkdir -p {REMOTE_WORKDIR} && "
+            f"tar -xf {REMOTE_TAR} -C {REMOTE_WORKDIR}",
             timeout_s=deadline.clip(120),
         )
         if unpack.exit_code != 0:
@@ -528,6 +624,8 @@ def execute_run(spec, repo_root, run_dir, provider, redactor, deadline,
                     stop = True
             else:
                 log(f"[launcher] job {job.name} ok ({wall}s)")
+        if exit_code == EXIT_OK and post_success_hook is not None:
+            post_success_hook(handle, run_dir, manifest)
     except SpotUnavailableError as e:
         log(f"[launcher] SPOT UNAVAILABLE: {redactor.redact(str(e))} (no retry, by policy)")
         exit_code = EXIT_SPOT_UNAVAILABLE
@@ -583,6 +681,51 @@ def execute_run(spec, repo_root, run_dir, provider, redactor, deadline,
 
 
 # --------------------------------------------------------------------------
+# Bake (image snapshot with deps + prebuilt CUDA libs)
+# --------------------------------------------------------------------------
+
+def make_bake_hook(spec, provider, redactor, deadline, manifest_path,
+                   snapshot_name, log=print):
+    """post_success_hook for `bake`: snapshot the sandbox, verify the
+    snapshot exists, and record it (plus the prebuilt source sha reported by
+    the bake job's prebuilt-sha.txt artifact) in gpu/image-manifest.json."""
+
+    def hook(handle, run_dir, manifest):
+        deadline.check("snapshot creation")
+        log(f"[bake] snapshotting sandbox {handle.sandbox_id} as {snapshot_name}")
+        provider.create_snapshot(handle, snapshot_name, timeout_s=deadline.clip(900))
+        snapshot_id = provider.snapshot_exists(snapshot_name)
+        if not snapshot_id:
+            raise LauncherError(
+                f"snapshot {snapshot_name} not found after creation; "
+                "NOT recording it in the image manifest"
+            )
+        source_sha = None
+        for sha_file in sorted(Path(run_dir).glob("artifacts/*/prebuilt-sha.txt")):
+            source_sha = sha_file.read_text().strip() or None
+        image_manifest = {
+            "snapshot": snapshot_name,
+            "snapshot_id": snapshot_id,
+            "source_sha": source_sha,
+            "commit": manifest.get("commit"),
+            "base_image": spec.resources.image,
+            "bake_spec": spec.name,
+            "prebuilt_dir": REMOTE_PREBUILT_DIR,
+            "baked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        _write_json(Path(manifest_path), image_manifest, redactor)
+        manifest["image_manifest"] = image_manifest
+        log(f"[bake] snapshot verified ({snapshot_id}); wrote {manifest_path}")
+        if source_sha:
+            log(f"[bake] prebuilt source sha: {source_sha}")
+        else:
+            log("[bake] warning: no prebuilt-sha.txt artifact found; "
+                "source_sha recorded as null (build guards will always rebuild)")
+
+    return hook
+
+
+# --------------------------------------------------------------------------
 # Dry run
 # --------------------------------------------------------------------------
 
@@ -623,22 +766,31 @@ def _build_parser():
         epilog="Documented invocation:\n  " + DOPPLER_INVOCATION,
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
-    run = sub.add_parser(
-        "run", help="run a job spec on an ephemeral spot GPU sandbox",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Documented invocation:\n  " + DOPPLER_INVOCATION,
-    )
-    run.add_argument("--spec", required=True, help="path to spec JSON (gpu/specs/<name>.json)")
-    run.add_argument("--dry-run", action="store_true",
-                     help="validate spec + build tar + print plan; zero provider calls")
-    run.add_argument("--gpu-type", action="append", default=[], choices=list(KNOWN_GPU_TYPES),
-                     help="additional GPU type fallback (e.g. RTX-4090); may repeat")
-    run.add_argument("--runs-dir", default=None,
-                     help="base dir for run outputs (default: <repo>/runs/gpu)")
-    run.add_argument("--label-suffix", default=None,
-                     help="append '-<slug>' to the launcher label value and scope "
-                          "the concurrency check + deletion verification to that "
-                          "exact label (enables N concurrent sweep sandboxes)")
+    for cmd, help_text in (
+        ("run", "run a job spec on an ephemeral GPU sandbox"),
+        ("bake", "run a bake spec, snapshot the sandbox, and record the "
+                 "snapshot in gpu/image-manifest.json"),
+    ):
+        p = sub.add_parser(
+            cmd, help=help_text,
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog="Documented invocation:\n  " + DOPPLER_INVOCATION,
+        )
+        p.add_argument("--spec", required=True, help="path to spec JSON (gpu/specs/<name>.json)")
+        p.add_argument("--dry-run", action="store_true",
+                       help="validate spec + build tar + print plan; zero provider calls")
+        p.add_argument("--gpu-type", action="append", default=[], choices=list(KNOWN_GPU_TYPES),
+                       help="additional GPU type fallback (e.g. RTX-4090); may repeat")
+        p.add_argument("--runs-dir", default=None,
+                       help="base dir for run outputs (default: <repo>/runs/gpu)")
+        p.add_argument("--label-suffix", default=None,
+                       help="append '-<slug>' to the launcher label value and scope "
+                            "the concurrency check + deletion verification to that "
+                            "exact label (enables N concurrent sweep sandboxes)")
+        if cmd == "run":
+            p.add_argument("--no-snapshot", action="store_true",
+                           help="ignore gpu/image-manifest.json and provision from "
+                                "the base image even if the spec sets use_snapshot")
     return ap
 
 
@@ -661,10 +813,30 @@ def main(argv=None, provider_factory=None, repo_root=None, env=None, log=print):
     stamp = time.strftime("%Y%m%d-%H%M%S")
     runs_base = Path(args.runs_dir) if args.runs_dir else repo_root / "runs" / "gpu"
     run_dir = runs_base / f"{stamp}-{spec.name}"
+    manifest_path = image_manifest_path(repo_root)
+
+    # snapshot selection (run only; bake always provisions from the base image)
+    snapshot_name = None
+    if args.cmd == "run" and spec.use_snapshot and not getattr(args, "no_snapshot", False):
+        im = load_image_manifest(manifest_path)
+        if im:
+            snapshot_name = im["snapshot"]
+            log(f"[launcher] spec requests snapshot; using {snapshot_name} "
+                f"(baked source sha: {im.get('source_sha')})")
+        else:
+            log(f"[launcher] spec requests snapshot but {manifest_path} is "
+                "missing/empty; falling back to the base image (run `bake` "
+                "to create one)")
 
     if args.dry_run:
         try:
-            return dry_run(spec, repo_root, run_dir, log=log)
+            code = dry_run(spec, repo_root, run_dir, log=log)
+            if args.cmd == "bake":
+                log(f"[dry-run] bake would snapshot as {SNAPSHOT_NAME_PREFIX}-{stamp} "
+                    f"and write {manifest_path}")
+            elif snapshot_name:
+                log(f"[dry-run] run would create from snapshot {snapshot_name}")
+            return code
         except LauncherError as e:
             log(f"[dry-run] error: {e}")
             return EXIT_ERROR
@@ -682,9 +854,17 @@ def main(argv=None, provider_factory=None, repo_root=None, env=None, log=print):
     except LauncherError as e:
         log(f"[launcher] {redactor.redact(str(e))}")
         return EXIT_ERROR
+
+    post_success_hook = None
+    if args.cmd == "bake":
+        post_success_hook = make_bake_hook(
+            spec, provider, redactor, deadline, manifest_path,
+            snapshot_name=f"{SNAPSHOT_NAME_PREFIX}-{stamp}", log=log,
+        )
     return execute_run(
         spec, repo_root, run_dir, provider, redactor, deadline,
         extra_gpu_types=args.gpu_type, log=log, label=label,
+        snapshot_name=snapshot_name, post_success_hook=post_success_hook,
     )
 
 

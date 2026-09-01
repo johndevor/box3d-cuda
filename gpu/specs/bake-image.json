@@ -1,0 +1,47 @@
+{
+  "name": "bake-image",
+  "tar_globs": [],
+  "upload_extra": [],
+  "jobs": [
+    {
+      "name": "gpu-info",
+      "command": "nvidia-smi | tee gpu-info.txt && nvcc --version | tee -a gpu-info.txt",
+      "timeout_s": 60,
+      "artifacts": [
+        "gpu-info.txt"
+      ],
+      "continue_on_error": false
+    },
+    {
+      "name": "deps",
+      "command": "set -o pipefail; python3 -m pip install --quiet numpy 2>&1 | tee deps.log && python3 -c 'import numpy; print(\"numpy\", numpy.__version__)' 2>&1 | tee -a deps.log",
+      "timeout_s": 300,
+      "artifacts": [
+        "deps.log"
+      ],
+      "continue_on_error": false
+    },
+    {
+      "name": "prebuild",
+      "command": "set -o pipefail; DSHA=$(find experimental/duck_cuda -type f -not -path '*/build-remote/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1); echo \"source sha $DSHA\" | tee build.log; (cd experimental/duck_cuda && ./build_remote.sh) 2>&1 | tee -a build.log && mkdir -p /opt/duck/prebuilt/$DSHA && cp -f experimental/duck_cuda/build-remote/libduck_cuda*.so /opt/duck/prebuilt/$DSHA/ && echo $DSHA > /opt/duck/prebuilt/CURRENT && printf %s \"$DSHA\" | tee prebuilt-sha.txt && ls -la /opt/duck/prebuilt/$DSHA | tee -a build.log",
+      "timeout_s": 900,
+      "artifacts": [
+        "build.log",
+        "prebuilt-sha.txt"
+      ],
+      "continue_on_error": false
+    }
+  ],
+  "resources": {
+    "cpu": 4,
+    "memory_gib": 16,
+    "disk_gib": 20,
+    "gpu": 1,
+    "gpu_types": [
+      "RTX-5090"
+    ],
+    "spot": false,
+    "ttl_minutes": 25,
+    "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
+  }
+}

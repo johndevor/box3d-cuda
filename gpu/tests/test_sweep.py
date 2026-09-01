@@ -141,6 +141,14 @@ class SweepTestCase(unittest.TestCase):
         code = sweep.main(argv, runner=runner, log=logs.append)
         return code, logs
 
+    def run_param_main(self, runner, param_configs, warmstart=False, extra=()):
+        argv = ["--param-configs", param_configs, "--out", str(self.out), *extra]
+        if warmstart:
+            argv += ["--warmstart", str(self.warmstart)]
+        logs = []
+        code = sweep.main(argv, runner=runner, log=logs.append)
+        return code, logs
+
     def results(self):
         return [json.loads(x) for x in
                 (self.out / "sweep-results.jsonl").read_text().splitlines()]

@@ -25,14 +25,60 @@ provider calls**, works without the key):
 ```
 
 Optional GPU fallback: `--gpu-type RTX-4090` appends a fallback type after
-the spec's `gpu_types` (default `["RTX-5090"]`).
+the spec's `gpu_types` (default `["RTX-5090"]`). `--label-suffix <slug>`
+scopes the one-sandbox guard to `duck-grid-walk-gpu-<slug>` so a sweep can
+run several configs concurrently, one suffix each.
+
+## Baked snapshot fast path (skip provision/nvcc/pip overhead)
+
+Fresh runs pay ~2-3 min for image pull + nvcc build + `pip install numpy`.
+The `bake` mode eliminates that by snapshotting a fully prepared sandbox:
+
+```sh
+doppler run --project hallway --config dev --only-secrets DAYTONA_API_KEY --no-fallback -- \
+  /Users/john/.cache/box3d-cuda-host-runtime-0.207.0/bin/python -B \
+  gpu/run_daytona.py bake --spec gpu/specs/bake-image.json
+```
+
+What bake does:
+1. Provisions from the base image and runs the bake spec's jobs: capture
+   `nvidia-smi`, `pip install numpy` for `python3`, build
+   `experimental/duck_cuda` from git HEAD, and store the built
+   `libduck_cuda*.so` under `/opt/duck/prebuilt/<source-sha>/` (the sha is a
+   content hash of the `experimental/duck_cuda` tree, reported back via the
+   `prebuilt-sha.txt` artifact).
+2. Snapshots the sandbox (`Sandbox.create_snapshot`), verifies the snapshot
+   exists by name, and records `{snapshot, snapshot_id, source_sha, commit,
+   base_image, baked_at}` in `gpu/image-manifest.json`.
+3. Deletes the sandbox with the usual verified-deletion policy.
+
+Using it: a spec that sets `"use_snapshot": true` (all train specs do) is
+created from the manifest's snapshot instead of the base image whenever
+`gpu/image-manifest.json` exists. `--no-snapshot` forces the base image.
+Resources/GPU type are then inherited from the snapshot (the SDK's
+from-snapshot params carry no resource overrides); spot/TTL/labels still
+come from the spec.
+
+The train specs' `build` jobs are guarded: they recompute the source hash of
+the uploaded `experimental/duck_cuda` tree and, if
+`/opt/duck/prebuilt/<sha>/libduck_cuda*.so` exists, copy the cached libs and
+**skip nvcc** ("prebuilt cache HIT"). A mismatch is normal — it just means
+sources changed since the bake — and triggers a regular rebuild ("prebuilt
+cache MISS"). Likewise numpy: the train commands' `import numpy || pip
+install numpy` guard becomes a no-op on a baked snapshot.
+
+Refresh workflow: re-run the bake whenever `experimental/duck_cuda` or the
+base image changes materially (a stale snapshot still works — builds just
+fall back to nvcc). The bake overwrites `gpu/image-manifest.json`; old
+snapshots can be pruned in the Daytona dashboard. Deleting
+`gpu/image-manifest.json` disables the fast path entirely.
 
 ## Budget policy (hard limits)
 
 - **One sandbox at a time.** Before creating, the launcher lists sandboxes
   carrying the `launcher=duck-grid-walk-gpu` label and refuses to start if
   any exist.
-- **1500 s host wall-clock cap** per invocation. Per-job remote timeouts come
+- **3300 s host wall-clock cap** per invocation. Per-job remote timeouts come
   from the spec (`timeout_s`) and are clipped to the remaining budget. When
   the budget is exhausted, remaining jobs are aborted (exit 5) but deletion
   still runs.
@@ -59,7 +105,7 @@ left behind. Just re-run later or add `--gpu-type RTX-4090`.
 | 2 | a job exited nonzero |
 | 3 | spot capacity unavailable (typed, no retry) |
 | 4 | sandbox deletion could not be verified — act immediately |
-| 5 | 1500 s host wall-clock budget exceeded |
+| 5 | 3300 s host wall-clock budget exceeded |
 
 ## Secrets discipline (enforced in code)
 
@@ -90,6 +136,8 @@ left behind. Just re-run later or add `--gpu-type RTX-4090`.
       "continue_on_error": false      // default false: stop on first failure
     }
   ],
+  "use_snapshot": false,              // true = create from the baked snapshot
+                                      // in gpu/image-manifest.json when present
   "resources": {                      // all optional; defaults shown
     "cpu": 4, "memory_gib": 16, "disk_gib": 20, "gpu": 1,
     "gpu_types": ["RTX-5090"], "spot": true, "ttl_minutes": 25,
@@ -129,6 +177,14 @@ Verified against the pinned host runtime
 - `Sandbox.process.exec(command, cwd=None, env=None, timeout=None) ->
   ExecuteResponse` with fields `exit_code`, `result` (combined output),
   `artifacts` (`ExecutionArtifacts` with `stdout` / charts).
+- Snapshots: `Sandbox.create_snapshot(name, timeout=...)` captures the
+  sandbox filesystem into a named snapshot;
+  `CreateSandboxFromSnapshotParams(snapshot=<name>, spot=..., ttl_minutes=...,
+  labels=...)` creates from it (no `resources` field — cpu/mem/disk/gpu/
+  gpu_type are carried by the snapshot, confirmed by the `Snapshot` model's
+  fields); `Daytona.snapshot` is a `SnapshotService` with
+  `get(name) -> Snapshot`, `list(...)`, `delete(snapshot)`,
+  `create(CreateSnapshotParams, ...)`, `activate(...)`.
 - Typed errors: `daytona.DaytonaError` base, plus `DaytonaTimeoutError`,
   `DaytonaNotFoundError`, `DaytonaRateLimitError`, etc.
 - `GpuType` is a str enum: `RTX_5090 = "RTX-5090"`, `RTX_4090`, `H100`,

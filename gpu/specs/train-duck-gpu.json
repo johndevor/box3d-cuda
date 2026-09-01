@@ -16,7 +16,7 @@
     },
     {
       "name": "build",
-      "command": "set -o pipefail; cd experimental/duck_cuda && ./build_remote.sh 2>&1 | tee ../../build.log",
+      "command": "set -o pipefail; DSHA=$(find experimental/duck_cuda -type f -not -path '*/build-remote/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1); PRE=/opt/duck/prebuilt/$DSHA; if ls \"$PRE\"/libduck_cuda*.so >/dev/null 2>&1; then echo \"prebuilt cache HIT $DSHA (skipping nvcc)\" | tee build.log && mkdir -p experimental/duck_cuda/build-remote && cp -f \"$PRE\"/libduck_cuda*.so experimental/duck_cuda/build-remote/; else echo \"prebuilt cache MISS $DSHA (rebuilding; expected after source changes)\" | tee build.log; (cd experimental/duck_cuda && ./build_remote.sh) 2>&1 | tee -a build.log; fi",
       "timeout_s": 600,
       "artifacts": [
         "build.log"
@@ -47,5 +47,6 @@
     "spot": false,
     "ttl_minutes": 50,
     "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
-  }
+  },
+  "use_snapshot": true
 }
