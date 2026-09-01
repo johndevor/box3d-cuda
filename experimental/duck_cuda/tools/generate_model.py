@@ -16,6 +16,7 @@ Usage: .venv/bin/python -B experimental/duck_cuda/tools/generate_model.py \
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -187,6 +188,35 @@ def emit(native, fixture, cm) -> str:
               "W_DOUBLE_SUPPORT", "DOUBLE_SUPPORT_GRACE", "W_ALTERNATE",
               "W_SAME_FOOT", "W_PHASE"]],
         f"#define DW_RW_TICKS_FULL {int(reward_mod.TICKS_FULL)}u",
+        "// ENV contract pins (walk/env/flat.py), same generation-time",
+        "// import: the kernel's device policy layer consumes these",
+        "// (obs width/offsets, action->target chain, termination), so the",
+        "// SAME kernel source serves any generated model header. Obs",
+        "// layout (3*J + 16): [0:J] q-HOME, [J:2J] QDOT_OBS_SCALE*qdot,",
+        "// [2J:3J] prev action, then gravity(3) / R^T omega(3) / R^T v(3) /",
+        "// command / 2 zeros / 2 contacts / phase sin+cos.",
+        f"#define DW_ENV_OBS {int(flat.OBS)}",
+        f"#define DW_ENV_ACT {int(flat.ACT)}",
+        f"#define DW_ENV_TICKS_PER_STEP {int(flat.TICKS_PER_STEP)}u",
+        f"#define DW_ENV_CONTROL_DT {float(flat.CONTROL_DT)!r}",
+        f"#define DW_ENV_ACTION_SCALE {float(flat.ACTION_SCALE)!r}",
+        "#define DW_ENV_MAX_TARGET_INCREMENT "
+        + f"{float(flat.MAX_TARGET_INCREMENT)!r}",
+        f"#define DW_ENV_QDOT_OBS_SCALE {float(flat.QDOT_OBS_SCALE)!r}",
+        f"#define DW_ENV_HORIZON_STEPS {int(flat.HORIZON_STEPS)}u",
+        "#define DW_ENV_MIN_HEIGHT_FRACTION "
+        + f"{float(flat.MIN_HEIGHT_FRACTION)!r}",
+        f"#define DW_ENV_MAX_TILT_RAD {float(flat.MAX_TILT_RAD)!r}",
+        "// termination up-scalar = cos(MAX_TILT), pinned in f64 here so the",
+        "// kernel never calls libm cos() on it (bit-identical across libms).",
+        "#define DW_ENV_COS_MAX_TILT "
+        + f"{float(math.cos(flat.MAX_TILT_RAD))!r}",
+        "// Which BODY axis is 'up' for the tilt test: 2 = body +Z (duck,",
+        "// up = R[2][2] = 1-2(qx^2+qy^2)); 1 = body +Y (H0 humanoid,",
+        "// up = R[2][1] = 2(qy*qz+qx*qw), humanoid_native_lane.tilt).",
+        "#define DW_ENV_UP_AXIS 2",
+        "DW_MODEL_CONST double DW_ENV_COMMANDS_MPS[3] = {"
+        + ",".join(f"{float(c)!r}" for c in flat.COMMANDS_MPS) + "};",
         "// reward.py v12 self-imitation: phase-indexed reference joint cycle",
         "// (walk/env/reference_gait.json), same generation-time pinning.",
         f"#define DW_REF_BINS {int(reward_mod.REF_BINS)}",

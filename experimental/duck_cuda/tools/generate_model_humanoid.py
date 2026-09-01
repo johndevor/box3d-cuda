@@ -36,6 +36,7 @@ Usage: .venv/bin/python -B experimental/duck_cuda/tools/generate_model_humanoid.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -177,10 +178,10 @@ def emit(h0) -> str:
         f"#define DW_IMIT_W {float(reward_mod.W_IMIT)!r}",
         f"#define DW_IMIT_SIGMA_SQ {float(reward_mod.IMIT_SIGMA_SQ)!r}",
         "// HUMANOID env contract pins (walk/env/humanoid_flat.py). The",
-        "// kernel's duck policy layer does NOT consume these yet (its",
-        "// DWP_OBS/offsets/action macros are duck-hardcoded -- the pending",
-        "// kernel edit, FEASIBILITY.md section 2); they pin the env<->header",
-        "// contract for that edit. Obs layout (52 = 3*J + 16):",
+        "// kernel's device policy layer consumes these directly (obs",
+        "// width/offsets, action->target chain, termination up-axis), so",
+        "// dwc1_step_policy/observe are first-class on this build.",
+        "// Obs layout (52 = 3*J + 16):",
         "//   [0:12] q-HOME  [12:24] 0.05*qdot  [24:36] prev action",
         "//   [36:39] gravity body (-R[2])  [39:42] R^T omega  [42:45] R^T v",
         "//   [45] command  [46:48] zeros  [48:50] contacts  [50:52] phase",
@@ -196,6 +197,13 @@ def emit(h0) -> str:
         "#define DW_ENV_MIN_HEIGHT_FRACTION "
         + f"{float(env_mod.MIN_HEIGHT_FRACTION)!r}",
         f"#define DW_ENV_MAX_TILT_RAD {float(env_mod.MAX_TILT_RAD)!r}",
+        "// termination up-scalar = cos(MAX_TILT), pinned in f64 (no libm",
+        "// cos() in the kernel).",
+        "#define DW_ENV_COS_MAX_TILT "
+        + f"{float(math.cos(env_mod.MAX_TILT_RAD))!r}",
+        "// tilt tests BODY +Y against world +Z (authored y-up-local root:",
+        "// up = R[2][1] = 2*(qy*qz + qx*qw), humanoid_native_lane.tilt).",
+        "#define DW_ENV_UP_AXIS 1",
         "DW_MODEL_CONST double DW_ENV_COMMANDS_MPS[3] = {"
         + ",".join(f"{float(c)!r}" for c in env_mod.COMMANDS_MPS) + "};",
         "// ALL-ZERO placeholder: no humanoid reference gait exists"

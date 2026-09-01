@@ -155,26 +155,32 @@ int dwc1_read(const dwc1_scene*, float* qpos, float* velocity, float* warm,
 
 // ---- device-side policy path (obs + reward + termination in-kernel) -------
 // One policy step entirely on device: clip(actions,+-1) -> targets =
-// clip(HOME + 0.25*a, previous targets +- 0.1048) (persistent per-env slew
-// reference, frozen while done) -> joint-limit clip -> n_ticks physics ->
-// reward.py (tracker state lives in the env state) -> termination (root
-// height < 0.7*home, tilt > 45 deg, nonfinite, 400-step horizon) -> 58-dim
-// observation. The policy chain runs in f64 mirroring the python env exactly
-// (walk/env/flat.py and walk/env/reward.py are the contract). Done
+// clip(HOME + DW_ENV_ACTION_SCALE*a, previous targets +-
+// DW_ENV_MAX_TARGET_INCREMENT) (persistent per-env slew reference, frozen
+// while done) -> joint-limit clip -> n_ticks physics -> reward (tracker
+// state lives in the env state) -> termination (root height <
+// DW_ENV_MIN_HEIGHT_FRACTION*home, tilt > DW_ENV_MAX_TILT_RAD on the
+// model's up-axis, nonfinite, DW_ENV_HORIZON_STEPS) -> DW_ENV_OBS-dim
+// observation. Every constant comes from the generated model header's
+// DW_ENV_* contract block: duck builds mirror walk/env/flat.py +
+// walk/env/reward.py (OBS 58 / ACT 14), humanoid builds mirror
+// walk/env/humanoid_flat.py + walk/env/humanoid_reward.py (OBS 52 /
+// ACT 12); the selected header's python env pair is the contract. The
+// policy chain runs in f64 mirroring the python env exactly. Done
 // environments keep stepping physics with frozen targets, return reward 0
-// and stay done until reset (no auto-reset), like FlatFloorDuckEnv. A solver
+// and stay done until reset (no auto-reset), like the python envs. A solver
 // fault (where the python env raises SolverFault) freezes the env at its
 // last accepted tick, marks it done and reports via its diagnostic; the call
 // still returns DWC1_OK so training batches survive per-env faults.
-//   actions [E,14] f32 in [-1,1]; obs [E,58] f32; reward [E] f32;
+//   actions [E,DW_J] f32 in [-1,1]; obs [E,DW_ENV_OBS] f32; reward [E] f32;
 //   done [E] u8; diagnostics [E].
 int dwc1_step_policy(dwc1_scene*, const float* actions, uint32_t n_ticks,
                      float* obs, float* reward, uint8_t* done,
                      dwc1_diagnostic* diagnostics);
 
-// The 58-dim observation of the current state (no stepping): what
-// FlatFloorDuckEnv.reset()/set_command() return.
-int dwc1_observe(const dwc1_scene*, float* obs /* [E,58] */);
+// The DW_ENV_OBS-dim observation of the current state (no stepping): what
+// the python env's reset()/set_command() return.
+int dwc1_observe(const dwc1_scene*, float* obs /* [E,DW_ENV_OBS] */);
 
 // Commanded forward velocity (m/s) for every env, f64 to match the python
 // command values exactly.

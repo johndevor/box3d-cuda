@@ -91,6 +91,31 @@ DW_MODEL_CONST double DW_HOME_TARGETS_F64[DW_J] = {0.002,0.052999999999999999,-0
 #define DW_RW_W_SAME_FOOT 2.0
 #define DW_RW_W_PHASE 0.5
 #define DW_RW_TICKS_FULL 10u
+// ENV contract pins (walk/env/flat.py), same generation-time
+// import: the kernel's device policy layer consumes these
+// (obs width/offsets, action->target chain, termination), so the
+// SAME kernel source serves any generated model header. Obs
+// layout (3*J + 16): [0:J] q-HOME, [J:2J] QDOT_OBS_SCALE*qdot,
+// [2J:3J] prev action, then gravity(3) / R^T omega(3) / R^T v(3) /
+// command / 2 zeros / 2 contacts / phase sin+cos.
+#define DW_ENV_OBS 58
+#define DW_ENV_ACT 14
+#define DW_ENV_TICKS_PER_STEP 10u
+#define DW_ENV_CONTROL_DT 0.02
+#define DW_ENV_ACTION_SCALE 0.25
+#define DW_ENV_MAX_TARGET_INCREMENT 0.1048
+#define DW_ENV_QDOT_OBS_SCALE 0.05
+#define DW_ENV_HORIZON_STEPS 400u
+#define DW_ENV_MIN_HEIGHT_FRACTION 0.7
+#define DW_ENV_MAX_TILT_RAD 0.7853981633974483
+// termination up-scalar = cos(MAX_TILT), pinned in f64 here so the
+// kernel never calls libm cos() on it (bit-identical across libms).
+#define DW_ENV_COS_MAX_TILT 0.7071067811865476
+// Which BODY axis is 'up' for the tilt test: 2 = body +Z (duck,
+// up = R[2][2] = 1-2(qx^2+qy^2)); 1 = body +Y (H0 humanoid,
+// up = R[2][1] = 2(qy*qz+qx*qw), humanoid_native_lane.tilt).
+#define DW_ENV_UP_AXIS 2
+DW_MODEL_CONST double DW_ENV_COMMANDS_MPS[3] = {0.1,0.15,0.2};
 // reward.py v12 self-imitation: phase-indexed reference joint cycle
 // (walk/env/reference_gait.json), same generation-time pinning.
 #define DW_REF_BINS 64

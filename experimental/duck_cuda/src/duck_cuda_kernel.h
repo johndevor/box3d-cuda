@@ -1530,20 +1530,25 @@ static DW_HD void dw_fill_info(uint32_t environments, dwc1_info* info) {
 }
 
 // ==================== device policy layer ==================================
-// Verbatim f64 port of walk/env/flat.py (action->target slew chain,
-// 58-dim observation, termination) and walk/env/reward.py v8 (EMA velocity
+// Verbatim f64 port of the flat-floor env contract (action->target slew
+// chain, 3*J+16 observation, termination) and its reward (EMA velocity
 // tracking, alive, lateral/yaw, action-rate, torque, phase-gated qualified
 // steps with placement/opposite-support/stance gates, chatter, flicker via
 // the device contact-tick counters, clearance, phase-match, double-support,
-// alternation/same-foot). Those two files are the contract; the parity test
-// runs FlatFloorDuckEnv and this path side by side.
-#define DWP_OBS 58
+// alternation/same-foot, optional self-imitation). EVERY env constant comes
+// from the generated model header's DW_ENV_* contract block, so the same
+// kernel source serves the duck (walk/env/flat.py + reward.py, OBS 58 /
+// ACT 14) and the H0 humanoid (walk/env/humanoid_flat.py +
+// humanoid_reward.py, OBS 52 / ACT 12) purely by header selection; the
+// python env pair for the selected header is the contract and the parity
+// tests run them side by side.
+#define DWP_OBS DW_ENV_OBS
 #define DWP_PI 3.141592653589793
-#define DWP_CONTROL_DT 0.02
-#define DWP_ACTION_SCALE 0.25
-#define DWP_MAX_TARGET_INCREMENT (5.24 * 0.02)   // flat.py f64 expression
-#define DWP_HORIZON 400u
-#define DWP_COS_MAX_TILT 0.70710678118654757     // tilt > 45deg  <=>  up < cos
+#define DWP_CONTROL_DT DW_ENV_CONTROL_DT
+#define DWP_ACTION_SCALE DW_ENV_ACTION_SCALE
+#define DWP_MAX_TARGET_INCREMENT DW_ENV_MAX_TARGET_INCREMENT
+#define DWP_HORIZON DW_ENV_HORIZON_STEPS
+#define DWP_COS_MAX_TILT DW_ENV_COS_MAX_TILT     // tilt > max  <=>  up < cos
 // reward.py weights/constants: GENERATED into duck_model.h from reward.py
 // itself (DW_RW_*), so any python-side weight change fails the header-drift
 // test until the header is regenerated. The kernel keeps its DWP_ aliases.
@@ -1581,7 +1586,7 @@ static DW_HD void dw_fill_info(uint32_t environments, dwc1_info* info) {
 static DW_HD double dw_policy_phase(double phase0, uint32_t t, double command) {
   return phase0
        + ((2.0 * DWP_PI) * (DW_PHASE_HZ_BASE + DW_PHASE_HZ_PER_MPS * command))
-         * (double)t * 0.02;
+         * (double)t * DW_ENV_CONTROL_DT;
 }
 
 // native_lane.quat_to_rot in f64 (body->world rotation from xyzw quat).
@@ -1598,34 +1603,37 @@ static DW_HD void dw_quat_rot_f64(const float* q, double R[3][3]) {
   R[2][2] = 1.0 - 2.0 * (x * x + y * y);
 }
 
-// flat.py _observe(): the 58-dim observation at the CURRENT state (uses the
-// post-increment step counter, exactly like the python env).
+// env _observe(): the DW_ENV_OBS (= 3*J + 16) observation at the CURRENT
+// state (uses the post-increment step counter, exactly like the python env).
+// Tail block base T = 3*DW_J: duck 42..57, humanoid 36..51 -- identical
+// relative layout on both models.
 static DW_HD void dw_policy_observe(const DwState* s, float* obs) {
+  const int T = 3 * DW_J;
   double R[3][3];
   dw_quat_rot_f64(s->q + 3, R);
   for (int j = 0; j < DW_J; j++) {
     obs[j] = (float)((double)s->q[7 + j] - DW_HOME_TARGETS_F64[j]);
-    obs[14 + j] = (float)(0.05 * (double)s->v[6 + j]);
-    obs[28 + j] = s->prev_action[j];
+    obs[DW_J + j] = (float)(DW_ENV_QDOT_OBS_SCALE * (double)s->v[6 + j]);
+    obs[2 * DW_J + j] = s->prev_action[j];
   }
   for (int i = 0; i < 3; i++) {
-    obs[42 + i] = (float)(-R[2][i]);
+    obs[T + i] = (float)(-R[2][i]);
     double wv = 0, lv = 0;                      // einsum("eji,ej->ei"): R^T v
     for (int j = 0; j < 3; j++) {
       wv += R[j][i] * (double)s->v[3 + j];
       lv += R[j][i] * (double)s->v[j];
     }
-    obs[45 + i] = (float)wv;
-    obs[48 + i] = (float)lv;
+    obs[T + 3 + i] = (float)wv;
+    obs[T + 6 + i] = (float)lv;
   }
-  obs[51] = (float)s->command;
-  obs[52] = 0.0f;
-  obs[53] = 0.0f;
-  obs[54] = s->cache[0].count > 0 ? 1.0f : 0.0f;
-  obs[55] = s->cache[1].count > 0 ? 1.0f : 0.0f;
+  obs[T + 9] = (float)s->command;
+  obs[T + 10] = 0.0f;
+  obs[T + 11] = 0.0f;
+  obs[T + 12] = s->cache[0].count > 0 ? 1.0f : 0.0f;
+  obs[T + 13] = s->cache[1].count > 0 ? 1.0f : 0.0f;
   double phase = dw_policy_phase(s->phase0, s->t, s->command);
-  obs[56] = (float)sin(phase);
-  obs[57] = (float)cos(phase);
+  obs[T + 14] = (float)sin(phase);
+  obs[T + 15] = (float)cos(phase);
 }
 
 // reward.py reward(): updates the tracker fields in place (for every env,
@@ -1721,10 +1729,15 @@ static DW_HD float dw_policy_reward(DwState* s, const double* a,
   // 8a. self-imitation (reward.py v12): joint pose near the phase-indexed
   // reference cycle while commanded. Exact numpy mirror: bin =
   // int(mod(phase/(2pi), 1) * BINS) % BINS (np.mod follows the divisor
-  // sign; the cast truncates), err = sum(sq)/14, bonus = W*exp((-err)/s2).
-  // DW_REF_GAIT and the constants are generated from reward.py +
-  // reference_gait.json (drift-test pinned).
-  {
+  // sign; the cast truncates), err = sum(sq)/J, bonus = W*exp((-err)/s2).
+  // DW_REF_GAIT and the constants are generated from the model's reward
+  // module (drift-test pinned). The whole block sits behind a
+  // compile-time-constant weight test so a model with DW_IMIT_W 0.0 (the
+  // H0 humanoid: no reference gait exists, all-zero DW_REF_GAIT
+  // placeholder) pays ZERO cost -- the table lookup and the exp() are
+  // dead-code-eliminated -- while any nonzero weight (duck 0.5) keeps the
+  // arithmetic bit-identical to the ungated original.
+  if (DW_IMIT_W != 0.0) {
     double frac = fmod(phase / (2.0 * DWP_PI), 1.0);
     if (frac < 0.0) frac += 1.0;
     int bin = ((int)(frac * (double)DW_REF_BINS)) % DW_REF_BINS;
@@ -1805,9 +1818,19 @@ static DW_HD void dw_step_policy_env(DwState* s, const float* action,
     float r = dw_policy_reward(s, w->a64, w->app64, sole, foot_x);
     if (live) s->t += 1;
     bool finite = dw_finite(s->q, DW_Q) && dw_finite(s->v, DW_N);
+    // Tilt up-scalar per the header's up-axis (world-Z component of the
+    // model's body up axis): duck body +Z -> R[2][2] = 1-2(qx^2+qy^2);
+    // H0 humanoid body +Y -> R[2][1] = 2(qy*qz + qx*qw)
+    // (humanoid_native_lane.tilt). q[3..6] is root quat xyzw.
+#if DW_ENV_UP_AXIS == 1
+    double up = 2.0 * ((double)s->q[4] * (double)s->q[5]
+                       + (double)s->q[3] * (double)s->q[6]);
+#else
     double up = 1.0 - 2.0 * ((double)s->q[3] * (double)s->q[3]
                              + (double)s->q[4] * (double)s->q[4]);
-    bool fell = ((double)s->q[2] < 0.7 * (double)DW_INITIAL_QPOS[2])
+#endif
+    bool fell = ((double)s->q[2] < DW_ENV_MIN_HEIGHT_FRACTION
+                                   * (double)DW_INITIAL_QPOS[2])
              || (up < DWP_COS_MAX_TILT) || !finite;
     if (live && (fell || s->t >= DWP_HORIZON)) s->done = 1;
     *reward_out = live ? r : 0.0f;

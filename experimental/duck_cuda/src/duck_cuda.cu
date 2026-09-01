@@ -90,7 +90,7 @@ struct dwc1_scene {
   DwState* device_state = nullptr;      // [E], authoritative
   float* device_targets = nullptr;      // [E, J] targets or actions
   DwWork* device_scratch = nullptr;     // [E] per-env cooperative workspaces
-  float* device_obs = nullptr;          // [E, 58]
+  float* device_obs = nullptr;          // [E, DW_ENV_OBS]
   float* device_reward = nullptr;       // [E]
   uint8_t* device_done = nullptr;       // [E]
   dwc1_diagnostic* device_diag = nullptr;  // [E]
