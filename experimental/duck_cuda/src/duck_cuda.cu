@@ -25,15 +25,31 @@
 #include <new>
 #include <vector>
 
+// Occupancy floor: without __launch_bounds__ the fully-inlined tick kernel
+// compiles to ~max registers/thread, capping residency at ONE 256-thread
+// block per SM (~8 envs/SM, ~1.4k envs in flight on a 5090) -- exactly the
+// flat-throughput-from-E~1024 signature the first hardware run showed.
+// Forcing >= DW_MIN_BLOCKS_PER_SM blocks/SM clamps registers (4 blocks @
+// 256 threads => <= 64 regs/thread) and trades a little spill traffic
+// (L1/L2-cached, tiny next to the DwWork working set) for 4x cross-env
+// parallelism. Tunable at build time: -DDW_MIN_BLOCKS_PER_SM=2 relaxes the
+// clamp to <= 128 regs if the diag sweep shows spill-bound per-env latency.
+#ifndef DW_MIN_BLOCKS_PER_SM
+#define DW_MIN_BLOCKS_PER_SM 4
+#endif
+
 namespace {
 constexpr int kLanesPerEnv = DW_WARP_LANES;   // 32 (warp) or 1 (legacy)
 constexpr int kThreadsPerBlock = 256;         // 8 envs per block at 32 lanes
 // Per-thread stack is small now: every tick-sized array lives in the per-env
 // DwWork global slice; locals are quat/vec temps, the lane-0 manifold reduce
-// (~1 KB) and the lane-0 policy FK. 16 KB leaves ample headroom.
-constexpr size_t kStackBytes = 16 * 1024;
+// (~1 KB) and the lane-0 policy FK. NOTE: the stack limit only sizes the
+// local-memory pool (max-resident-threads x limit bytes of device memory);
+// it does NOT gate occupancy. 8 KB is ample and halves the reservation.
+constexpr size_t kStackBytes = 8 * 1024;
 
-__global__ void dw_step_kernel(DwState* states, const float* targets,
+__global__ void __launch_bounds__(kThreadsPerBlock, DW_MIN_BLOCKS_PER_SM)
+dw_step_kernel(DwState* states, const float* targets,
                                uint32_t n_ticks, DwParams params,
                                DwWork* work, dwc1_diagnostic* diags,
                                uint32_t E) {
@@ -48,7 +64,8 @@ __global__ void dw_step_kernel(DwState* states, const float* targets,
   }
 }
 
-__global__ void dw_step_policy_kernel(DwState* states, const float* actions,
+__global__ void __launch_bounds__(kThreadsPerBlock, DW_MIN_BLOCKS_PER_SM)
+dw_step_policy_kernel(DwState* states, const float* actions,
                                       uint32_t n_ticks, DwParams params,
                                       DwWork* work, float* obs, float* rew,
                                       uint8_t* done, dwc1_diagnostic* diags,
@@ -152,6 +169,48 @@ void dwc1_destroy(dwc1_scene* s) { delete s; }
 int dwc1_info_get(const dwc1_scene* s, dwc1_info* info) {
   if (!s || !info) return DWC1_INVALID;
   dw_fill_info(s->E, info);
+  return DWC1_OK;
+}
+
+int dwc1_device_info_get(const dwc1_scene* s, dwc1_device_info* info) {
+  if (!s || !info) return DWC1_INVALID;
+  *info = dwc1_device_info{};
+  info->lanes_per_env = (uint32_t)kLanesPerEnv;
+  info->threads_per_block = (uint32_t)kThreadsPerBlock;
+  info->min_blocks_per_sm = (uint32_t)DW_MIN_BLOCKS_PER_SM;
+  info->workspace_bytes_per_env = sizeof(DwWork);
+  int sms = 0;
+  if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, 0)
+      != cudaSuccess)
+    return DWC1_NUMERIC;
+  info->sm_count = (uint32_t)sms;
+  size_t stack = 0;
+  if (cudaDeviceGetLimit(&stack, cudaLimitStackSize) != cudaSuccess)
+    return DWC1_NUMERIC;
+  info->stack_limit_bytes = stack;
+  cudaFuncAttributes attr{};
+  int blocks = 0;
+  if (cudaFuncGetAttributes(&attr, (const void*)dw_step_kernel) != cudaSuccess
+      || cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+             &blocks, (const void*)dw_step_kernel, kThreadsPerBlock, 0)
+             != cudaSuccess)
+    return DWC1_NUMERIC;
+  info->step_regs_per_thread = (uint32_t)attr.numRegs;
+  info->step_local_bytes = (uint32_t)attr.localSizeBytes;
+  info->step_blocks_per_sm = (uint32_t)blocks;
+  if (cudaFuncGetAttributes(&attr, (const void*)dw_step_policy_kernel)
+          != cudaSuccess
+      || cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+             &blocks, (const void*)dw_step_policy_kernel, kThreadsPerBlock, 0)
+             != cudaSuccess)
+    return DWC1_NUMERIC;
+  info->policy_regs_per_thread = (uint32_t)attr.numRegs;
+  info->policy_local_bytes = (uint32_t)attr.localSizeBytes;
+  info->policy_blocks_per_sm = (uint32_t)blocks;
+  const uint32_t envs_per_block =
+      (uint32_t)(kThreadsPerBlock / kLanesPerEnv);
+  info->resident_envs_estimate =
+      info->step_blocks_per_sm * info->sm_count * envs_per_block;
   return DWC1_OK;
 }
 

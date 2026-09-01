@@ -31,7 +31,10 @@ extern "C" {
 //     dwc1_step_policy, dwc1_observe, dwc1_set_command, dwc1_reset_policy.
 // v4: per-episode gait-phase offsets (flat.py v10): dwc1_reset_policy gained
 //     the trailing phase_offsets input.
-#define DWC1_ABI_VERSION 4
+// v5: warp-per-env occupancy telemetry: dwc1_device_info struct +
+//     dwc1_device_info_get (launch geometry, registers/local-mem per thread,
+//     occupancy blocks/SM, stack limit, resident-env estimate).
+#define DWC1_ABI_VERSION 5
 int dwc1_abi_version(void);
 
 enum {
@@ -68,6 +71,20 @@ typedef struct dwc1_info {
   float joint_lower[14], joint_upper[14];
 } dwc1_info;
 
+// Launch/occupancy telemetry (v5). GPU builds fill everything from the CUDA
+// runtime (cudaFuncGetAttributes / cudaOccupancyMaxActiveBlocksPerMulti-
+// processor / device limits); serial builds report lanes_per_env=1 and zero
+// for the device-only fields. resident_envs_estimate =
+// step_blocks_per_sm * sm_count * envs_per_block: throughput should scale
+// with E until roughly this many environments are in flight.
+typedef struct dwc1_device_info {
+  uint32_t lanes_per_env, threads_per_block, min_blocks_per_sm, sm_count;
+  uint32_t step_regs_per_thread, step_local_bytes, step_blocks_per_sm;
+  uint32_t policy_regs_per_thread, policy_local_bytes, policy_blocks_per_sm;
+  uint64_t stack_limit_bytes, workspace_bytes_per_env;
+  uint32_t resident_envs_estimate, reserved;
+} dwc1_device_info;
+
 typedef struct dwc1_scene dwc1_scene;
 
 // joint_offsets: optional [E,14] perturbations added to the home joint pose
@@ -76,6 +93,7 @@ int dwc1_create(uint32_t environments, const float* joint_offsets,
                 dwc1_scene** out);
 void dwc1_destroy(dwc1_scene*);
 int dwc1_info_get(const dwc1_scene*, dwc1_info*);
+int dwc1_device_info_get(const dwc1_scene*, dwc1_device_info*);
 
 // Hold `targets` [E,14] for n_ticks ticks of 0.002 s, all inside ONE device
 // kernel launch. The PD torque is recomputed every tick from the current

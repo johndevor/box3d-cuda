@@ -60,6 +60,15 @@ int dwc1_info_get(const dwc1_scene* s, dwc1_info* info) {
   return DWC1_OK;
 }
 
+int dwc1_device_info_get(const dwc1_scene* s, dwc1_device_info* info) {
+  if (!s || !info) return DWC1_INVALID;
+  *info = dwc1_device_info{};   // serial: no device; GPU fields stay zero
+  info->lanes_per_env = 1;
+  info->threads_per_block = 1;
+  info->workspace_bytes_per_env = sizeof(DwWork);
+  return DWC1_OK;
+}
+
 int dwc1_step(dwc1_scene* s, const float* targets, uint32_t n_ticks,
               dwc1_diagnostic* diagnostics) {
   if (!s || !targets || !diagnostics || n_ticks < 1 || n_ticks > 1000)

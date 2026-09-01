@@ -67,7 +67,7 @@ import numpy as np
 
 from .native_lane import LaneState
 
-ABI_VERSION = 4  # must match DWC1_ABI_VERSION in duck_cuda.h
+ABI_VERSION = 5  # must match DWC1_ABI_VERSION in duck_cuda.h
 
 OBS = 58
 COMMANDS_MPS = (0.10, 0.15, 0.20)   # flat.py per-episode forward commands
@@ -147,6 +147,17 @@ class Info(C.Structure):
                 ("joint_upper", F * J)]
 
 
+class DeviceInfo(C.Structure):
+    _fields_ = [(n, C.c_uint32) for n in [
+        "lanes_per_env", "threads_per_block", "min_blocks_per_sm", "sm_count",
+        "step_regs_per_thread", "step_local_bytes", "step_blocks_per_sm",
+        "policy_regs_per_thread", "policy_local_bytes",
+        "policy_blocks_per_sm"]] + \
+        [(n, C.c_uint64) for n in ["stack_limit_bytes",
+                                   "workspace_bytes_per_env"]] + \
+        [(n, C.c_uint32) for n in ["resident_envs_estimate", "reserved"]]
+
+
 def _source_digest() -> str:
     h = hashlib.sha256()
     for p in _SOURCES:
@@ -187,6 +198,7 @@ def load_library(path: Path):
         "dwc1_observe": [C.c_void_p, FP],
         "dwc1_set_command": [C.c_void_p, DP],
         "dwc1_reset_policy": [C.c_void_p, U8P, DP, DP],
+        "dwc1_device_info_get": [C.c_void_p, C.POINTER(DeviceInfo)],
         "dwc1_abi_version": [],
         "dwc1_reset": [C.c_void_p, U8P],
         "dwc1_set_state": [C.c_void_p, C.c_uint32, FP, FP, FP,
@@ -307,6 +319,15 @@ class CudaDuckLane:
             raise RuntimeError(f"dwc1_step_policy status={rc}")
         diagnostics = np.frombuffer(diag, dtype=DIAG_DTYPE).copy()
         return obs, reward, done.astype(bool), diagnostics
+
+    def device_info(self) -> dict:
+        """Launch/occupancy telemetry (zeros for GPU-only fields on serial)."""
+        info = DeviceInfo()
+        rc = self._lib.dwc1_device_info_get(self._h, C.byref(info))
+        if rc:
+            raise RuntimeError(f"dwc1_device_info_get status={rc}")
+        return {name: int(getattr(info, name))
+                for name, _ in DeviceInfo._fields_ if name != "reserved"}
 
     def observe(self) -> np.ndarray:
         """Current 58-dim observations (no stepping); reset()-style read."""
