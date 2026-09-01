@@ -52,10 +52,13 @@ OPP_SUPPORT_FRAC = 0.90  # evaluator: opposite foot supports >= 90% of the swing
 W_CHATTER = 0.2          # penalty per touchdown after a sub-60 ms micro-swing;
                          # contact chatter destroys the 40 ms support windows.
 CHATTER_MAX_S = 0.06
-W_FLICKER = 0.3          # penalty per foot in stance at both step boundaries but
+W_FLICKER = 1.5          # penalty per foot in stance at both step boundaries but
                          # not in contact for all 10 native ticks: marginal
                          # loading flickers at 2 ms scale and breaks the
-                         # evaluator's 40 ms continuous-support windows.
+                         # evaluator's 40 ms continuous-support windows. Raised
+                         # 0.3 -> 1.5 (price of a full step): forensics at u2430
+                         # showed ALL remaining alternation breaks at 0.10 are
+                         # single-tick touchdown bounces voiding support windows.
 TICKS_FULL = 10          # native ticks per policy step
 STANCE_MIN_S = 0.06      # a step qualifies only after >=60 ms of stance before
                          # liftoff (median stance was 77-88 ms and flicker-cut).
