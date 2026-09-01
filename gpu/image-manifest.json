@@ -1,0 +1,10 @@
+{
+  "bake_spec": "bake-image",
+  "baked_at": "2026-08-31T23:16:35-0400",
+  "base_image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404",
+  "commit": "ee82c67148c77005240848d02d48bd691eaea434",
+  "prebuilt_dir": "/opt/duck/prebuilt",
+  "snapshot": "duck-gpu-prebuilt-20260831-231035",
+  "snapshot_id": "2f54a9f9-f68b-4236-92c4-6134e3cb9631",
+  "source_sha": "4dbd97ccd1e0f79d54427871667f9b82dc4438ca3603e9e7ef802d3c6d0ddb3d"
+}
