@@ -369,7 +369,7 @@ def preflight_reward_check(env, steps: int, seed: int, out: Path, ff,
 # acceptance.json}, checkpoints, prints the WALKING ACCEPTED line and exits 0.
 # ---------------------------------------------------------------------------
 
-PROBE_SEEDS = (4242, 7)
+PROBE_SEEDS = (4242, 7, 1913, 90210)  # full anti-overfit gate
 PROBE_COMMANDS = (0.10, 0.15, 0.20)
 PROBE_EPISODE_SECONDS = 8.0
 CONFIRM_SEED = 4242
