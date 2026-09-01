@@ -21,7 +21,7 @@ import torch
 from walk.env.flat import FlatFloorDuckEnv
 from walk.eval.capture import capture_episodes
 from walk.eval.gait import evaluate_episode
-from walk.train.ppo import Actor
+from walk.train.ppo import Actor, RecurrentActor, unpack_actor_file
 
 SEEDS = (4242, 7, 1913, 90210)
 COMMANDS = (0.10, 0.15, 0.20)
@@ -34,24 +34,38 @@ def main():
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
 
-    sd = torch.load(a.actor, map_location="cpu", weights_only=False)
-    if isinstance(sd, dict) and "actor" in sd:
-        sd = sd["actor"]
-    actor = Actor(58, 14)
+    raw = torch.load(a.actor, map_location="cpu", weights_only=False)
+    if isinstance(raw, dict) and "actor" in raw:        # full checkpoint
+        raw = raw["actor"]
+    arch, sd = unpack_actor_file(raw)
+    actor = (RecurrentActor(58, 14) if arch == "gru" else Actor(58, 14))
     actor.load_state_dict(sd)
     actor.eval()
 
-    @torch.no_grad()
-    def policy(obs):
-        return actor.deterministic(
-            torch.from_numpy(np.ascontiguousarray(obs))).numpy()
+    def make_policy():
+        if arch == "ff":
+            @torch.no_grad()
+            def policy(obs):
+                return actor.deterministic(
+                    torch.from_numpy(np.ascontiguousarray(obs))).numpy()
+            return policy
+        state = {"h": None}
+
+        @torch.no_grad()
+        def policy(obs):
+            o = torch.from_numpy(np.ascontiguousarray(obs))
+            if state["h"] is None:
+                state["h"] = actor.initial_state(o.shape[0])
+            act, state["h"] = actor.deterministic(o, state["h"])
+            return act.numpy()
+        return policy
 
     results, all_pass = {}, True
     for seed in SEEDS:
         env = FlatFloorDuckEnv(environments=1, seed=seed, perturbation_rad=0.0,
                                library_path=a.library)
         for cmd in COMMANDS:
-            t = capture_episodes(env, policy, command=cmd, seconds=8.0,
+            t = capture_episodes(env, make_policy(), command=cmd, seconds=8.0,
                                  seed=seed)[0]
             r = evaluate_episode(t)
             q = [f for f in r.get("footfalls", []) if f.get("qualified")]

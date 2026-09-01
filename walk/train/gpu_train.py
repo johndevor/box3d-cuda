@@ -10,7 +10,14 @@ walk.train.ppo.ppo_update with the PPOConfig defaults.
     python -B -m walk.train.gpu_train --envs 4096 --horizon 32 --updates 300 \
         --seed 917 --device cuda --library <path-to-libduck_cuda.so> \
         --out <dir> [--resume <ckpt>] [--max-wall-s 900] [--lr 3e-4] \
-        [--perturbation 0.02]
+        [--perturbation 0.02] [--policy {ff,gru}] [--gamma G] [--gae-lambda L]
+
+--policy gru swaps in the tiny recurrent policy (walk.train.ppo
+RecurrentActor/RecurrentCritic: 1-layer GRU + reduced MLP head) for implicit
+system ID: hidden state [E, H] is carried across steps, zeroed for envs that
+reset, and the update is recurrent PPO with truncated BPTT over the rollout
+window using the stored window-initial hidden states (sequence minibatches =
+env slices). --policy ff (default) is byte-identical to the pre-gru trainer.
 
 Solver faults: a SolverFault anywhere in a rollout poisons that whole rollout
 window (no update is applied), the fault artifact is copied into <out>/faults/
@@ -40,7 +47,9 @@ from walk.train.ppo import (
     PPOConfig,
     compute_gae,
     make_nets,
+    make_recurrent_nets,
     ppo_update,
+    recurrent_ppo_update,
     tanh_gaussian_log_prob,
 )
 from walk.train.vec import derive_seed
@@ -58,7 +67,10 @@ class GpuTrainConfig:
     out: str = "runs/gpu-train"
     resume: str | None = None
     max_wall_s: float = 0.0          # 0 disables the wall-clock stop
+    policy: str = "ff"               # "ff" (feed-forward) or "gru" (recurrent)
     lr: float = 3e-4
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
     perturbation: float = 0.0
     checkpoint_every: int = 25
     preflight_steps: int = 100
@@ -195,6 +207,83 @@ def make_batch(ro: Rollout, critic, gamma: float, lam: float) -> dict[str, torch
             "val": flat(ro.val), "adv": flat(adv), "ret": flat(ret)}
 
 
+# ---------------------------------------------------------------------------
+# Recurrent (--policy gru) path. The feed-forward path above is untouched.
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class RecurrentRollout(Rollout):
+    h0_actor: torch.Tensor = None    # [E, H] hidden at the START of the window
+    h0_critic: torch.Tensor = None   # [E, H]
+    h_actor: torch.Tensor = None     # [E, H] hidden AFTER the window (carried)
+    h_critic: torch.Tensor = None    # [E, H]
+
+
+def collect_rollout_recurrent(env, actor, critic, obs_np: np.ndarray,
+                              h_a: torch.Tensor, h_c: torch.Tensor,
+                              horizon: int, gen: torch.Generator,
+                              device: torch.device,
+                              ep_ret: np.ndarray, ep_len: np.ndarray) -> RecurrentRollout:
+    """Recurrent twin of collect_rollout: carries actor/critic hidden state
+    [E, H] across steps, zeroing the rows of envs that reset (done mask) so a
+    fresh episode always starts from h = 0. Stores the window-initial hidden
+    states for the truncated-BPTT update."""
+    T, E = horizon, env.E
+    obs_b = torch.zeros((T, E, env.OBS), dtype=torch.float32, device=device)
+    raw_b = torch.zeros((T, E, env.ACT), dtype=torch.float32, device=device)
+    logp_b = torch.zeros((T, E), dtype=torch.float32, device=device)
+    val_b = torch.zeros((T, E), dtype=torch.float32, device=device)
+    rew_b = torch.zeros((T, E), dtype=torch.float32, device=device)
+    done_b = torch.zeros((T, E), dtype=torch.float32, device=device)
+    episodes: list[tuple[float, int]] = []
+    h0_a, h0_c = h_a.clone(), h_c.clone()
+    with torch.no_grad():
+        for t in range(T):
+            obs_t = torch.from_numpy(np.ascontiguousarray(obs_np)).to(device)
+            mu, std, h_a = actor.dist(obs_t, h_a)
+            u = mu + std * torch.randn(mu.shape, generator=gen,
+                                       dtype=mu.dtype, device=device)
+            a = torch.tanh(u)
+            obs_b[t] = obs_t
+            raw_b[t] = u
+            logp_b[t] = tanh_gaussian_log_prob(mu, std, u)
+            val_b[t], h_c = critic(obs_t, h_c)
+            next_obs, rew, done, _info = env.step(a.cpu().numpy())
+            rew_b[t] = torch.from_numpy(np.ascontiguousarray(rew)).to(device)
+            done_b[t] = torch.from_numpy(done.astype(np.float32)).to(device)
+            ep_ret += rew
+            ep_len += 1
+            if done.any():
+                for e in np.flatnonzero(done):
+                    episodes.append((float(ep_ret[e]), int(ep_len[e])))
+                ep_ret[done] = 0.0
+                ep_len[done] = 0
+                next_obs = env.reset(mask=done)
+                keep = torch.from_numpy((~done).astype(np.float32)).to(device)
+                h_a = h_a * keep.unsqueeze(1)   # fresh episodes start at h = 0
+                h_c = h_c * keep.unsqueeze(1)
+            obs_np = next_obs
+    last_obs = torch.from_numpy(np.ascontiguousarray(obs_np)).to(device)
+    return RecurrentRollout(obs=obs_b, raw_act=raw_b, logp=logp_b, val=val_b,
+                            rew=rew_b, done=done_b, last_obs=last_obs,
+                            next_obs_np=obs_np, episodes=episodes,
+                            h0_actor=h0_a, h0_critic=h0_c,
+                            h_actor=h_a, h_critic=h_c)
+
+
+def make_batch_recurrent(ro: RecurrentRollout, critic, gamma: float,
+                         lam: float) -> dict[str, torch.Tensor]:
+    """GAE identical to the ff path; keeps [T, N] sequence layout plus the
+    window-initial hidden states (minibatches are env slices)."""
+    with torch.no_grad():
+        last_val, _h = critic(ro.last_obs, ro.h_critic)
+    adv, ret = compute_gae(ro.rew, ro.done, ro.val, last_val, gamma, lam)
+    return {"obs": ro.obs, "raw_act": ro.raw_act, "logp": ro.logp, "val": ro.val,
+            "adv": adv, "ret": ret, "done": ro.done,
+            "h0_actor": ro.h0_actor, "h0_critic": ro.h0_critic}
+
+
 def record_fault(out: Path, ff, update: int, fault: SolverFault) -> str | None:
     """Copy the fault artifact into <out>/faults/ and append a faults.jsonl line."""
     saved_copy = None
@@ -284,9 +373,15 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
     (out / "config.json").write_text(
         json.dumps(dataclasses.asdict(cfg), indent=2, default=str) + "\n")
 
-    ppo_cfg = PPOConfig(lr=cfg.lr)
+    if cfg.policy not in ("ff", "gru"):
+        raise SystemExit(f"--policy must be ff or gru, got {cfg.policy!r}")
+    recurrent = cfg.policy == "gru"
+    ppo_cfg = PPOConfig(lr=cfg.lr, gamma=cfg.gamma, lam=cfg.gae_lambda)
     torch.manual_seed(derive_seed(cfg.seed, 0x11))       # net init (matches run.py)
-    actor, critic = make_nets(OBS, ACT, ppo_cfg)
+    if recurrent:
+        actor, critic = make_recurrent_nets(OBS, ACT, ppo_cfg)
+    else:
+        actor, critic = make_nets(OBS, ACT, ppo_cfg)
     actor.to(device)
     critic.to(device)
     optimizer = torch.optim.Adam(
@@ -303,6 +398,11 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
     if cfg.resume:
         ck_path = out / "latest.pt" if cfg.resume == "auto" else Path(cfg.resume)
         ck = torch.load(ck_path, map_location="cpu", weights_only=False)
+        ck_policy = ck.get("config", {}).get("policy", "ff")
+        if ck_policy != cfg.policy:
+            raise SystemExit(
+                f"checkpoint {ck_path} was trained with --policy {ck_policy}, "
+                f"but --policy {cfg.policy} was requested")
         actor.load_state_dict(ck["actor"])
         critic.load_state_dict(ck["critic"])
         optimizer.load_state_dict(ck["optimizer"])
@@ -339,6 +439,9 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
             obs = env.reset(seed=cfg.seed)   # clean deterministic start
             ep_ret = np.zeros(E, np.float64)
             ep_len = np.zeros(E, np.int64)
+            if recurrent:                    # fresh episodes start at h = 0
+                h_a = actor.initial_state(E, device)
+                h_c = critic.initial_state(E, device)
 
             for u in range(start_update + 1, cfg.updates + 1):
                 if cfg.max_wall_s and time.perf_counter() - t_start >= cfg.max_wall_s:
@@ -349,8 +452,14 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                     break
                 t0 = time.perf_counter()
                 try:
-                    ro = collect_rollout(env, actor, critic, obs, cfg.horizon,
-                                         sample_gen, device, ep_ret, ep_len)
+                    if recurrent:
+                        ro = collect_rollout_recurrent(
+                            env, actor, critic, obs, h_a, h_c, cfg.horizon,
+                            sample_gen, device, ep_ret, ep_len)
+                        h_a, h_c = ro.h_actor, ro.h_critic
+                    else:
+                        ro = collect_rollout(env, actor, critic, obs, cfg.horizon,
+                                             sample_gen, device, ep_ret, ep_len)
                 except SolverFault as fault:
                     # Poison the whole rollout window: no update, full reset.
                     faults_total += 1
@@ -358,6 +467,9 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                     obs = env.reset()
                     ep_ret[:] = 0.0
                     ep_len[:] = 0
+                    if recurrent:            # every env restarted: zero hidden
+                        h_a = actor.initial_state(E, device)
+                        h_c = critic.initial_state(E, device)
                     line = {
                         "kind": "train", "update": u, "skipped": "solver_fault",
                         "env_steps": env_steps, "faults": 1,
@@ -378,8 +490,13 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                 env_steps += E * cfg.horizon
 
                 t1 = time.perf_counter()
-                batch = make_batch(ro, critic, ppo_cfg.gamma, ppo_cfg.lam)
-                stats = ppo_update(actor, critic, optimizer, batch, ppo_cfg, perm_gen)
+                if recurrent:
+                    batch = make_batch_recurrent(ro, critic, ppo_cfg.gamma, ppo_cfg.lam)
+                    stats = recurrent_ppo_update(actor, critic, optimizer, batch,
+                                                 ppo_cfg, perm_gen)
+                else:
+                    batch = make_batch(ro, critic, ppo_cfg.gamma, ppo_cfg.lam)
+                    stats = ppo_update(actor, critic, optimizer, batch, ppo_cfg, perm_gen)
                 t_upd = time.perf_counter() - t1
 
                 ep_rets = [r for r, _l in ro.episodes]
@@ -432,8 +549,13 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
             save_checkpoint(out / "latest.pt", last_update, actor, critic,
                             optimizer, sample_gen, perm_gen, env_steps,
                             faults_total, cfg)
-            torch.save({k: v.detach().cpu() for k, v in actor.state_dict().items()},
-                       out / "actor_final.pt")
+            # Self-describing actor file: {"arch": "ff"|"gru", "state_dict": ...}
+            # (legacy consumers of plain ff state_dicts: see ppo.unpack_actor_file)
+            torch.save(
+                {"arch": cfg.policy,
+                 "state_dict": {k: v.detach().cpu()
+                                for k, v in actor.state_dict().items()}},
+                out / "actor_final.pt")
         finally:
             env.close()
     if not cfg.quiet:
@@ -463,7 +585,12 @@ def build_argparser() -> argparse.ArgumentParser:
                    help="checkpoint path, or bare flag for <out>/latest.pt")
     p.add_argument("--max-wall-s", type=float, default=0.0,
                    help="stop cleanly (checkpoint + actor_final.pt) after this many seconds")
+    p.add_argument("--policy", choices=("ff", "gru"), default=d.policy,
+                   help="ff: feed-forward MLP (default); gru: tiny recurrent "
+                        "policy (implicit system ID), trained with truncated BPTT")
     p.add_argument("--lr", type=float, default=d.lr)
+    p.add_argument("--gamma", type=float, default=d.gamma)
+    p.add_argument("--gae-lambda", type=float, default=d.gae_lambda)
     p.add_argument("--perturbation", type=float, default=d.perturbation,
                    help="per-env joint perturbation bound in rad (<= 0.02)")
     p.add_argument("--checkpoint-every", type=int, default=d.checkpoint_every)
@@ -478,7 +605,8 @@ def config_from_args(args: argparse.Namespace) -> GpuTrainConfig:
     return GpuTrainConfig(
         envs=args.envs, horizon=args.horizon, updates=args.updates, seed=args.seed,
         device=args.device, library=args.library, lane_env=args.lane_env, out=args.out, resume=args.resume,
-        max_wall_s=args.max_wall_s, lr=args.lr, perturbation=args.perturbation,
+        max_wall_s=args.max_wall_s, policy=args.policy, lr=args.lr,
+        gamma=args.gamma, gae_lambda=args.gae_lambda, perturbation=args.perturbation,
         checkpoint_every=args.checkpoint_every, preflight_steps=args.preflight_steps,
         torch_threads=args.torch_threads, quiet=args.quiet,
     )
