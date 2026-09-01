@@ -227,6 +227,20 @@ typedef struct DwState {
   int32_t last_foot;              // last qualified footfall (-1 none)
   uint32_t t;                     // policy steps this episode
   uint8_t done, prev_contact[2], policy_pad;
+  // ---- per-episode domain randomization + actuation latency (ABI v6) ----
+  // Neutral values (1.0 scales, latency 0) reproduce today's behavior BIT
+  // EXACTLY: every scale applies at a consumption point as
+  // (float)((double)constant * scale), which is the identity at 1.0, and
+  // latency 0 reads back the just-written ring slot. Values are drawn
+  // host-side per episode (walk/env/cuda_lane.py documents the exact RNG
+  // stream) and applied via dwc1_set_randomization; any reset returns them
+  // to neutral until the next set_randomization.
+  double mass_scale;              // scales body masses AND principal inertias
+  double friction_scale;          // scales contact-pair mu
+  double kp_scale;                // scales PD stiffness (physics + reward est)
+  double damping_scale;           // scales passive joint damping
+  double eff_ring[DWC1_MAX_LATENCY + 1][DW_J];  // effective-target history
+  uint32_t latency_steps, rand_pad;  // PD consumes eff[t - latency_steps]
 } DwState;
 
 typedef struct DwParams {
@@ -276,6 +290,7 @@ typedef struct DwWork {
   float warmnew[DW_JROWS];
   float eff[DW_J];                        // effective PD targets (policy)
   double a64[DW_J], eff64[DW_J];          // policy-layer f64 chain (lane 0)
+  double app64[DW_J];                     // APPLIED (latency-delayed) targets
   dwc1_manifold manifolds[DW_PAIRS];
   float bodies13[DW_B][13];               // policy-layer FK (lane 0)
   // dw_evaluate cooperative workspace
@@ -295,8 +310,12 @@ typedef struct DwWork {
 // mass entries and bias entries are independent and lane-parallel with the
 // exact per-element serial arithmetic (mass/bias entries accumulate over
 // bodies in ascending order, matching the original body-major loops).
+// mass_scale (domain randomization, neutral 1.0) scales every body mass AND
+// principal inertia at the consumption points as (float)((double)X * scale):
+// bit-identical to the unscaled path at 1.0, physically consistent otherwise
+// (inertia is linear in mass for fixed geometry).
 static DW_HD bool dw_evaluate(const float* q, const float* v, float gz,
-                              DwWork* w) {
+                              double mass_scale, DwWork* w) {
   DwEval* e = &w->e;
   DW_FOR(i, DW_B * 6 * DW_N) (&e->J[0][0][0])[i] = 0;
   DW_SYNC();
@@ -388,17 +407,24 @@ static DW_HD bool dw_evaluate(const float* q, const float* v, float gz,
   DW_FOR(b2, DW_B - 1) {
     int b = b2 + 1;
     float iw[3], tmp[3];
-    dw_inertia(e->rot[b], DW_BODY_INERTIA[b], w->w3[b], iw);
+    float msf = (float)((double)DW_BODY_MASS[b] * mass_scale);
+    float in3[3] = {(float)((double)DW_BODY_INERTIA[b][0] * mass_scale),
+                    (float)((double)DW_BODY_INERTIA[b][1] * mass_scale),
+                    (float)((double)DW_BODY_INERTIA[b][2] * mass_scale)};
+    dw_inertia(e->rot[b], in3, w->w3[b], iw);
     dw_sub3(w->acc3[b], gravity, w->forceb[b]);
-    dw_scale3(w->forceb[b], DW_BODY_MASS[b], w->forceb[b]);
-    dw_inertia(e->rot[b], DW_BODY_INERTIA[b], w->alpha3[b], w->torqueb[b]);
+    dw_scale3(w->forceb[b], msf, w->forceb[b]);
+    dw_inertia(e->rot[b], in3, w->alpha3[b], w->torqueb[b]);
     dw_cross3(w->w3[b], iw, tmp); dw_add3(w->torqueb[b], tmp, w->torqueb[b]);
   }
   DW_FOR(idx, (DW_B - 1) * DW_N) {
     int b = 1 + idx / DW_N, n = idx % DW_N;
     if (!((w->colmask[b] >> n) & 1u)) continue;
+    float in3[3] = {(float)((double)DW_BODY_INERTIA[b][0] * mass_scale),
+                    (float)((double)DW_BODY_INERTIA[b][1] * mass_scale),
+                    (float)((double)DW_BODY_INERTIA[b][2] * mass_scale)};
     float jw[3] = {e->J[b][3][n], e->J[b][4][n], e->J[b][5][n]};
-    dw_inertia(e->rot[b], DW_BODY_INERTIA[b], jw, w->Ijw[b][n]);
+    dw_inertia(e->rot[b], in3, jw, w->Ijw[b][n]);
   }
   DW_SYNC();
   // ---- mass entries (n >= m) and bias entries, bodies in ascending order --
@@ -413,7 +439,8 @@ static DW_HD bool dw_evaluate(const float* q, const float* v, float gz,
       float jv[3] = {e->J[b][0][n], e->J[b][1][n], e->J[b][2][n]};
       float jw[3] = {e->J[b][3][n], e->J[b][4][n], e->J[b][5][n]};
       float jv2[3] = {e->J[b][0][m], e->J[b][1][m], e->J[b][2][m]};
-      x += DW_BODY_MASS[b] * dw_dot3(jv, jv2) + dw_dot3(jw, w->Ijw[b][m]);
+      x += (float)((double)DW_BODY_MASS[b] * mass_scale) * dw_dot3(jv, jv2)
+         + dw_dot3(jw, w->Ijw[b][m]);
     }
     e->M[n][m] = x;
     if (m != n) e->M[m][n] = x;
@@ -475,7 +502,7 @@ static DW_HD void dw_chol_solve(const float L[DW_N][DW_N], float* x) {
 // (scene creation) only; the caller provides a workspace.
 static DW_HD bool dw_reference_weights(float out[DW_J], DwWork* w) {
   float zero[DW_N] = {};
-  if (!dw_evaluate(DW_REFERENCE_QPOS, zero, 0.0f, w)) return false;
+  if (!dw_evaluate(DW_REFERENCE_QPOS, zero, 0.0f, 1.0, w)) return false;
   if (!dw_chol(w->e.M, w->L)) return false;
   for (int j = 0; j < DW_J; j++) {
     float x[DW_N] = {};
@@ -1119,7 +1146,8 @@ static DW_HD int dw_tick(DwState* s, const float* target,
     diag->maximum_normal_impulse = 0;
     diag->maximum_penetration = 0;
   }
-  if (!dw_evaluate(s->q, s->v, DW_GRAVITY_Z, w)) return DWC1_DYNAMICS;
+  if (!dw_evaluate(s->q, s->v, DW_GRAVITY_Z, s->mass_scale, w))
+    return DWC1_DYNAMICS;
   DW_LANE0 w->iflag = dw_chol(w->e.M, w->L) ? 0 : 1;
   DW_SYNC();
   if (w->iflag) return DWC1_DYNAMICS;
@@ -1128,12 +1156,15 @@ static DW_HD int dw_tick(DwState* s, const float* target,
   bool bad = false;
   DW_FOR(n, DW_N) w->smooth[n] = -w->e.bias[n];
   DW_SYNC();
+  // domain randomization: scaled gains, identity at neutral (1.0) scales
+  const float kpf = (float)((double)DW_KP * s->kp_scale);
+  const float dampf = (float)((double)DW_DAMPING * s->damping_scale);
   DW_FOR(j, DW_J) {
     float tj = dw_clampf(target[j], DW_LIMIT_LOWER[j], DW_LIMIT_UPPER[j]);
-    float motor = DW_KP * (tj - s->q[7 + j]) + DW_KV * (0.0f - s->v[6 + j]);
+    float motor = kpf * (tj - s->q[7 + j]) + DW_KV * (0.0f - s->v[6 + j]);
     if (!isfinite(motor)) bad = true;
     w->smooth[6 + j] += dw_clampf(motor, -DW_EFFORT_CAP, DW_EFFORT_CAP)
-                      - DW_DAMPING * s->v[6 + j];
+                      - dampf * s->v[6 + j];
   }
   DW_SYNC();
   if (dw_any(bad)) return DWC1_DYNAMICS;
@@ -1222,7 +1253,8 @@ static DW_HD int dw_tick(DwState* s, const float* target,
           }
         }
         w->rows.cfirst[w->rows.C] = w->rows.R;
-        w->rows.cmu[w->rows.C] = DW_PAIR_MU[pair];
+        w->rows.cmu[w->rows.C] =
+            (float)((double)DW_PAIR_MU[pair] * s->friction_scale);
         w->rows.C++;
         for (int a = 0; a < 3; a++) {
           int r = w->rows.R++;
@@ -1367,6 +1399,27 @@ static DW_HD void dw_init_state(DwState* s, const float* joint_offsets) {
                               DW_LIMIT_LOWER[j], DW_LIMIT_UPPER[j]);
   for (int j = 0; j < DW_J; j++) s->targets[j] = DW_HOME_TARGETS_F64[j];
   s->last_foot = -1;
+  s->mass_scale = s->friction_scale = s->kp_scale = s->damping_scale = 1.0;
+  for (int k = 0; k <= DWC1_MAX_LATENCY; k++)   // ring = reset targets
+    for (int j = 0; j < DW_J; j++)
+      s->eff_ring[k][j] = fmin((double)DW_LIMIT_UPPER[j],
+                               fmax((double)DW_LIMIT_LOWER[j],
+                                    DW_HOME_TARGETS_F64[j]));
+}
+
+// Apply per-env randomization values (host-drawn) and reset the actuation
+// latency ring to the reset targets; call right after resetting the env.
+static DW_HD void dw_policy_set_random(DwState* s, const dwc1_env_random* r) {
+  s->mass_scale = r->mass_scale;
+  s->friction_scale = r->friction_scale;
+  s->kp_scale = r->kp_scale;
+  s->damping_scale = r->damping_scale;
+  s->latency_steps = r->latency_steps;
+  for (int k = 0; k <= DWC1_MAX_LATENCY; k++)
+    for (int j = 0; j < DW_J; j++)
+      s->eff_ring[k][j] = fmin((double)DW_LIMIT_UPPER[j],
+                               fmax((double)DW_LIMIT_LOWER[j],
+                                    DW_HOME_TARGETS_F64[j]));
 }
 
 // Light FK for reads: body poses and velocities only (no mass/bias/jacobian).
@@ -1561,10 +1614,11 @@ static DW_HD float dw_policy_reward(DwState* s, const double* a,
     ar += d * d;
   }
   r -= DWP_W_ACTION_RATE * ar;
-  // 5. torque (boundary PD estimate at the post-step state)
+  // 5. torque (boundary PD estimate at the post-step state; `eff` is the
+  // APPLIED, latency-delayed targets, and kp carries the per-env scale)
   double tq = 0;
   for (int j = 0; j < DW_J; j++) {
-    double m = (double)DW_KP * (eff[j] - (double)s->q[7 + j])
+    double m = ((double)DW_KP * s->kp_scale) * (eff[j] - (double)s->q[7 + j])
              - (double)DW_KV * (double)s->v[6 + j];
     m = fmin((double)DW_EFFORT_CAP, fmax(-(double)DW_EFFORT_CAP, m));
     tq += m * m;
@@ -1659,10 +1713,24 @@ static DW_HD void dw_step_policy_env(DwState* s, const float* action,
         double hi = s->targets[j] + DWP_MAX_TARGET_INCREMENT;
         s->targets[j] = fmin(hi, fmax(lo, requested));
       }
-    for (int j = 0; j < DW_J; j++) {
+    for (int j = 0; j < DW_J; j++)
       w->eff64[j] = fmin((double)DW_LIMIT_UPPER[j],
                          fmax((double)DW_LIMIT_LOWER[j], s->targets[j]));
-      w->eff[j] = (float)w->eff64[j];
+    // actuation latency: the ring stores the COMPUTED effective targets by
+    // step index; physics consumes eff[t - latency] (reset targets before
+    // step `latency`). latency 0 reads back the just-written slot, so the
+    // feature-off path is bit-identical. The slew chain above stays
+    // undelayed; done envs keep t frozen (same slot rewritten, applied
+    // targets pinned) exactly like the python spec.
+    {
+      const uint32_t P = (uint32_t)(DWC1_MAX_LATENCY + 1);
+      uint32_t slot = s->t % P;
+      for (int j = 0; j < DW_J; j++) s->eff_ring[slot][j] = w->eff64[j];
+      uint32_t aslot = (s->t + P - s->latency_steps) % P;
+      for (int j = 0; j < DW_J; j++) {
+        w->app64[j] = s->eff_ring[aslot][j];
+        w->eff[j] = (float)w->app64[j];
+      }
     }
   }
   DW_SYNC();
@@ -1674,7 +1742,7 @@ static DW_HD void dw_step_policy_env(DwState* s, const float* action,
     dw_sole_heights(w->bodies13, sole);
     float foot_x[2] = {w->bodies13[DW_PAIR_BODY_A[0]][0],
                        w->bodies13[DW_PAIR_BODY_A[1]][0]};
-    float r = dw_policy_reward(s, w->a64, w->eff64, sole, foot_x);
+    float r = dw_policy_reward(s, w->a64, w->app64, sole, foot_x);
     if (live) s->t += 1;
     bool finite = dw_finite(s->q, DW_Q) && dw_finite(s->v, DW_N);
     double up = 1.0 - 2.0 * ((double)s->q[3] * (double)s->q[3]

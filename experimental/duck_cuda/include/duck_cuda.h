@@ -34,7 +34,10 @@ extern "C" {
 // v5: warp-per-env occupancy telemetry: dwc1_device_info struct +
 //     dwc1_device_info_get (launch geometry, registers/local-mem per thread,
 //     occupancy blocks/SM, stack limit, resident-env estimate).
-#define DWC1_ABI_VERSION 5
+// v6: per-episode domain randomization + actuation latency (off by default):
+//     dwc1_create gained the dwc1_randomization config, new
+//     dwc1_set_randomization applies per-env draws (host-side RNG).
+#define DWC1_ABI_VERSION 6
 int dwc1_abi_version(void);
 
 enum {
@@ -85,12 +88,41 @@ typedef struct dwc1_device_info {
   uint32_t resident_envs_estimate, reserved;
 } dwc1_device_info;
 
+// ---- per-episode domain randomization + actuation latency (v6) ------------
+// Creation-time config: RANGES for the uniform [1-r, 1+r] multipliers and
+// the maximum command latency in policy steps. All zero (or a NULL pointer)
+// = feature off = today's exact behavior (bit-identical: neutral multipliers
+// apply as (float)((double)X * 1.0) == X and latency 0 reads back the
+// just-written targets). Per-env VALUES are drawn host-side at reset (the
+// counter-based numpy stream is not reproducible in-kernel) and applied via
+// dwc1_set_randomization. Scales affect physics consumption points only
+// (mass AND principal inertia together, pair mu, PD kp, passive damping) --
+// never the model tables, observations or the reference-weight regularizers.
+#define DWC1_MAX_LATENCY 4
+typedef struct dwc1_randomization {
+  double r_mass, r_friction, r_kp, r_damping;  // each in [0, 0.5]
+  uint32_t max_latency_steps, reserved;        // 0..DWC1_MAX_LATENCY
+} dwc1_randomization;
+typedef struct dwc1_env_random {
+  double mass_scale, friction_scale, kp_scale, damping_scale;  // [0.5, 1.5]
+  uint32_t latency_steps, reserved;            // <= config max_latency_steps
+} dwc1_env_random;
+
 typedef struct dwc1_scene dwc1_scene;
 
 // joint_offsets: optional [E,14] perturbations added to the home joint pose
 // (clipped to the joint limits), matching NativeDuckLane(joint_offsets=...).
+// randomization: creation-time ranges (NULL = off); when off, only neutral
+// per-env values (1.0 scales, latency 0) are accepted later.
 int dwc1_create(uint32_t environments, const float* joint_offsets,
-                dwc1_scene** out);
+                const dwc1_randomization* randomization, dwc1_scene** out);
+
+// Apply per-env randomization values to selected envs (NULL mask = all) and
+// reset their actuation-latency buffer to the reset targets. Values must lie
+// inside the creation config's ranges. Call right after a reset of the same
+// envs (dwc1_reset_policy or dwc1_reset), before stepping.
+int dwc1_set_randomization(dwc1_scene*, const uint8_t* mask,
+                           const dwc1_env_random* randoms /* [E] */);
 void dwc1_destroy(dwc1_scene*);
 int dwc1_info_get(const dwc1_scene*, dwc1_info*);
 int dwc1_device_info_get(const dwc1_scene*, dwc1_device_info*);

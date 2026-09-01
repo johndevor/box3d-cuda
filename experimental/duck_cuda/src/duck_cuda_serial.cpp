@@ -16,23 +16,49 @@
 struct dwc1_scene {
   uint32_t E = 0;
   DwParams params{};
+  dwc1_randomization rand{};  // creation-time ranges (all zero = off)
   std::vector<DwState> state, initial;
   std::vector<DwWork> work;  // [E] per-env cooperative workspaces
 };
+
+namespace {
+bool rand_config_valid(const dwc1_randomization* r) {
+  if (!r) return true;
+  const double ranges[4] = {r->r_mass, r->r_friction, r->r_kp, r->r_damping};
+  for (double x : ranges)
+    if (!(x == x) || x < 0.0 || x > 0.5) return false;
+  return r->max_latency_steps <= DWC1_MAX_LATENCY && r->reserved == 0;
+}
+bool env_random_valid(const dwc1_randomization& cfg, const dwc1_env_random& v) {
+  const double scales[4] = {v.mass_scale, v.friction_scale, v.kp_scale,
+                            v.damping_scale};
+  const double ranges[4] = {cfg.r_mass, cfg.r_friction, cfg.r_kp,
+                            cfg.r_damping};
+  for (int k = 0; k < 4; k++) {
+    if (!(scales[k] == scales[k])) return false;
+    // strict-off configs accept only neutral values; otherwise stay inside
+    // the configured range (tiny slack for the host's f64 draw arithmetic).
+    if (fabs(scales[k] - 1.0) > ranges[k] + 1e-12) return false;
+  }
+  return v.latency_steps <= cfg.max_latency_steps;
+}
+}  // namespace
 
 extern "C" {
 
 int dwc1_abi_version(void) { return DWC1_ABI_VERSION; }
 
 int dwc1_create(uint32_t environments, const float* joint_offsets,
-                dwc1_scene** out) {
+                const dwc1_randomization* randomization, dwc1_scene** out) {
   if (!out || environments < 1 || environments > 65536) return DWC1_INVALID;
   *out = nullptr;
   if (joint_offsets && !dw_finite(joint_offsets, (int)environments * DW_J))
     return DWC1_INVALID;
+  if (!rand_config_valid(randomization)) return DWC1_INVALID;
   try {
     auto s = new dwc1_scene;
     s->E = environments;
+    if (randomization) s->rand = *randomization;
     s->state.resize(environments);
     s->work.resize(environments);
     if (!dw_reference_weights(s->params.refweight, &s->work[0])) {
@@ -152,6 +178,17 @@ int dwc1_reset(dwc1_scene* s, const uint8_t* mask) {
   return dwc1_reset_policy(s, mask, nullptr, nullptr);
 }
 
+int dwc1_set_randomization(dwc1_scene* s, const uint8_t* mask,
+                           const dwc1_env_random* randoms) {
+  if (!s || !randoms) return DWC1_INVALID;
+  for (uint32_t e = 0; e < s->E; e++)
+    if ((!mask || mask[e]) && !env_random_valid(s->rand, randoms[e]))
+      return DWC1_INVALID;
+  for (uint32_t e = 0; e < s->E; e++)
+    if (!mask || mask[e]) dw_policy_set_random(&s->state[e], &randoms[e]);
+  return DWC1_OK;
+}
+
 int dwc1_step_policy(dwc1_scene* s, const float* actions, uint32_t n_ticks,
                      float* obs, float* reward, uint8_t* done,
                      dwc1_diagnostic* diagnostics) {
@@ -195,6 +232,10 @@ int dwc1_set_state(dwc1_scene* s, uint32_t environment, const float* qpos21,
       || !dw_finite(warm42, DW_JROWS))
     return DWC1_INVALID;
   DwState next{};
+  {  // neutral randomization + reset latency ring (new fields must not be 0)
+    dwc1_env_random neutral{1.0, 1.0, 1.0, 1.0, 0, 0};
+    dw_policy_set_random(&next, &neutral);
+  }
   for (int k = 0; k < DW_Q; k++) next.q[k] = qpos21[k];
   dw_qnormalize(next.q + 3);
   for (int k = 0; k < DW_N; k++) next.v[k] = velocity20[k];
@@ -221,7 +262,7 @@ int dwc1_debug_eval(const float* q, const float* v, float* mass /*[N,N]*/,
                     const float* target /*[J] or NULL*/) {
   if (!q || !v) return DWC1_INVALID;
   auto wk = std::make_unique<DwWork>();
-  if (!dw_evaluate(q, v, DW_GRAVITY_Z, wk.get())) return DWC1_DYNAMICS;
+  if (!dw_evaluate(q, v, DW_GRAVITY_Z, 1.0, wk.get())) return DWC1_DYNAMICS;
   const DwEval& e = wk->e;
   if (mass) memcpy(mass, &e.M[0][0], sizeof(e.M));
   if (bias) memcpy(bias, e.bias, sizeof(e.bias));

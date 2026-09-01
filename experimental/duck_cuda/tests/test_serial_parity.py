@@ -356,6 +356,113 @@ class SerialParityTests(unittest.TestCase):
             env.close()
             dev.close()
 
+    # -- domain randomization + actuation latency (ABI v6, off by default) --------
+    RAND_CFG = {"r_mass": 0.15, "r_friction": 0.2, "r_kp": 0.15,
+                "r_damping": 0.2, "max_latency_steps": 2}
+
+    def test_randomization_off_is_bit_identical(self):
+        # default construction vs an explicit all-zero config: byte-equal
+        # trajectories through both the tick and the policy paths (neutral
+        # scales apply as (float)((double)X * 1.0) == X; latency 0 reads back
+        # the just-written ring slot).
+        zero = {"r_mass": 0.0, "r_friction": 0.0, "r_kp": 0.0,
+                "r_damping": 0.0, "max_latency_steps": 0}
+        a = CudaDuckLane(2)
+        b = CudaDuckLane(2, randomization=zero)
+        try:
+            a.reset_policy(seed=11)
+            b.reset_policy(seed=11)
+            rng = np.random.default_rng(4)
+            for t in range(20):
+                act = np.clip(rng.normal(0, 0.3, (2, 14)), -1, 1).astype(np.float32)
+                ra, rb = a.step_policy(act), b.step_policy(act)
+                for x, y in zip(ra[:3], rb[:3]):
+                    self.assertEqual(x.tobytes(), y.tobytes(), t)
+            sa, sb = a.read(), b.read()
+            self.assertEqual(sa.q.tobytes(), sb.q.tobytes())
+            self.assertEqual(sa.v.tobytes(), sb.v.tobytes())
+        finally:
+            a.close()
+            b.close()
+
+    def test_randomization_on_deterministic_and_effective(self):
+        # same seed -> bit-identical with randomization ON; and the drawn
+        # scales/latency must genuinely alter the dynamics vs a neutral lane
+        # (guards against silently unapplied multipliers).
+        a = CudaDuckLane(4, randomization=dict(self.RAND_CFG))
+        b = CudaDuckLane(4, randomization=dict(self.RAND_CFG))
+        n = CudaDuckLane(4)
+        try:
+            a.reset_policy(seed=3)
+            b.reset_policy(seed=3)
+            n.reset_policy(seed=3)
+            # the documented stream draws real values for this seed/config
+            drew_latency = False
+            for e in range(4):
+                rng = np.random.default_rng([3, e, 1])
+                rng.random(); rng.random()          # command, phase0
+                scales = [1.0 + r * (2.0 * rng.random() - 1.0)
+                          for r in (0.15, 0.2, 0.15, 0.2)]
+                self.assertTrue(any(abs(s - 1.0) > 1e-3 for s in scales), e)
+                drew_latency |= int(rng.integers(3)) > 0
+            self.assertTrue(drew_latency, "no env drew nonzero latency")
+            rng = np.random.default_rng(9)
+            diverged = False
+            for t in range(30):
+                act = np.clip(rng.normal(0, 0.3, (4, 14)), -1, 1).astype(np.float32)
+                ra, rb, rn = a.step_policy(act), b.step_policy(act), n.step_policy(act)
+                for x, y in zip(ra[:3], rb[:3]):
+                    self.assertEqual(x.tobytes(), y.tobytes(), t)
+                diverged |= not np.array_equal(ra[0], rn[0])
+            self.assertTrue(diverged, "randomization had no effect on obs")
+            sa, sb = a.read(), b.read()
+            self.assertEqual(sa.q.tobytes(), sb.q.tobytes())
+        finally:
+            a.close()
+            b.close()
+            n.close()
+
+    def test_randomized_parity_vs_python_env(self):
+        # 0.0-parity WITH randomization on, against the python env -- runnable
+        # once flat.py implements the documented contract (walk/env/
+        # cuda_lane.py module docstring); skipped with a clear message until
+        # FlatFloorDuckEnv exposes the `randomization` parameter.
+        import inspect
+        from walk.env.flat import FlatFloorDuckEnv
+        if "randomization" not in inspect.signature(
+                FlatFloorDuckEnv.__init__).parameters:
+            raise unittest.SkipTest(
+                "flat.py does not expose `randomization` yet; apply the "
+                "python-side contract documented in walk/env/cuda_lane.py")
+        E = 4
+        cfg = dict(self.RAND_CFG)
+        env = FlatFloorDuckEnv(
+            environments=E, seed=0, randomization=cfg,
+            lane_factory=lambda ne, off: CudaDuckLane(
+                ne, joint_offsets=off, randomization=cfg))
+        dev = CudaDuckLane(E, randomization=cfg)
+        try:
+            obs_py = env.reset()
+            dev.reset_policy(seed=0)
+            obs_dev = dev.reset_policy()
+            np.testing.assert_array_equal(obs_py, obs_dev, "reset observations")
+            rng = np.random.default_rng(0)
+            worst_obs = worst_rew = 0.0
+            for t in range(100):
+                a = np.clip(rng.normal(0, 0.4, (E, 14)), -1, 1).astype(np.float32)
+                o_py, r_py, d_py, _ = env.step(a)
+                o_dev, r_dev, d_dev, _ = dev.step_policy(a)
+                worst_obs = max(worst_obs, float(np.abs(o_py - o_dev).max()))
+                worst_rew = max(worst_rew, float(np.abs(r_py - r_dev).max()))
+                np.testing.assert_array_equal(d_py, d_dev, f"done @ {t}")
+            self.assertLess(worst_obs, 1e-4)
+            self.assertLess(worst_rew, 1e-3)
+            print(f"randomized_parity obs={worst_obs:.3e} rew={worst_rew:.3e}",
+                  file=sys.stderr)
+        finally:
+            env.close()
+            dev.close()
+
     # -- determinism -------------------------------------------------------------
     def test_two_runs_bit_identical(self):
         a, b = CudaDuckLane(2), CudaDuckLane(2)

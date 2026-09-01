@@ -67,10 +67,66 @@ import numpy as np
 
 from .native_lane import LaneState
 
-ABI_VERSION = 5  # must match DWC1_ABI_VERSION in duck_cuda.h
+ABI_VERSION = 6  # must match DWC1_ABI_VERSION in duck_cuda.h
 
 OBS = 58
 COMMANDS_MPS = (0.10, 0.15, 0.20)   # flat.py per-episode forward commands
+MAX_LATENCY = 4                     # DWC1_MAX_LATENCY (ring capacity - 1)
+
+# =============================================================================
+# DOMAIN RANDOMIZATION + ACTUATION LATENCY -- python-side contract (v6)
+# =============================================================================
+# This is the exact spec walk/env/flat.py must implement so the python env
+# and the device policy path stay 0.0-parity. Feature is OFF by default
+# (randomization=None everywhere == today's behavior, bit-identical).
+#
+# CONFIG (creation time, both FlatFloorDuckEnv and CudaDuckLane):
+#   randomization = {"r_mass": float, "r_friction": float, "r_kp": float,
+#                    "r_damping": float, "max_latency_steps": int}
+#   each r in [0, 0.5]; max_latency_steps in [0, 4]. flat.py passes the SAME
+#   dict to its lane factory (CudaDuckLane(..., randomization=cfg)); enabling
+#   it with a lane lacking set_randomization must raise.
+#
+# PER-EPISODE DRAWS (flat.py reset(), per masked env, from the SAME
+# counter-based stream rng = _episode_rng(seed, e, episode + 1)) -- exact
+# order; draws 3-7 happen ONLY when randomization is enabled (config not
+# None), so disabled behavior consumes the stream exactly as today:
+#   1. draw = rng.random(); command = 0.10 if draw < 0.5
+#                                      else 0.15 if draw < 0.75 else 0.20
+#   2. phase0 = 2.0 * math.pi * rng.random()
+#   3. mass_scale     = 1.0 + r_mass     * (2.0 * rng.random() - 1.0)
+#   4. friction_scale = 1.0 + r_friction * (2.0 * rng.random() - 1.0)
+#   5. kp_scale       = 1.0 + r_kp       * (2.0 * rng.random() - 1.0)
+#   6. damping_scale  = 1.0 + r_damping  * (2.0 * rng.random() - 1.0)
+#   7. latency = int(rng.integers(max_latency_steps + 1))
+#   All five are always drawn while enabled (an individual r of 0 yields
+#   exactly 1.0), keeping the stream shape fixed.
+#
+# APPLYING (flat.py python path): after self._lane.restore(m), call
+#   self._lane.set_randomization(m, mass_scale, friction_scale, kp_scale,
+#                                damping_scale, latency_steps)   # [E] arrays
+# (a reset returns envs to neutral until this call). The lane applies the
+# scales INSIDE the physics: mass AND principal inertia together, pair mu,
+# PD kp, passive damping -- flat.py must NOT rescale anything else; the
+# reference-weight regularizers stay nominal; observations do not expose the
+# draws.
+#
+# LATENCY (flat.py implements it python-side for its own step(); the kernel
+# has the identical ring for step_policy):
+#   - the slew/target chain is UNCHANGED and undelayed; it produces
+#     eff[t] = self._effective at policy step t (t = self._t pre-increment).
+#   - applied[t] = eff[t - latency] for t >= latency, else the reset
+#     effective targets clip(HOME, joint_limits). Done envs keep t frozen,
+#     so their applied targets pin exactly like their computed ones.
+#   - physics consumes applied: lane.tick_block(applied, 10).
+#   - the reward torque estimate uses applied AND the scaled gain, with this
+#     f64 association: torque = (kp * kp_scale) * (applied - q) - kv * qdot,
+#     clipped to +-effort_cap (kp = lane.kp, f64).
+#   - reference ring implementation (kernel-identical): P = max_latency + 1
+#     slots per env prefilled with the reset targets at reset;
+#     ring[e, t % P] = eff[t] written first, then
+#     applied = ring[e, (t + P - latency[e]) % P].
+# =============================================================================
 
 
 def _episode_rng(seed: int, env: int, episode: int) -> np.random.Generator:
@@ -147,6 +203,19 @@ class Info(C.Structure):
                 ("joint_upper", F * J)]
 
 
+class RandConfig(C.Structure):
+    _fields_ = [(n, C.c_double) for n in
+                ["r_mass", "r_friction", "r_kp", "r_damping"]] + \
+               [("max_latency_steps", C.c_uint32), ("reserved", C.c_uint32)]
+
+
+class EnvRandom(C.Structure):
+    _fields_ = [(n, C.c_double) for n in
+                ["mass_scale", "friction_scale", "kp_scale",
+                 "damping_scale"]] + \
+               [("latency_steps", C.c_uint32), ("reserved", C.c_uint32)]
+
+
 class DeviceInfo(C.Structure):
     _fields_ = [(n, C.c_uint32) for n in [
         "lanes_per_env", "threads_per_block", "min_blocks_per_sm", "sm_count",
@@ -187,7 +256,9 @@ def build_library() -> Path:
 def load_library(path: Path):
     lib = C.CDLL(str(path))
     specs = {
-        "dwc1_create": [C.c_uint32, FP, C.POINTER(C.c_void_p)],
+        "dwc1_create": [C.c_uint32, FP, C.POINTER(RandConfig),
+                        C.POINTER(C.c_void_p)],
+        "dwc1_set_randomization": [C.c_void_p, U8P, C.POINTER(EnvRandom)],
         "dwc1_destroy": [C.c_void_p],
         "dwc1_info_get": [C.c_void_p, C.POINTER(Info)],
         "dwc1_step": [C.c_void_p, FP, C.c_uint32, C.POINTER(Diagnostic)],
@@ -230,7 +301,8 @@ class CudaDuckLane:
     """E batched fp32 flat-floor ducks over the dwc1 C ABI."""
 
     def __init__(self, environments: int, joint_offsets: np.ndarray | None = None,
-                 library_path: str | Path | None = None):
+                 library_path: str | Path | None = None,
+                 randomization: dict | None = None):
         path = library_path or os.environ.get("DUCK_CUDA_LIBRARY")
         self.library_path = Path(path) if path else build_library()
         self._lib = load_library(self.library_path)
@@ -252,8 +324,18 @@ class CudaDuckLane:
             if offsets.shape != (self.E, J):
                 raise ValueError("joint_offsets requires shape [E, J]")
         self._h = C.c_void_p()
+        self.randomization = dict(randomization) if randomization else None
+        cfg = None
+        if self.randomization is not None:
+            cfg = RandConfig(
+                float(self.randomization.get("r_mass", 0.0)),
+                float(self.randomization.get("r_friction", 0.0)),
+                float(self.randomization.get("r_kp", 0.0)),
+                float(self.randomization.get("r_damping", 0.0)),
+                int(self.randomization.get("max_latency_steps", 0)), 0)
         rc = self._lib.dwc1_create(
             self.E, _fp(offsets) if offsets is not None else None,
+            C.byref(cfg) if cfg is not None else None,
             C.byref(self._h))
         if rc:
             raise ValueError(f"dwc1_create status={rc}")
@@ -364,6 +446,9 @@ class CudaDuckLane:
             else np.asarray(mask, bool).reshape(self.E)
         cmd = np.zeros(self.E, np.float64)
         ph0 = np.zeros(self.E, np.float64)
+        rnd = np.ones((self.E, 4), np.float64)
+        lat = np.zeros(self.E, np.int64)
+        cfg = self.randomization
         for e in np.flatnonzero(m):
             rng = _episode_rng(self._seed, int(e), int(self._episode[e]) + 1)
             draw = rng.random()
@@ -371,6 +456,12 @@ class CudaDuckLane:
                       else COMMANDS_MPS[1] if draw < 0.75
                       else COMMANDS_MPS[2])
             ph0[e] = 2.0 * math.pi * rng.random()
+            if cfg is not None:   # draws 3-7 of the documented stream order
+                rnd[e, 0] = 1.0 + cfg.get("r_mass", 0.0) * (2.0 * rng.random() - 1.0)
+                rnd[e, 1] = 1.0 + cfg.get("r_friction", 0.0) * (2.0 * rng.random() - 1.0)
+                rnd[e, 2] = 1.0 + cfg.get("r_kp", 0.0) * (2.0 * rng.random() - 1.0)
+                rnd[e, 3] = 1.0 + cfg.get("r_damping", 0.0) * (2.0 * rng.random() - 1.0)
+                lat[e] = int(rng.integers(int(cfg.get("max_latency_steps", 0)) + 1))
             self._episode[e] += 1
         if commands is not None:
             cmd[:] = np.broadcast_to(np.asarray(commands, np.float64), (self.E,))
@@ -382,7 +473,34 @@ class CudaDuckLane:
                                          ph0.ctypes.data_as(DP))
         if rc:
             raise RuntimeError(f"dwc1_reset_policy status={rc}")
+        if cfg is not None:
+            self.set_randomization(m, rnd[:, 0], rnd[:, 1], rnd[:, 2],
+                                   rnd[:, 3], lat)
         return self.observe()
+
+    def set_randomization(self, mask, mass_scale, friction_scale, kp_scale,
+                          damping_scale, latency_steps) -> None:
+        """Apply per-env randomization values ([E] arrays) to masked envs and
+        reset their actuation-latency buffer; call right after a reset of the
+        same envs (see the module-level contract). Values must lie inside the
+        creation-time ranges."""
+        m = np.ones(self.E, bool) if mask is None \
+            else np.asarray(mask, bool).reshape(self.E)
+        randoms = (EnvRandom * self.E)()
+        arrays = [np.broadcast_to(np.asarray(v, np.float64), (self.E,))
+                  for v in (mass_scale, friction_scale, kp_scale,
+                            damping_scale)]
+        lats = np.broadcast_to(np.asarray(latency_steps, np.int64), (self.E,))
+        for e in range(self.E):
+            randoms[e].mass_scale = float(arrays[0][e])
+            randoms[e].friction_scale = float(arrays[1][e])
+            randoms[e].kp_scale = float(arrays[2][e])
+            randoms[e].damping_scale = float(arrays[3][e])
+            randoms[e].latency_steps = int(lats[e])
+        mc = (C.c_uint8 * self.E)(*[1 if x else 0 for x in m])
+        rc = self._lib.dwc1_set_randomization(self._h, mc, randoms)
+        if rc:
+            raise RuntimeError(f"dwc1_set_randomization status={rc}")
 
     # -- reads --------------------------------------------------------------
     def read(self) -> CudaLaneState:
