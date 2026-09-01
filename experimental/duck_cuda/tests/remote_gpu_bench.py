@@ -26,14 +26,16 @@ def bench(label, path, envs, warm_ticks=200, timed_ticks=1000):
     lim = lane.joint_limits
 
     def step_block(n):
+        # One tick_block launch per 10-tick decision (the training fast
+        # path). Per-tick lane.tick() calls under-read badly here: 10x the
+        # launch/sync/readback overhead per decision dominates the kernel.
         for _ in range(n // 10):
             a = np.clip(rng.normal(0, 0.5, 14), -1, 1)
             t = np.clip(home + 0.25 * a, lim[:, 0], lim[:, 1])
             targets = np.tile(t, (envs, 1)).astype(np.float64)
-            for _ in range(10):
-                rc, _ = lane.tick(targets)
-                if rc:
-                    raise SystemExit(f"fault rc={rc} at {label} E={envs}")
+            rc, _ = lane.tick_block(targets, 10)
+            if rc:
+                raise SystemExit(f"fault rc={rc} at {label} E={envs}")
 
     step_block(warm_ticks)
     t0 = time.perf_counter()

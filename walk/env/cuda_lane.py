@@ -352,9 +352,12 @@ class CudaDuckLane:
         """Masked policy reset mirroring FlatFloorDuckEnv.reset(): physics and
         tracker state back to creation; per-env command AND per-episode gait
         phase offset resampled with flat.py's exact counter-based (seed, env,
-        episode) RNG -- one stream per episode, command drawn first, then
-        phase0 = 2*pi*rng.random() (v10). Pass `commands`/`phase_offsets` [E]
-        to override the drawn values. Returns fresh observations."""
+        episode) RNG -- one stream per episode: draw = rng.random() picks the
+        command NON-uniformly (0.10 if draw < 0.5 else 0.15 if draw < 0.75
+        else 0.20: the hardest slow-walk command is oversampled 50%), then
+        phase0 = 2*pi*rng.random() as the NEXT draw. Pass
+        `commands`/`phase_offsets` [E] to override the drawn values.
+        Returns fresh observations."""
         if seed is not None:
             self._seed = int(seed)
         m = np.ones(self.E, bool) if mask is None \
@@ -363,7 +366,10 @@ class CudaDuckLane:
         ph0 = np.zeros(self.E, np.float64)
         for e in np.flatnonzero(m):
             rng = _episode_rng(self._seed, int(e), int(self._episode[e]) + 1)
-            cmd[e] = COMMANDS_MPS[rng.integers(len(COMMANDS_MPS))]
+            draw = rng.random()
+            cmd[e] = (COMMANDS_MPS[0] if draw < 0.5
+                      else COMMANDS_MPS[1] if draw < 0.75
+                      else COMMANDS_MPS[2])
             ph0[e] = 2.0 * math.pi * rng.random()
             self._episode[e] += 1
         if commands is not None:
