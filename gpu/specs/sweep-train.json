@@ -26,7 +26,7 @@
     },
     {
       "name": "build",
-      "command": "set -o pipefail; cd experimental/duck_cuda && ./build_remote.sh 2>&1 | tee ../../build.log",
+      "command": "set -o pipefail; cd experimental/duck_cuda && { if [ \"${SWEEP_FAST_BUILD:-0}\" = \"1\" ]; then mkdir -p build-remote && nvcc -std=c++17 -O3 --fmad=true -gencode arch=compute_89,code=sm_89 -gencode arch=compute_120,code=sm_120 -Iinclude -Xcompiler -fPIC -shared src/duck_cuda.cu -o build-remote/libduck_cuda_fast.so; else ./build_remote.sh; fi; } 2>&1 | tee ../../build.log",
       "timeout_s": 600,
       "artifacts": [
         "build.log"

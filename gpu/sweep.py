@@ -30,7 +30,15 @@ Documented invocation (the Daytona key must come from Doppler, never argv):
         /Users/john/.cache/box3d-cuda-host-runtime-0.207.0/bin/python -B \
         gpu/sweep.py --configs '[[0,10],[0,16.67],[0.8,6],[1.2,4]]' \
         --warmstart runs/warmstart-sweep.pt --out runs/sweep-<name> \
-        [--legs-per-config 1] [--dry-run]
+        [--legs-per-config 1] [--parallel N] [--train-wall-s 780] \
+        [--fast-build] [--runs-dir runs/gpu] [--dry-run]
+
+--parallel N runs configs through a thread pool of N concurrent sandboxes:
+each config gets a unique launcher label suffix (cfg<i>, scoping the
+launcher's one-sandbox concurrency guard), staging dir (runs/sweep-tmp-<i>/)
+and a derived spec written under <out>/specs/ whose upload_extra and job
+commands point at that config's paths. Live table rows print as configs
+finish. Default remains fully sequential.
 
 Secrets discipline: the environment (which carries DAYTONA_API_KEY under
 doppler) is inherited by the launcher subprocess and never printed or logged.
@@ -38,12 +46,16 @@ doppler) is inherited by the launcher subprocess and never printed or logged.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -52,13 +64,24 @@ GENERATOR = REPO_ROOT / "experimental" / "duck_cuda" / "tools" / "generate_model
 LAUNCHER = REPO_ROOT / "gpu" / "run_daytona.py"
 SPEC_PATH = REPO_ROOT / "gpu" / "specs" / "sweep-train.json"
 
-# Fixed repo-relative staging paths referenced by the spec's upload_extra.
-STAGE_HEADER_REL = "runs/sweep-tmp/duck_model.h"
-STAGE_WARMSTART_REL = "runs/sweep-tmp/warmstart.pt"
+# Fixed repo-relative staging paths referenced by the BASE spec's
+# upload_extra. In --parallel mode each config i gets its own staging dir
+# runs/sweep-tmp-<i>/ and a derived spec whose paths point there.
+DEFAULT_STAGE_REL = "runs/sweep-tmp"
+STAGE_HEADER_REL = f"{DEFAULT_STAGE_REL}/duck_model.h"
+STAGE_WARMSTART_REL = f"{DEFAULT_STAGE_REL}/warmstart.pt"
 REMOTE_HEADER_DEST = "experimental/duck_cuda/include/duck_model.h"
 
 RUNS_GPU_DIR = REPO_ROOT / "runs" / "gpu"
 RUN_DIR_GLOB = "*sweep-train*"
+
+DEFAULT_TRAIN_WALL_S = 780          # 15-minute ranking legs by default
+TRAIN_TIMEOUT_SLACK_S = 240         # remote job timeout = wall + slack
+LAUNCHER_WALL_CAP_S = 3300          # run_daytona.py per-job timeout ceiling
+
+# Header regeneration shells out to the model generator, which touches the
+# shared native build cache; serialize it so --parallel N never races there.
+_GEN_LOCK = threading.Lock()
 ACTOR_REL = Path("artifacts/train/gpu-train-out/actor_final.pt")
 LATEST_REL = Path("artifacts/train/gpu-train-out/latest.pt")
 
@@ -171,6 +194,48 @@ def validate_spec(spec_path=None):
     return raw
 
 
+def stage_rel_for(cfg_index=None):
+    """Repo-relative staging dir: shared by default, per-config in parallel."""
+    return DEFAULT_STAGE_REL if cfg_index is None else f"{DEFAULT_STAGE_REL}-{cfg_index}"
+
+
+def derive_spec(base_raw, cfg_index=None, train_wall_s=DEFAULT_TRAIN_WALL_S,
+                fast_build=False):
+    """Per-config spec derived in-memory from the base sweep-train spec.
+
+    cfg_index is not None (parallel mode): unique spec name (-> unique run
+    dir stamp suffix) and per-config staging paths runs/sweep-tmp-<i>/ in
+    upload_extra and every job command. train_wall_s flows into the train
+    job's --max-wall-s and its remote timeout. fast_build prepends
+    SWEEP_FAST_BUILD=1 so the build job compiles only libduck_cuda_fast.so.
+    """
+    raw = copy.deepcopy(base_raw)
+    if not 60 <= int(train_wall_s) <= LAUNCHER_WALL_CAP_S - TRAIN_TIMEOUT_SLACK_S:
+        raise SweepError(f"--train-wall-s must be in [60, "
+                         f"{LAUNCHER_WALL_CAP_S - TRAIN_TIMEOUT_SLACK_S}]")
+    if cfg_index is not None:
+        raw["name"] = f"{base_raw['name']}-cfg{cfg_index}"
+        old, new = DEFAULT_STAGE_REL + "/", stage_rel_for(cfg_index) + "/"
+        raw["upload_extra"] = [x.replace(old, new) for x in raw.get("upload_extra", [])]
+        for job in raw["jobs"]:
+            job["command"] = job["command"].replace(old, new)
+    for job in raw["jobs"]:
+        if job["name"] == "train":
+            if not re.search(r"--max-wall-s \d+", job["command"]):
+                raise SweepError("base spec's train job lacks --max-wall-s")
+            job["command"] = re.sub(r"--max-wall-s \d+",
+                                    f"--max-wall-s {int(train_wall_s)}",
+                                    job["command"])
+            job["timeout_s"] = min(int(train_wall_s) + TRAIN_TIMEOUT_SLACK_S,
+                                   LAUNCHER_WALL_CAP_S)
+        if fast_build and job["name"] == "build":
+            if "SWEEP_FAST_BUILD" not in job["command"]:
+                raise SweepError("base spec's build job lacks the "
+                                 "SWEEP_FAST_BUILD guard")
+            job["command"] = "export SWEEP_FAST_BUILD=1; " + job["command"]
+    return raw
+
+
 # --------------------------------------------------------------------------
 # Per-config plumbing
 # --------------------------------------------------------------------------
@@ -192,7 +257,8 @@ def regenerate_header(base, per_mps, out_path, runner=None, log=print):
     cmd = [str(VENV_PY), "-B", str(GENERATOR), "--output", str(out_path)]
     log(f"[sweep] regenerating header ({ENV_BASE}={float(base)!r} "
         f"{ENV_PER_MPS}={float(per_mps)!r}) -> {out_path}")
-    proc = runner(cmd, env=config_env(base, per_mps), cwd=str(REPO_ROOT))
+    with _GEN_LOCK:   # generator shares the native build cache; no races
+        proc = runner(cmd, env=config_env(base, per_mps), cwd=str(REPO_ROOT))
     if proc.returncode != 0:
         raise SweepError(f"header generation failed (exit {proc.returncode})")
     if not out_path.is_file():
@@ -205,22 +271,28 @@ def regenerate_header(base, per_mps, out_path, runner=None, log=print):
     return out_path
 
 
-def stage_warmstart(src):
+def stage_warmstart(src, stage_rel=DEFAULT_STAGE_REL):
     src = Path(src)
     if not src.is_file():
         raise SweepError(f"warmstart checkpoint not found: {src}")
-    dest = REPO_ROOT / STAGE_WARMSTART_REL
+    dest = REPO_ROOT / stage_rel / "warmstart.pt"
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src, dest)
     return dest
 
 
-def launch_leg(dry_run=False, runner=None, log=print):
+def launch_leg(spec_path=None, dry_run=False, label_suffix=None,
+               runs_dir=None, runner=None, log=print):
     """Invoke gpu/run_daytona.py with the SAME interpreter this process was
     started with and the inherited environment (Doppler-provided key stays in
     env only; nothing env-related is ever printed). Returns the exit code."""
     runner = runner or subprocess.run
-    cmd = [sys.executable, "-B", str(LAUNCHER), "run", "--spec", str(SPEC_PATH)]
+    cmd = [sys.executable, "-B", str(LAUNCHER), "run",
+           "--spec", str(spec_path or SPEC_PATH)]
+    if label_suffix:
+        cmd += ["--label-suffix", str(label_suffix)]
+    if runs_dir:
+        cmd += ["--runs-dir", str(runs_dir)]
     if dry_run:
         cmd.append("--dry-run")
     log("[sweep] launching: " + " ".join(cmd))
@@ -228,16 +300,16 @@ def launch_leg(dry_run=False, runner=None, log=print):
     return int(proc.returncode)
 
 
-def list_run_dirs(runs_dir=None):
+def list_run_dirs(runs_dir=None, pattern=RUN_DIR_GLOB):
     runs_dir = Path(runs_dir or RUNS_GPU_DIR)
     if not runs_dir.is_dir():
         return set()
-    return {p for p in runs_dir.glob(RUN_DIR_GLOB) if p.is_dir()}
+    return {p for p in runs_dir.glob(pattern) if p.is_dir()}
 
 
-def find_new_run_dir(before, runs_dir=None):
-    """Newest runs/gpu/<stamp>-sweep-train dir not present before the launch."""
-    new = list_run_dirs(runs_dir) - set(before)
+def find_new_run_dir(before, runs_dir=None, pattern=RUN_DIR_GLOB):
+    """Newest <runs_dir>/<stamp>-<spec-name> dir not present before launch."""
+    new = list_run_dirs(runs_dir, pattern) - set(before)
     if not new:
         return None
     return max(new, key=lambda p: p.name)
@@ -341,14 +413,22 @@ def table_row(rec):
 # --------------------------------------------------------------------------
 
 def run_config(base, per_mps, warmstart, out_dir, legs=1, dry_run=False,
-               runner=None, log=print):
+               runner=None, log=print, *, spec_path=None, spec_name="sweep-train",
+               stage_rel=DEFAULT_STAGE_REL, label_suffix=None, runs_dir=None):
     """Header -> stage -> leg(s) -> strict eval; returns the config record.
-    Any leg failure is recorded and ends this config without raising."""
+    Any leg failure is recorded and ends this config without raising.
+
+    In --parallel mode each config gets its own spec_path / spec_name /
+    stage_rel / label_suffix so N configs can run in N concurrent sandboxes
+    without sharing staging files, run-dir detection globs, or the
+    launcher's one-sandbox-per-label concurrency guard."""
     tag = f"base{base:g}-per{per_mps:g}"
     rec = {"schema": "duckgridwalk.sweep_config/1",
            "config": [base, per_mps], "tag": tag,
-           "status": None, "legs": [], "metrics": None}
-    header_path = REPO_ROOT / STAGE_HEADER_REL
+           "status": None, "legs": [], "metrics": None,
+           "label_suffix": label_suffix, "spec": str(spec_path or SPEC_PATH)}
+    run_pattern = f"*-{spec_name}"
+    header_path = REPO_ROOT / stage_rel / "duck_model.h"
     try:
         regenerate_header(base, per_mps, header_path, runner=runner, log=log)
     except SweepError as e:
@@ -361,20 +441,22 @@ def run_config(base, per_mps, warmstart, out_dir, legs=1, dry_run=False,
         leg_rec = {"leg": leg, "resume": str(resume_src)}
         rec["legs"].append(leg_rec)
         try:
-            stage_warmstart(resume_src)
+            stage_warmstart(resume_src, stage_rel)
         except SweepError as e:
             rec["status"], leg_rec["error"] = "leg_failed", str(e)
             return rec
         if dry_run:
-            rc = launch_leg(dry_run=True, runner=runner, log=log)
+            rc = launch_leg(spec_path, dry_run=True, label_suffix=label_suffix,
+                            runs_dir=runs_dir, runner=runner, log=log)
             leg_rec.update(dry_run=True, launch_exit=rc)
             if rc != 0:
                 rec["status"], rec["error"] = "dry_run_failed", f"launcher dry-run exit {rc}"
                 return rec
             continue
-        before = list_run_dirs()
-        rc = launch_leg(runner=runner, log=log)
-        run_dir = find_new_run_dir(before)
+        before = list_run_dirs(runs_dir, run_pattern)
+        rc = launch_leg(spec_path, label_suffix=label_suffix,
+                        runs_dir=runs_dir, runner=runner, log=log)
+        run_dir = find_new_run_dir(before, runs_dir, run_pattern)
         leg_rec.update(launch_exit=rc,
                        run_dir=str(run_dir) if run_dir else None)
         if rc != 0 or run_dir is None:
@@ -428,6 +510,19 @@ def _build_parser():
                     help="output dir for sweep-results.jsonl / summary.json")
     ap.add_argument("--legs-per-config", type=int, default=1,
                     help="sequential 15-min training legs per config (default 1)")
+    ap.add_argument("--parallel", type=int, default=1,
+                    help="run N configs in N concurrent sandboxes (unique label "
+                         "suffix, staging dir and derived spec per config; "
+                         "default 1 = sequential)")
+    ap.add_argument("--train-wall-s", type=int, default=DEFAULT_TRAIN_WALL_S,
+                    help="per-leg training wall clock (flows into the derived "
+                         f"spec's --max-wall-s and job timeout; default "
+                         f"{DEFAULT_TRAIN_WALL_S})")
+    ap.add_argument("--fast-build", action="store_true",
+                    help="remote build compiles only libduck_cuda_fast.so "
+                         "(SWEEP_FAST_BUILD=1 in the build job command)")
+    ap.add_argument("--runs-dir", default=None,
+                    help="base dir for launcher run dirs (default: runs/gpu)")
     ap.add_argument("--dry-run", action="store_true",
                     help="per config: regenerate header + validate spec via the "
                          "launcher's --dry-run; no sandbox, no eval")
@@ -438,11 +533,13 @@ def main(argv=None, runner=None, log=print):
     args = _build_parser().parse_args(argv)
     try:
         configs = parse_configs(args.configs)
-        validate_spec()
+        base_raw = validate_spec()
         if not Path(args.warmstart).is_file():
             raise SweepError(f"warmstart checkpoint not found: {args.warmstart}")
         if args.legs_per_config < 1:
             raise SweepError("--legs-per-config must be >= 1")
+        if args.parallel < 1:
+            raise SweepError("--parallel must be >= 1")
     except SweepError as e:
         log(f"[sweep] error: {e}")
         return EXIT_ERROR
@@ -451,20 +548,73 @@ def main(argv=None, runner=None, log=print):
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path = out_dir / "sweep-results.jsonl"
     mode = "dry-run" if args.dry_run else "live"
+    parallel_mode = args.parallel > 1
+    runs_dir = (REPO_ROOT / args.runs_dir) if args.runs_dir else None
+
+    # One derived spec file per config (written under <out>/specs). In
+    # sequential mode it is content-identical to the base spec unless
+    # --train-wall-s / --fast-build override it.
+    spec_dir = out_dir / "specs"
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    tasks = []
+    try:
+        for i, (base, per_mps) in enumerate(configs):
+            idx = i if parallel_mode else None
+            raw = derive_spec(base_raw, cfg_index=idx,
+                              train_wall_s=args.train_wall_s,
+                              fast_build=args.fast_build)
+            spec_path = spec_dir / f"cfg{i}-{raw['name']}.json"
+            spec_path.write_text(json.dumps(raw, indent=2) + "\n")
+            tasks.append({"index": i, "base": base, "per_mps": per_mps,
+                          "spec_path": spec_path, "spec_name": raw["name"],
+                          "stage_rel": stage_rel_for(idx),
+                          "label_suffix": f"cfg{i}" if parallel_mode else None})
+    except SweepError as e:
+        log(f"[sweep] error: {e}")
+        return EXIT_ERROR
+
     log(f"[sweep] {len(configs)} config(s), {args.legs_per_config} leg(s) each, "
-        f"mode={mode}, out={out_dir}")
+        f"mode={mode}, parallel={args.parallel}, train_wall_s={args.train_wall_s}, "
+        f"fast_build={args.fast_build}, out={out_dir}")
     log("[sweep] " + _TABLE_HEADER)
 
-    records = []
-    for base, per_mps in configs:
-        rec = run_config(base, per_mps, args.warmstart, out_dir,
-                         legs=args.legs_per_config, dry_run=args.dry_run,
-                         runner=runner, log=log)
-        rec["at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-        records.append(rec)
-        with results_path.open("a") as f:
-            f.write(json.dumps(rec, sort_keys=True) + "\n")
-        log("[sweep] " + table_row(rec))
+    io_lock = threading.Lock()
+
+    def emit(msg):
+        with io_lock:
+            log(msg)
+
+    def one(task):
+        return run_config(task["base"], task["per_mps"], args.warmstart, out_dir,
+                          legs=args.legs_per_config, dry_run=args.dry_run,
+                          runner=runner, log=emit,
+                          spec_path=task["spec_path"],
+                          spec_name=task["spec_name"],
+                          stage_rel=task["stage_rel"],
+                          label_suffix=task["label_suffix"],
+                          runs_dir=runs_dir)
+
+    by_index = {}
+    with ThreadPoolExecutor(max_workers=args.parallel) as pool:
+        futures = {pool.submit(one, t): t for t in tasks}
+        for fut in as_completed(futures):
+            task = futures[fut]
+            try:
+                rec = fut.result()
+            except Exception as e:  # a crashed config must not sink the others
+                rec = {"schema": "duckgridwalk.sweep_config/1",
+                       "config": [task["base"], task["per_mps"]],
+                       "tag": f"base{task['base']:g}-per{task['per_mps']:g}",
+                       "status": "error", "error": f"{type(e).__name__}: {e}",
+                       "legs": [], "metrics": None,
+                       "label_suffix": task["label_suffix"]}
+            rec["at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            by_index[task["index"]] = rec
+            with io_lock:   # live row + jsonl append as each config finishes
+                with results_path.open("a") as f:
+                    f.write(json.dumps(rec, sort_keys=True) + "\n")
+                log("[sweep] " + table_row(rec))
+    records = [by_index[i] for i in sorted(by_index)]
 
     ranked = rank_results(records)
     log("[sweep] " + "=" * len(_TABLE_HEADER))
@@ -479,6 +629,9 @@ def main(argv=None, runner=None, log=print):
         "schema": "duckgridwalk.sweep_summary/1",
         "mode": mode,
         "legs_per_config": args.legs_per_config,
+        "parallel": args.parallel,
+        "train_wall_s": args.train_wall_s,
+        "fast_build": args.fast_build,
         "warmstart": str(args.warmstart),
         "configs_total": len(records),
         "configs_completed": len(completed),

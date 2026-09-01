@@ -55,6 +55,18 @@ DOPPLER_INVOCATION = (
 
 WALL_CLOCK_CAP_S = 3300  # fits one 40-min training leg + provision/build/transfer
 LAUNCHER_LABEL = {"launcher": "duck-grid-walk-gpu"}
+# --label-suffix scopes the one-sandbox-at-a-time guard and the deletion
+# verification to an exact label value (e.g. duck-grid-walk-gpu-cfg2), so a
+# sweep driver may run N configs in N concurrent sandboxes, one per suffix.
+LABEL_SUFFIX_RE = re.compile(r"[A-Za-z0-9._\-]{1,32}")
+
+
+def label_with_suffix(suffix=None):
+    """The launcher label dict, optionally with '-<suffix>' appended."""
+    label = dict(LAUNCHER_LABEL)
+    if suffix:
+        label["launcher"] = f"{LAUNCHER_LABEL['launcher']}-{suffix}"
+    return label
 REMOTE_WORKDIR = "/tmp/duckwork"
 REMOTE_TAR = "/tmp/duck-payload.tar"
 DEFAULT_IMAGE = "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
@@ -289,7 +301,7 @@ class DaytonaProvider:
     --dry-run and tests never need the SDK or the key. The API key is read
     from the environment by the SDK itself; this class never touches it."""
 
-    def __init__(self):
+    def __init__(self, label=None):
         if not os.environ.get("DAYTONA_API_KEY"):
             raise LauncherError(
                 "DAYTONA_API_KEY is not set. Run via doppler:\n  " + DOPPLER_INVOCATION
@@ -297,15 +309,23 @@ class DaytonaProvider:
         import daytona  # noqa: F401  (pinned 0.207.0 in the host runtime)
         self._daytona = daytona
         self._client = daytona.Daytona()  # reads DAYTONA_API_KEY from env
+        # Exact label value this launcher instance owns: the concurrency guard
+        # and the deletion verification are scoped to it (default unchanged).
+        self._label = dict(label or LAUNCHER_LABEL)
 
-    def list_launcher_sandbox_ids(self):
+    def _list_labeled(self):
+        """Sandboxes carrying exactly this launcher's label value."""
         d = self._daytona
         try:
-            query = d.ListSandboxesQuery(labels=LAUNCHER_LABEL)
-            boxes = list(self._client.list(query))
+            query = d.ListSandboxesQuery(labels=self._label)
+            return list(self._client.list(query))
         except TypeError:
-            boxes = [b for b in self._client.list()
-                     if (getattr(b, "labels", None) or {}).get("launcher") == LAUNCHER_LABEL["launcher"]]
+            return [b for b in self._client.list()
+                    if (getattr(b, "labels", None) or {}).get("launcher")
+                    == self._label["launcher"]]
+
+    def list_launcher_sandbox_ids(self):
+        boxes = self._list_labeled()
         out = []
         for b in boxes:
             state = str(getattr(b, "state", "")).lower()
@@ -330,7 +350,7 @@ class DaytonaProvider:
             # provider requires GPU sandboxes to be ephemeral: 0 = delete on stop;
             # ttl_minutes remains the hard wall bound
             auto_delete_interval=0,
-            labels=dict(LAUNCHER_LABEL, spec=spec.name),
+            labels=dict(self._label, spec=spec.name),
         )
         try:
             sb = self._client.create(params, timeout=timeout_s)
@@ -359,7 +379,7 @@ class DaytonaProvider:
         self._client.delete(handle.raw, wait=True)
 
     def sandbox_gone(self, sandbox_id):
-        for b in self._client.list():
+        for b in self._list_labeled():
             if b.id == sandbox_id:
                 state = str(getattr(b, "state", "")).lower()
                 return "destroy" in state or "delet" in state
@@ -411,7 +431,7 @@ def _write_json(path, obj, redactor):
 
 
 def execute_run(spec, repo_root, run_dir, provider, redactor, deadline,
-                extra_gpu_types=(), log=print):
+                extra_gpu_types=(), log=print, label=None):
     """Full lifecycle: tar -> create -> upload -> jobs -> artifacts ->
     manifest -> delete (finally, verified). Returns process exit code."""
     run_dir = Path(run_dir)
@@ -427,6 +447,7 @@ def execute_run(spec, repo_root, run_dir, provider, redactor, deadline,
     manifest = {
         "spec": dataclasses.asdict(spec),
         "commit": commit,
+        "label": dict(label or LAUNCHER_LABEL),
         "gpu_types": gpu_types,
         "sandbox_id": None,
         "payload_tar_sha256": _sha256(tar_path),
@@ -614,6 +635,10 @@ def _build_parser():
                      help="additional GPU type fallback (e.g. RTX-4090); may repeat")
     run.add_argument("--runs-dir", default=None,
                      help="base dir for run outputs (default: <repo>/runs/gpu)")
+    run.add_argument("--label-suffix", default=None,
+                     help="append '-<slug>' to the launcher label value and scope "
+                          "the concurrency check + deletion verification to that "
+                          "exact label (enables N concurrent sweep sandboxes)")
     return ap
 
 
@@ -627,6 +652,11 @@ def main(argv=None, provider_factory=None, repo_root=None, env=None, log=print):
     except SpecError as e:
         log(f"[launcher] spec error: {e}")
         return EXIT_ERROR
+
+    if args.label_suffix is not None and not LABEL_SUFFIX_RE.fullmatch(args.label_suffix):
+        log("[launcher] --label-suffix must match [A-Za-z0-9._-]{1,32}")
+        return EXIT_ERROR
+    label = label_with_suffix(args.label_suffix)
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
     runs_base = Path(args.runs_dir) if args.runs_dir else repo_root / "runs" / "gpu"
@@ -647,13 +677,14 @@ def main(argv=None, provider_factory=None, repo_root=None, env=None, log=print):
     redactor = Redactor.from_env(env)
     deadline = Deadline(WALL_CLOCK_CAP_S)
     try:
-        provider = (provider_factory or DaytonaProvider)()
+        # test factories take no args; the real provider is scoped to the label
+        provider = provider_factory() if provider_factory else DaytonaProvider(label=label)
     except LauncherError as e:
         log(f"[launcher] {redactor.redact(str(e))}")
         return EXIT_ERROR
     return execute_run(
         spec, repo_root, run_dir, provider, redactor, deadline,
-        extra_gpu_types=args.gpu_type, log=log,
+        extra_gpu_types=args.gpu_type, log=log, label=label,
     )
 
 
