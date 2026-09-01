@@ -28,7 +28,7 @@
 // and the device policy layer cannot silently diverge: the
 // header-drift test pins env <-> kernel agreement automatically.
 #define DW_PHASE_HZ_BASE 0.0
-#define DW_PHASE_HZ_PER_MPS 12.5
+#define DW_PHASE_HZ_PER_MPS 16.67
 #define DW_ARMATURE 0.0270000007f
 #define DW_DAMPING 0.560000002f
 #define DW_FRICTION_LOSS 0.0680000037f

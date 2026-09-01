@@ -42,11 +42,12 @@ import os as _os
 # evaluator's 30 mm minimum step) -> 10.0. Base term lets low speeds keep a
 # workable cadence without knife-edging step length.
 PHASE_HZ_BASE = float(_os.environ.get("DUCK_PHASE_HZ_BASE", "0.0"))
-PHASE_HZ_PER_MPS = float(_os.environ.get("DUCK_PHASE_HZ_PER_MPS", "12.5"))
-# 12.5 = constant-step-length clock: step = cmd/(2*hz) = 40 mm at EVERY speed,
-# 33% above the evaluator's 30 mm bar and matching the ~45 mm reference gait.
-# (16.67 made the required step exactly 30 mm at all speeds - a knife-edge that
-# the tracking and imitation terms fought over at 0.10 m/s.)
+PHASE_HZ_PER_MPS = float(_os.environ.get("DUCK_PHASE_HZ_PER_MPS", "16.67"))
+# 16.67: sweep-validated, twice re-confirmed empirically. Both attempts to move
+# it off 16.67 on theoretical grounds (10.0 "knife-edge" theory, 12.5
+# "constant-step" theory) regressed the trained lineage hard. The clock the
+# policies entrain to beats the clock the arithmetic prefers. Do not move
+# without a fresh sweep on a fresh lineage.
 COMMANDS_MPS = (0.10, 0.15, 0.20)                  # per-episode forward commands
 HORIZON_STEPS = 400                                # 8 s at 0.02 s per step
 MIN_HEIGHT_FRACTION = 0.7                          # of the HOME root height
