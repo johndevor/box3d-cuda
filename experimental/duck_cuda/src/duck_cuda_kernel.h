@@ -1228,15 +1228,16 @@ static DW_HD void dw_fill_info(uint32_t environments, dwc1_info* info) {
 #define DWP_W_SAME_FOOT 2.0
 #define DWP_W_PHASE 0.5
 
-// flat.py gait clock, exact numpy association: the per-episode random offset
-// (resampled at reset, host-side RNG) plus the speed-proportional term
-// phase0 + ((2.0*pi) * (PHASE_HZ_PER_MPS*command)) * t * CONTROL_DT, all
-// IEEE f64. DW_PHASE_HZ_PER_MPS is GENERATED into duck_model.h from
-// walk.env.flat itself, so the header-drift test pins env <-> kernel
-// agreement on the clock rate.
+// flat.py AFFINE gait clock, exact numpy association: the per-episode random
+// offset (resampled at reset, host-side RNG) plus
+// ((2.0*pi) * (PHASE_HZ_BASE + PHASE_HZ_PER_MPS*command)) * t * CONTROL_DT,
+// all IEEE f64. Both clock constants are GENERATED into duck_model.h from
+// walk.env.flat itself (which reads the DUCK_PHASE_HZ_* sweep env vars at
+// import), so the header-drift test pins env <-> kernel agreement.
 static DW_HD double dw_policy_phase(double phase0, uint32_t t, double command) {
   return phase0
-       + ((2.0 * DWP_PI) * (DW_PHASE_HZ_PER_MPS * command)) * (double)t * 0.02;
+       + ((2.0 * DWP_PI) * (DW_PHASE_HZ_BASE + DW_PHASE_HZ_PER_MPS * command))
+         * (double)t * 0.02;
 }
 
 // native_lane.quat_to_rot in f64 (body->world rotation from xyzw quat).

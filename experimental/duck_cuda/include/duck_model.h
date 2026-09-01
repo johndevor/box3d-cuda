@@ -21,9 +21,13 @@
 #define DW_FOOT_VERTS 18   // baked convex sole vertices per foot
 #define DW_DT 0.00200000009f
 #define DW_GRAVITY_Z -9.81000042f
-// walk/env/flat.py gait-clock rate (f64), imported at generation time
-// so the env and the device policy layer cannot silently diverge:
-// the header-drift test pins env <-> kernel agreement automatically.
+// walk/env/flat.py affine gait clock (f64): phase_hz = BASE +
+// PER_MPS * command. Imported from flat.py at generation time (which
+// reads DUCK_PHASE_HZ_BASE / DUCK_PHASE_HZ_PER_MPS env vars -- the
+// sweep mechanism bakes whatever is set when generating), so the env
+// and the device policy layer cannot silently diverge: the
+// header-drift test pins env <-> kernel agreement automatically.
+#define DW_PHASE_HZ_BASE 0.0
 #define DW_PHASE_HZ_PER_MPS 10.0
 #define DW_ARMATURE 0.0270000007f
 #define DW_DAMPING 0.560000002f
