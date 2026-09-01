@@ -18,6 +18,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import torch
@@ -310,6 +311,155 @@ class TestGruPolicy(unittest.TestCase):
                 self.assertEqual(got[k], want[k],
                                  f"ff drift at update {want['update']} field {k}: "
                                  f"{got[k]!r} != {want[k]!r}")
+
+
+class TestAcceptProbe(unittest.TestCase):
+    """--accept-every N: strict-acceptance probe, auto-stop, accounting."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.lib, cls.digest = serial_library()
+
+    @staticmethod
+    def _fake_trace(seconds: float) -> dict:
+        n = int(round(seconds / 0.002))
+        return {"schema": "duckgridwalk.episode/1", "dt": 0.002,
+                "command_mps": 0.1, "seed": 4242, "resets": 0,
+                "terminated": False, "truncated_at_horizon": True,
+                "solver_fault": False,
+                "ticks": {"time_s": [0.002 * (i + 1) for i in range(n)]}}
+
+    class _StubProbeEnv:
+        def close(self):
+            pass
+
+    def test_pass_confirm_stop_flow_and_accounting(self):
+        calls, evals = [], []
+
+        def fake_capture(env, policy, command=None, seconds=8.0, seed=None, **kw):
+            calls.append((round(float(command), 2), float(seconds), seed))
+            policy(np.zeros((1, 58), np.float32))    # exercise the ff wrapper
+            return [self._fake_trace(seconds)]
+
+        def fake_eval(trace):
+            # confirmation episodes must arrive as the EXACT 8 s prefix
+            evals.append(len(trace["ticks"]["time_s"]))
+            return {"passed": True, "criteria": {}, "footfalls": []}
+
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(gpu_train, "capture_episodes", fake_capture), \
+                mock.patch.object(gpu_train, "evaluate_episode", fake_eval), \
+                mock.patch.object(gpu_train, "_make_probe_env",
+                                  lambda cfg, seed: self._StubProbeEnv()):
+            out = Path(td)
+            metrics = gpu_train.main(
+                argv(td, self.lib, updates=10, **{"accept-every": 1}))
+            train_lines = [m for m in metrics if m["kind"] == "train"]
+            accept_lines = [m for m in metrics if m["kind"] == "accept"]
+            # confirmed at update 1 -> training stopped immediately
+            self.assertEqual(len(train_lines), 1)
+            self.assertEqual(len(accept_lines), 1)
+            self.assertTrue(accept_lines[0]["accepted"])
+            self.assertTrue(accept_lines[0]["stage1_passed"])
+            # 6 stage-1 episodes (2 seeds x 3 commands, 8 s) then 3
+            # confirmation episodes (seed 4242, 11 s), in order
+            self.assertEqual(calls[:6], [(c, 8.0, s) for s in (4242, 7)
+                                         for c in (0.10, 0.15, 0.20)])
+            self.assertEqual(calls[6:], [(c, 11.0, 4242)
+                                         for c in (0.10, 0.15, 0.20)])
+            self.assertEqual(evals, [4000] * 9)      # all judged on 8 s ticks
+            # acceptance artifacts + accounting fields
+            acc = json.loads((out / "accepted" / "acceptance.json").read_text())
+            self.assertTrue(acc["accepted"])
+            self.assertEqual(acc["update"], 1)
+            self.assertEqual(acc["env_steps"], ENVS * HORIZON)
+            self.assertEqual(acc["policy"], "ff")
+            self.assertGreaterEqual(acc["train_wall_s"], 0.0)
+            self.assertGreater(acc["probe_wall_s"], 0.0)
+            self.assertEqual(len(acc["episodes"]), 6)
+            self.assertEqual(len(acc["confirmation"]), 3)
+            arch, sd = ppo.unpack_actor_file(torch.load(
+                out / "accepted" / "actor_accepted.pt", map_location="cpu",
+                weights_only=True))
+            self.assertEqual(arch, "ff")
+            ppo.Actor(58, 14).load_state_dict(sd)
+            ck = torch.load(out / "latest.pt", map_location="cpu",
+                            weights_only=False)
+            self.assertEqual(ck["update"], 1)
+            self.assertIn("train_wall_s", ck)
+            self.assertIn("probe_wall_s", ck)
+            self.assertGreater(ck["probe_wall_s"], 0.0)
+
+    def test_failing_probes_never_stop_training(self):
+        n_probes = []
+
+        def fake_capture(env, policy, command=None, seconds=8.0, seed=None, **kw):
+            return [self._fake_trace(seconds)]
+
+        def fake_eval(trace):
+            n_probes.append(1)
+            return {"passed": False,
+                    "criteria": {"at_least_6_qualified_footfalls":
+                                 {"pass": False, "detail": 0}},
+                    "footfalls": []}
+
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(gpu_train, "capture_episodes", fake_capture), \
+                mock.patch.object(gpu_train, "evaluate_episode", fake_eval), \
+                mock.patch.object(gpu_train, "_make_probe_env",
+                                  lambda cfg, seed: self._StubProbeEnv()):
+            out = Path(td)
+            metrics = gpu_train.main(
+                argv(td, self.lib, updates=3, **{"accept-every": 1}))
+            train_lines = [m for m in metrics if m["kind"] == "train"]
+            accept_lines = [m for m in metrics if m["kind"] == "accept"]
+            self.assertEqual(len(train_lines), 3)    # ran to completion
+            self.assertEqual(len(accept_lines), 3)   # probed every update
+            self.assertTrue(all(not m["accepted"] for m in accept_lines))
+            self.assertFalse((out / "accepted").exists())
+            # short-circuit cost control: 1 failing episode per probe
+            self.assertEqual(len(n_probes), 3)
+            ck = torch.load(out / "latest.pt", map_location="cpu",
+                            weights_only=False)
+            self.assertEqual(ck["update"], 3)
+
+    def test_prefix_truncation_roundtrips_real_trace(self):
+        """Real serial-lane 11 s capture -> 8 s prefix passes the evaluator's
+        integrity gate (structurally valid single 8 s episode)."""
+        from walk.env import flat as flat_mod
+        from walk.env.flat import FlatFloorDuckEnv
+        from walk.eval.gait import evaluate_episode as real_eval
+
+        old_horizon = flat_mod.HORIZON_STEPS
+        env = FlatFloorDuckEnv(
+            environments=1, seed=4242, perturbation_rad=0.0,
+            lane_factory=lambda E, off: cuda_lane.CudaDuckLane(
+                E, joint_offsets=off, library_path=self.lib))
+        try:
+            def policy(obs):                         # hold HOME: duck stands
+                return np.zeros((1, 14), np.float32)
+            with gpu_train._extended_horizon(int(round(11.0 / 0.02))):
+                trace = gpu_train.capture_episodes(
+                    env, policy, command=0.10, seconds=11.0, seed=4242)[0]
+        finally:
+            env.close()
+        self.assertEqual(flat_mod.HORIZON_STEPS, old_horizon)  # restored
+        # survived the full 11 s
+        self.assertFalse(trace["terminated"])
+        self.assertFalse(trace["solver_fault"])
+        self.assertTrue(trace["truncated_at_horizon"])
+        self.assertEqual(len(trace["ticks"]["time_s"]), 5500)
+        # exact-8 s prefix round-trips the strict evaluator's integrity gate
+        pre = gpu_train.truncate_trace_to_8s(trace)
+        self.assertEqual(len(pre["ticks"]["time_s"]), 4000)
+        for arr in pre["ticks"].values():
+            self.assertEqual(len(arr), 4000)
+        r = real_eval(pre)
+        self.assertFalse(r["rejected"], r["criteria"])
+        self.assertTrue(
+            r["criteria"]["single_episode_no_reset_or_failure"]["pass"])
+        # a standing duck is structurally valid but must not pass the gait
+        self.assertFalse(r["passed"])
 
 
 if __name__ == "__main__":

@@ -27,10 +27,21 @@ Checkpoints: <out>/ckpt_NNNNNN.pt every --checkpoint-every updates, plus
 <out>/latest.pt at every checkpoint and at exit. <out>/actor_final.pt (a plain
 cpu state_dict of the actor) is ALWAYS written at exit for local evaluation.
 --max-wall-s stops the update loop cleanly (checkpoint + actor_final, exit 0).
+
+--accept-every N (0 = off): every N updates (and once at the very end) the
+current deterministic policy is judged by the STRICT gait evaluator on a
+fresh non-randomized E=1 env — seeds (4242, 7) x commands (0.10/0.15/0.20)
+m/s, 8 s each; if all 6 pass, a stability confirmation runs 11 s episodes per
+command at seed 4242 (no fall through 11 s AND the exact-8 s prefix still
+passes). On confirmed pass the trainer writes <out>/accepted/
+{actor_accepted.pt, acceptance.json}, prints the WALKING ACCEPTED line with
+cumulative training wall seconds (probe time tracked and excluded) and exits
+0. Probe time never counts toward the reported training wall.
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import shutil
@@ -43,6 +54,8 @@ import torch
 from walk.env.contract import ACT, OBS, SolverFault
 from walk.env.cuda_lane import CudaDuckLane
 from walk.env.flat import FlatFloorDuckEnv
+from walk.eval.capture import capture_episodes
+from walk.eval.gait import evaluate_episode
 from walk.train.ppo import (
     PPOConfig,
     compute_gae,
@@ -73,6 +86,7 @@ class GpuTrainConfig:
     gamma: float = 0.99
     gae_lambda: float = 0.95
     perturbation: float = 0.0
+    accept_every: int = 0            # 0 = off; N = strict-acceptance probe every N updates
     checkpoint_every: int = 25
     preflight_steps: int = 100
     torch_threads: int = 4
@@ -342,9 +356,189 @@ def preflight_reward_check(env, steps: int, seed: int, out: Path, ff,
     return mean, std, faults
 
 
+# ---------------------------------------------------------------------------
+# In-training strict-acceptance probe (--accept-every N): the time-to-walking
+# stopwatch. Every N updates the current deterministic policy is judged by the
+# STRICT evaluator (walk/eval/gait.py) on a fresh, non-randomized E=1 env:
+#   stage 1: seeds (4242, 7) x commands (0.10, 0.15, 0.20) m/s, 8 s each —
+#            all 6 episodes must pass;
+#   stage 2 (stability confirmation): per command at seed 4242, an 11 s
+#            episode must survive with no termination AND its exact-8 s tick
+#            prefix must still pass the evaluator.
+# On confirmed pass the trainer writes <out>/accepted/{actor_accepted.pt,
+# acceptance.json}, checkpoints, prints the WALKING ACCEPTED line and exits 0.
+# ---------------------------------------------------------------------------
+
+PROBE_SEEDS = (4242, 7)
+PROBE_COMMANDS = (0.10, 0.15, 0.20)
+PROBE_EPISODE_SECONDS = 8.0
+CONFIRM_SEED = 4242
+CONFIRM_SECONDS = 11.0
+POLICY_DT = 0.02
+
+
+def _make_probe_env(cfg: GpuTrainConfig, seed: int):
+    """Judging env: E=1, zero perturbation, randomization OFF, same library."""
+    return FlatFloorDuckEnv(
+        environments=1, seed=int(seed), perturbation_rad=0.0, randomization=None,
+        lane_factory=lambda E, offsets: CudaDuckLane(
+            E, joint_offsets=offsets, library_path=cfg.library))
+
+
+def _probe_policy(actor, arch: str, device: torch.device):
+    """Deterministic policy closure for capture_episodes. gru carries hidden
+    state within the episode; a fresh closure (fresh h) is made per episode."""
+    if arch == "ff":
+        @torch.no_grad()
+        def policy(obs):
+            o = torch.from_numpy(np.ascontiguousarray(obs)).to(device)
+            return actor.deterministic(o).cpu().numpy()
+        return policy
+    state = {"h": None}
+
+    @torch.no_grad()
+    def policy(obs):
+        o = torch.from_numpy(np.ascontiguousarray(obs)).to(device)
+        if state["h"] is None:
+            state["h"] = actor.initial_state(o.shape[0], device)
+        act, state["h"] = actor.deterministic(o, state["h"])
+        return act.cpu().numpy()
+    return policy
+
+
+@contextlib.contextmanager
+def _extended_horizon(steps: int):
+    """Temporarily raise the flat env's episode horizon (module global read at
+    step time) so the 11 s stability episodes are not cut off at 8 s. The
+    trainer's own env never steps while a probe runs, and the old value is
+    always restored."""
+    from walk.env import flat as flat_mod
+    old = flat_mod.HORIZON_STEPS
+    flat_mod.HORIZON_STEPS = int(steps)
+    try:
+        yield
+    finally:
+        flat_mod.HORIZON_STEPS = old
+
+
+def truncate_trace_to_8s(trace: dict) -> dict:
+    """Exact-8 s prefix of a longer trace: the strict evaluator's translation
+    and last-step criteria are calibrated to 8 s, so re-scoring uses exactly
+    int(round(8 s / dt)) ticks, marked as a clean horizon truncation."""
+    dt = float(trace["dt"])
+    n8 = int(round(PROBE_EPISODE_SECONDS / dt))
+    out = {k: v for k, v in trace.items() if k != "ticks"}
+    out["ticks"] = {k: list(v[:n8]) for k, v in trace["ticks"].items()}
+    out["terminated"] = False
+    out["truncated_at_horizon"] = True
+    return out
+
+
+def _episode_summary(r: dict) -> dict:
+    q = [f for f in r.get("footfalls", []) if f.get("qualified")]
+    fails = [k for k, v in r.get("criteria", {}).items() if not v.get("pass")]
+    return {"passed": bool(r.get("passed")), "qualified": len(q),
+            "failed_criteria": fails}
+
+
+def run_acceptance_probe(cfg: GpuTrainConfig, actor, device: torch.device) -> dict:
+    """Run the 6-episode strict probe + 3-episode stability confirmation.
+
+    Short-circuits on the first failing episode (probe cost control: at most
+    6 + 3 episodes on E=1 with per-tick reads). A SolverFault anywhere is a
+    failed probe, never a crash. Returns stage results + probe wall seconds.
+    """
+    t0 = time.perf_counter()
+    episodes: dict[str, dict] = {}
+    confirmation: dict[str, dict] = {}
+    stage1 = True
+    confirmed = False
+    try:
+        for seed in PROBE_SEEDS:
+            if not stage1:
+                break
+            env = _make_probe_env(cfg, seed)
+            try:
+                for cmd in PROBE_COMMANDS:
+                    trace = capture_episodes(
+                        env, _probe_policy(actor, cfg.policy, device),
+                        command=cmd, seconds=PROBE_EPISODE_SECONDS, seed=seed)[0]
+                    r = evaluate_episode(trace)
+                    episodes[f"seed{seed}-cmd{cmd:.2f}"] = _episode_summary(r)
+                    if not r.get("passed"):
+                        stage1 = False
+                        break
+            finally:
+                env.close()
+        if stage1:
+            confirmed = True
+            env = _make_probe_env(cfg, CONFIRM_SEED)
+            try:
+                with _extended_horizon(int(round(CONFIRM_SECONDS / POLICY_DT))):
+                    for cmd in PROBE_COMMANDS:
+                        trace = capture_episodes(
+                            env, _probe_policy(actor, cfg.policy, device),
+                            command=cmd, seconds=CONFIRM_SECONDS,
+                            seed=CONFIRM_SEED)[0]
+                        survived = (bool(trace.get("truncated_at_horizon"))
+                                    and not trace.get("terminated")
+                                    and not trace.get("solver_fault"))
+                        r8 = (evaluate_episode(truncate_trace_to_8s(trace))
+                              if survived else None)
+                        ok = survived and bool(r8 and r8.get("passed"))
+                        confirmation[f"seed{CONFIRM_SEED}-cmd{cmd:.2f}-11s"] = {
+                            "survived_11s": survived,
+                            "prefix_8s": _episode_summary(r8) if r8 else None,
+                            "passed": ok,
+                        }
+                        if not ok:
+                            confirmed = False
+                            break
+            finally:
+                env.close()
+    except SolverFault as fault:
+        stage1 = confirmed = False
+        episodes["solver_fault"] = {"passed": False,
+                                    "detail": str(fault),
+                                    "saved_problem_path": fault.saved_problem_path}
+    return {"stage1_passed": stage1, "confirmed": confirmed,
+            "episodes": episodes, "confirmation": confirmation,
+            "probe_wall_s": time.perf_counter() - t0}
+
+
+def write_acceptance(out: Path, cfg: GpuTrainConfig, actor, update: int,
+                     env_steps: int, train_wall_s: float, probe_wall_s: float,
+                     probe: dict) -> Path:
+    acc = out / "accepted"
+    acc.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {"arch": cfg.policy,
+         "state_dict": {k: v.detach().cpu()
+                        for k, v in actor.state_dict().items()}},
+        acc / "actor_accepted.pt")
+    (acc / "acceptance.json").write_text(json.dumps({
+        "schema": "duckgridwalk.training_acceptance/1",
+        "accepted": True,
+        "update": int(update),
+        "env_steps": int(env_steps),
+        "train_wall_s": round(float(train_wall_s), 3),   # excludes probe time
+        "probe_wall_s": round(float(probe_wall_s), 3),   # cumulative probing
+        "probe_wall_last_s": round(float(probe["probe_wall_s"]), 3),
+        "policy": cfg.policy,
+        "seeds": list(PROBE_SEEDS),
+        "commands": list(PROBE_COMMANDS),
+        "confirm_seed": CONFIRM_SEED,
+        "confirm_seconds": CONFIRM_SECONDS,
+        "episodes": probe["episodes"],
+        "confirmation": probe["confirmation"],
+    }, indent=1) + "\n")
+    return acc
+
+
 def save_checkpoint(path: Path, update: int, actor, critic, optimizer,
                     sample_gen: torch.Generator, perm_gen: torch.Generator,
-                    env_steps: int, faults_total: int, cfg: GpuTrainConfig) -> None:
+                    env_steps: int, faults_total: int, cfg: GpuTrainConfig,
+                    train_wall_s: float = 0.0, probe_wall_s: float = 0.0) -> None:
     tmp = path.with_suffix(".tmp")
     torch.save(
         {
@@ -357,6 +551,8 @@ def save_checkpoint(path: Path, update: int, actor, critic, optimizer,
             "perm_gen_state": perm_gen.get_state(),
             "env_steps": env_steps,
             "faults_total": faults_total,
+            "train_wall_s": float(train_wall_s),   # cumulative, excl. probes
+            "probe_wall_s": float(probe_wall_s),   # cumulative probe time
             "config": dataclasses.asdict(cfg),
         },
         tmp,
@@ -397,6 +593,7 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
     perm_gen.manual_seed(derive_seed(cfg.seed, 0x33))
 
     start_update, env_steps, faults_total = 0, 0, 0
+    prev_train_wall, prev_probe_wall = 0.0, 0.0
     if cfg.resume:
         ck_path = out / "latest.pt" if cfg.resume == "auto" else Path(cfg.resume)
         ck = torch.load(ck_path, map_location="cpu", weights_only=False)
@@ -411,6 +608,8 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
         start_update = int(ck["update"])
         env_steps = int(ck["env_steps"])
         faults_total = int(ck["faults_total"])
+        prev_train_wall = float(ck.get("train_wall_s", 0.0))
+        prev_probe_wall = float(ck.get("probe_wall_s", 0.0))
         try:
             if ck.get("sample_gen_device", "cpu") == str(sample_gen.device):
                 sample_gen.set_state(ck["sample_gen_state"])
@@ -431,8 +630,60 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
     t_start = time.perf_counter()
     stopped_by_wall = False
     last_update = start_update
+    probe_wall_proc = 0.0            # probe seconds spent in THIS process
+    last_probe_update = -1
+    accepted = False
+
+    def train_wall() -> float:
+        """Cumulative training wall seconds, probes excluded."""
+        return prev_train_wall + (time.perf_counter() - t_start) - probe_wall_proc
+
+    def probe_wall() -> float:
+        """Cumulative probe wall seconds."""
+        return prev_probe_wall + probe_wall_proc
+
     try:
         with metrics_path.open("a") as mf, faults_path.open("a") as ff:
+
+            def do_probe(u: int) -> bool:
+                """Acceptance probe at update u; returns True on CONFIRMED
+                pass (training must stop). Time is booked as probe wall."""
+                nonlocal probe_wall_proc, last_probe_update, accepted
+                probe = run_acceptance_probe(cfg, actor, device)
+                probe_wall_proc += probe["probe_wall_s"]
+                last_probe_update = u
+                line = {
+                    "kind": "accept", "update": u, "env_steps": env_steps,
+                    "stage1_passed": probe["stage1_passed"],
+                    "accepted": probe["confirmed"],
+                    "probe_wall_s": round(probe["probe_wall_s"], 3),
+                    "probe_wall_total_s": round(probe_wall(), 3),
+                    "train_wall_s": round(train_wall(), 3),
+                    "episodes": probe["episodes"],
+                    "confirmation": probe["confirmation"],
+                }
+                mf.write(json.dumps(line) + "\n")
+                mf.flush()
+                metrics.append(line)
+                if not cfg.quiet:
+                    n_pass = sum(1 for v in probe["episodes"].values()
+                                 if v.get("passed"))
+                    print(f"[accept u{u}] stage1={probe['stage1_passed']} "
+                          f"({n_pass}/{len(probe['episodes'])} episodes) "
+                          f"confirmed={probe['confirmed']} "
+                          f"probe_wall={probe['probe_wall_s']:.1f}s")
+                if not probe["confirmed"]:
+                    return False
+                accepted = True
+                write_acceptance(out, cfg, actor, u, env_steps,
+                                 train_wall(), probe_wall(), probe)
+                save_checkpoint(out / "latest.pt", u, actor, critic, optimizer,
+                                sample_gen, perm_gen, env_steps, faults_total,
+                                cfg, train_wall(), probe_wall())
+                print(f"WALKING ACCEPTED at update {u} after "
+                      f"{train_wall():.1f} s ({probe_wall():.1f} s probing)")
+                return True
+
             if cfg.preflight_steps > 0 and not cfg.resume:
                 mean, std, pf_faults = preflight_reward_check(
                     env, cfg.preflight_steps, cfg.seed, out, ff, cfg.quiet)
@@ -542,15 +793,27 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                 if u % cfg.checkpoint_every == 0:
                     ck = out / f"ckpt_{u:06d}.pt"
                     save_checkpoint(ck, u, actor, critic, optimizer, sample_gen,
-                                    perm_gen, env_steps, faults_total, cfg)
+                                    perm_gen, env_steps, faults_total, cfg,
+                                    train_wall(), probe_wall())
                     shutil.copy2(ck, out / "latest.pt")
+
+                if cfg.accept_every > 0 and u % cfg.accept_every == 0:
+                    if do_probe(u):
+                        break        # WALKING ACCEPTED: stop training, exit 0
+
+            # One last probe at the very end (wall stop or updates exhausted),
+            # unless the final update was already probed or already accepted.
+            if (cfg.accept_every > 0 and not accepted
+                    and last_update > start_update
+                    and last_probe_update != last_update):
+                do_probe(last_update)
     finally:
         # Always checkpoint at exit and always write the cpu actor for local
         # evaluation, even after a wall-clock stop or an exception.
         try:
             save_checkpoint(out / "latest.pt", last_update, actor, critic,
                             optimizer, sample_gen, perm_gen, env_steps,
-                            faults_total, cfg)
+                            faults_total, cfg, train_wall(), probe_wall())
             # Self-describing actor file: {"arch": "ff"|"gru", "state_dict": ...}
             # (legacy consumers of plain ff state_dicts: see ppo.unpack_actor_file)
             torch.save(
@@ -563,7 +826,7 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
     if not cfg.quiet:
         print(f"[gpu_train] done: updates={last_update} env_steps={env_steps} "
               f"faults={faults_total} wall={time.perf_counter() - t_start:.1f}s "
-              f"stopped_by_wall={stopped_by_wall}")
+              f"stopped_by_wall={stopped_by_wall} accepted={accepted}")
     return metrics
 
 
@@ -597,6 +860,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--gae-lambda", type=float, default=d.gae_lambda)
     p.add_argument("--perturbation", type=float, default=d.perturbation,
                    help="per-env joint perturbation bound in rad (<= 0.02)")
+    p.add_argument("--accept-every", type=int, default=d.accept_every, metavar="N",
+                   help="0 = off; every N updates run the strict-acceptance "
+                        "probe (6 x 8 s episodes + 3 x 11 s stability "
+                        "confirmation) and STOP with exit 0 on confirmed pass")
     p.add_argument("--checkpoint-every", type=int, default=d.checkpoint_every)
     p.add_argument("--preflight-steps", type=int, default=d.preflight_steps,
                    help="random-action reward-sensitivity steps; 0 skips")
@@ -611,6 +878,7 @@ def config_from_args(args: argparse.Namespace) -> GpuTrainConfig:
         device=args.device, library=args.library, lane_env=args.lane_env, randomization=(json.loads(args.randomization) if args.randomization else None), out=args.out, resume=args.resume,
         max_wall_s=args.max_wall_s, policy=args.policy, lr=args.lr,
         gamma=args.gamma, gae_lambda=args.gae_lambda, perturbation=args.perturbation,
+        accept_every=args.accept_every,
         checkpoint_every=args.checkpoint_every, preflight_steps=args.preflight_steps,
         torch_threads=args.torch_threads, quiet=args.quiet,
     )
