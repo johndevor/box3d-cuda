@@ -1,0 +1,54 @@
+{
+  "name": "continue-ff-short",
+  "tar_globs": [],
+  "upload_extra": [
+    "runs/warmstart.pt"
+  ],
+  "jobs": [
+    {
+      "name": "gpu-info",
+      "command": "nvidia-smi | tee gpu-info.txt && nvcc --version | tee -a gpu-info.txt",
+      "timeout_s": 60,
+      "artifacts": [
+        "gpu-info.txt"
+      ],
+      "continue_on_error": false
+    },
+    {
+      "name": "build",
+      "command": "set -o pipefail; DSHA=$(find experimental/duck_cuda -type f -not -path '*/build-remote/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1); PRE=/opt/duck/prebuilt/$DSHA; if ls \"$PRE\"/libduck_cuda*.so >/dev/null 2>&1; then echo \"prebuilt cache HIT $DSHA (skipping nvcc)\" | tee build.log && mkdir -p experimental/duck_cuda/build-remote && cp -f \"$PRE\"/libduck_cuda*.so experimental/duck_cuda/build-remote/; else echo \"prebuilt cache MISS $DSHA (rebuilding; expected after source changes)\" | tee build.log; (cd experimental/duck_cuda && ./build_remote.sh) 2>&1 | tee -a build.log; fi",
+      "timeout_s": 600,
+      "artifacts": [
+        "build.log"
+      ],
+      "continue_on_error": false
+    },
+    {
+      "name": "train",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --envs 4096 --horizon 64 --updates 99999 --seed 917 --device cuda --library $(find experimental/duck_cuda -name 'libduck_cuda_fast.so' | head -1) --lane-env --policy ff --randomization '{\"r_mass\":0.1,\"r_friction\":0.2,\"r_kp\":0.1,\"r_damping\":0.2,\"max_latency_steps\":1}' --resume runs/warmstart.pt --accept-every 10 --out gpu-train-out --lr 1.5e-4 --max-wall-s 780 2>&1 | tee gpu-train.log",
+      "timeout_s": 1020,
+      "artifacts": [
+        "gpu-train.log",
+        "gpu-train-out/metrics.jsonl",
+        "gpu-train-out/actor_final.pt",
+        "gpu-train-out/latest.pt",
+        "gpu-train-out/accepted/acceptance.json",
+        "gpu-train-out/accepted/actor_accepted.pt"
+      ],
+      "continue_on_error": false
+    }
+  ],
+  "resources": {
+    "cpu": 4,
+    "memory_gib": 16,
+    "disk_gib": 20,
+    "gpu": 1,
+    "gpu_types": [
+      "RTX-5090"
+    ],
+    "spot": false,
+    "ttl_minutes": 50,
+    "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
+  },
+  "use_snapshot": true
+}
