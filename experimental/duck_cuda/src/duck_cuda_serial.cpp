@@ -67,6 +67,7 @@ int dwc1_create(uint32_t environments, const float* joint_offsets,
     }
     s->params.tolerance = DW_SOLVE_TOLERANCE;
     s->params.max_iterations = DW_MAX_ITERATIONS;
+    s->params.fast_termination = 0;
     for (uint32_t e = 0; e < environments; e++)
       dw_init_state(&s->state[e],
                     joint_offsets ? joint_offsets + (size_t)e * DW_J : nullptr);
@@ -220,6 +221,12 @@ int dwc1_set_command(dwc1_scene* s, const double* commands) {
     if (!(commands[e] == commands[e])) return DWC1_INVALID;  // NaN
     s->state[e].command = commands[e];
   }
+  return DWC1_OK;
+}
+
+int dwc1_set_fast_termination(dwc1_scene* s, uint32_t enable) {
+  if (!s) return DWC1_INVALID;
+  s->params.fast_termination = enable ? 1u : 0u;
   return DWC1_OK;
 }
 

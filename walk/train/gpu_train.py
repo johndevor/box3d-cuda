@@ -148,6 +148,8 @@ class LanePolicyEnv:
             library_path=cfg.library)
         if robot == "duck":          # only the duck lane has a DR surface
             kwargs["randomization"] = cfg.randomization
+        else:                        # training lane: freeze fallen envs
+            kwargs["fast_termination"] = True
         self._lane = lane_cls(self.E, **kwargs)
         self._seed = cfg.seed
         self.fault_count = 0

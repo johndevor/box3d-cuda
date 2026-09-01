@@ -215,5 +215,51 @@ class HumanoidPolicyParityTests(unittest.TestCase):
             dev.close()
 
 
+class FastTerminationTests(unittest.TestCase):
+    """dwc1_set_fast_termination (training throughput switch, default OFF).
+
+    OFF-by-default correctness is proven by the bit-exact parity tests
+    above (they never touch the switch). Here: with the switch ON, an env
+    that is already done at block entry does NO physics work -- its state
+    is bitwise frozen, reward 0, done latched -- while live envs keep
+    stepping normally.
+    """
+
+    def test_done_env_skip_freezes_state(self):
+        dev = _DevPolicy(2, seed=0)
+        lib = dev.lane._lib
+        lib.dwc1_set_fast_termination.argtypes = [C.c_void_p, C.c_uint32]
+        lib.dwc1_set_fast_termination.restype = C.c_int
+        try:
+            dev.reset()
+            rng = np.random.default_rng(7)
+            done = np.zeros(2, bool)
+            for t in range(200):
+                a = np.clip(rng.normal(0, 0.6, (2, ACT)), -1, 1)
+                _, _, done, diag = dev.step(a)
+                if done.any():
+                    break
+            self.assertTrue(done.any(), "no env terminated under flail")
+            self.assertEqual(lib.dwc1_set_fast_termination(dev.lane._h, 1), 0)
+            q0 = np.array(dev.lane.read().q, np.float64)
+            v0 = np.array(dev.lane.read().v, np.float64)
+            obs, rew, done2, diag = dev.step(np.full((2, ACT), 0.3))
+            q1 = np.array(dev.lane.read().q, np.float64)
+            v1 = np.array(dev.lane.read().v, np.float64)
+            for e in range(2):
+                if done[e]:
+                    # frozen bitwise, done latched, reward 0, clean status
+                    np.testing.assert_array_equal(q0[e], q1[e])
+                    np.testing.assert_array_equal(v0[e], v1[e])
+                    self.assertTrue(bool(done2[e]))
+                    self.assertEqual(float(rew[e]), 0.0)
+                    self.assertEqual(int(diag["status"][e]), 0)
+                else:
+                    # live envs keep stepping normally
+                    self.assertFalse(np.array_equal(q0[e], q1[e]))
+        finally:
+            dev.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

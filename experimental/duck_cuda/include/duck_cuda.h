@@ -186,6 +186,19 @@ int dwc1_observe(const dwc1_scene*, float* obs /* [E,DW_ENV_OBS] */);
 // command values exactly.
 int dwc1_set_command(dwc1_scene*, const double* commands /* [E] */);
 
+// Training-lane throughput switch (default OFF; additive export, ABI
+// version unchanged). When enabled, dwc1_step_policy (a) skips physics
+// entirely for envs already done at block entry (frozen state, reward 0,
+// frozen observation) and (b) latches the termination predicate after
+// every accepted tick, so a robot that falls mid-block stops ticking
+// immediately instead of solving its post-fall impact pile -- those solves
+// peg the fp32 solver at its full iteration + Tresca budget (measured
+// 25-100x a live solve) and dominate whole launches while contributing
+// nothing to training. LIVE-env physics arithmetic is untouched; with the
+// flag off, behavior is bit-identical to previous builds. The plain
+// physics path (dwc1_step / tick_block) never consults the flag.
+int dwc1_set_fast_termination(dwc1_scene*, uint32_t enable);
+
 // Masked policy reset: physics AND policy/tracker state back to the creation
 // state; commands[e] and phase_offsets[e] (f64, [E]) are applied to selected
 // envs -- the caller resamples them like flat.py's _episode_rng (counter-based

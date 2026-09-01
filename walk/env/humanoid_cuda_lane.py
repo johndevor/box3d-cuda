@@ -114,7 +114,8 @@ class CudaHumanoidLane:
 
     def __init__(self, environments: int,
                  joint_offsets: np.ndarray | None = None,
-                 library_path: str | Path | None = None):
+                 library_path: str | Path | None = None,
+                 fast_termination: bool = False):
         path = library_path or os.environ.get("HUMANOID_CUDA_LIBRARY")
         self.library_path = Path(path) if path else build_library()
         self._lib = load_library(self.library_path)
@@ -145,6 +146,14 @@ class CudaHumanoidLane:
             raise RuntimeError(
                 f"{self.library_path} is not a humanoid build: "
                 f"B{info.bodies}/J{info.joints}/N{info.dofs}")
+        # Training lanes want fallen envs frozen (no solver work on ticks
+        # that teach nothing); parity/oracle lanes keep the default OFF so
+        # both sides of a comparison run identical physics.
+        self.fast_termination = bool(fast_termination)
+        if self.fast_termination:
+            rc = self._lib.dwc1_set_fast_termination(self._h, 1)
+            if rc:
+                raise RuntimeError(f"dwc1_set_fast_termination status={rc}")
         self.joint_limits = np.array(
             [[lo, hi] for lo, hi in zip(info.joint_lower[:J],
                                         info.joint_upper[:J])])

@@ -256,6 +256,17 @@ typedef struct DwParams {
   float refweight[DW_J];       // reference-pose inverse-mass diagonal (av2)
   float tolerance;             // solver certificate tolerance (impulse units)
   uint32_t max_iterations;
+  // Training-lane throughput switch (dwc1_set_fast_termination, default 0):
+  // when set, dwc1_step_policy latches the termination predicate after
+  // every accepted tick (a fallen env stops ticking mid-block) and skips
+  // physics entirely for envs already done at block entry. Post-fall
+  // impact piles peg the solver at DW_MAX_ITERATIONS plus the full Tresca
+  // arsenal every tick (measured ~25-100x a live solve), so they dominate
+  // whole launches; their remaining ticks have zero training value. LIVE
+  // env arithmetic is untouched and the flag defaults OFF, keeping the
+  // physics path, the duck fingerprint and the python-env parity gates
+  // bit-identical.
+  uint32_t fast_termination;
 } DwParams;
 
 typedef struct DwEval {
@@ -1099,6 +1110,19 @@ static DW_HD int dw_solve(DwWork* w, float tolerance, uint32_t max_iterations,
       if (stalled) {
         extrapolate();
         converged = fmaxf(fmaxf(jr, nr), tr) <= tolerance;
+#ifdef DW_STALL_TIER_EAGER
+        // EAGER tier (model-header opt-in, e.g. the H0 humanoid training
+        // lane; never defined for the duck, keeping it bit-identical):
+        // accept a STALLED solve at the tier ceiling immediately instead
+        // of spending the Tresca arsenal chasing the strict tolerance
+        // first. The humanoid's exactly-coplanar box soles stall nearly
+        // every contact tick; measured on a flail workload, chasing the
+        // last decades costs 20-150 APGD bursts per policy step and is
+        // then accepted at this SAME ceiling anyway once the arsenal is
+        // spent. Certificate FORM unchanged; joint rows stay strict.
+        if (!converged)
+          converged = jr <= tolerance && fmaxf(nr, tr) <= DW_TIER_CEILING;
+#endif
         if (!converged && accelerations && err > 0.25f * reference) {
           accelerations--;
           block_accelerate(DW_APGD_BUDGET, (int)((15u - accelerations) % 3u));
@@ -1403,14 +1427,40 @@ static DW_HD int dw_tick(DwState* s, const float* target,
   return DWC1_OK;
 }
 
+// The policy termination predicate (height / tilt on the model's up-axis /
+// nonfinite), shared by the policy-step boundary check and the optional
+// mid-block fast-termination latch. Every lane computes it from the shared
+// env state, so branching on it stays warp-uniform.
+static DW_HD bool dw_policy_fell(const DwState* s) {
+  bool finite = dw_finite(s->q, DW_Q) && dw_finite(s->v, DW_N);
+  // world-Z component of the model's body up axis: duck body +Z ->
+  // R[2][2] = 1-2(qx^2+qy^2); H0 humanoid body +Y -> R[2][1] =
+  // 2(qy*qz + qx*qw) (humanoid_native_lane.tilt). q[3..6] is root xyzw.
+#if DW_ENV_UP_AXIS == 1
+  double up = 2.0 * ((double)s->q[4] * (double)s->q[5]
+                     + (double)s->q[3] * (double)s->q[6]);
+#else
+  double up = 1.0 - 2.0 * ((double)s->q[3] * (double)s->q[3]
+                           + (double)s->q[4] * (double)s->q[4]);
+#endif
+  return ((double)s->q[2] < DW_ENV_MIN_HEIGHT_FRACTION
+                            * (double)DW_INITIAL_QPOS[2])
+      || (up < DW_ENV_COS_MAX_TILT) || !finite;
+}
+
 // n_ticks with the targets held, all inside ONE call (one kernel launch on
 // device): a failing environment freezes (state and cache untouched from its
 // last accepted tick) and keeps its failure diag. The per-foot contact tick
 // counters cover exactly this call's accepted ticks. Returns the final
 // warp-uniform status (also written to diag->status by lane 0).
+// latch_termination (policy path only, dwc1_set_fast_termination): stop
+// ticking as soon as the termination predicate holds after an accepted
+// tick -- the boundary check then latches done from the same predicate, so
+// the env terminates identically, just without solving its post-fall ticks.
 static DW_HD int dw_step_env(DwState* s, const float* target, uint32_t n_ticks,
                              const DwParams* params, DwWork* w,
-                             dwc1_diagnostic* diag) {
+                             dwc1_diagnostic* diag,
+                             bool latch_termination = false) {
   DW_LANE0 {
     diag->ticks = 0;
     for (int pair = 0; pair < DW_PAIRS; pair++) s->contact_ticks[pair] = 0;
@@ -1421,6 +1471,7 @@ static DW_HD int dw_step_env(DwState* s, const float* target, uint32_t n_ticks,
     DW_LANE0 diag->status = (uint32_t)st;
     if (st != DWC1_OK) return st;
     DW_LANE0 diag->ticks++;
+    if (latch_termination && dw_policy_fell(s)) break;
   }
   DW_SYNC();
   return DWC1_OK;
@@ -1774,6 +1825,23 @@ static DW_HD void dw_step_policy_env(DwState* s, const float* action,
                                      float* reward_out, uint8_t* done_out,
                                      dwc1_diagnostic* diag) {
   const bool live = s->done == 0;   // warp-uniform read (pre-step state)
+  // Fast-termination short-circuit for envs ALREADY done at block entry:
+  // no physics, no tracker mutation, reward 0, frozen observation. The
+  // python env keeps ticking fallen robots (and its tracker) until the
+  // trainer resets them; under the training flag those solves -- pegged
+  // post-fall impact piles -- are skipped outright. Reward for done envs
+  // is 0 on both paths and the trainer resets them at the next boundary,
+  // so nothing training-visible changes.
+  if (params->fast_termination && !live) {
+    DW_LANE0 {
+      *reward_out = 0.0f;
+      *done_out = 1;
+      dw_policy_observe(s, obs);
+      diag->status = DWC1_OK;
+    }
+    DW_SYNC();
+    return;
+  }
   // The f64 policy chain stays bit-exact vs the python env: per-env scalar
   // sequential ops on lane 0 only; physics below is lane-cooperative.
   DW_LANE0 {
@@ -1807,7 +1875,8 @@ static DW_HD void dw_step_policy_env(DwState* s, const float* action,
     }
   }
   DW_SYNC();
-  int st = dw_step_env(s, w->eff, n_ticks, params, w, diag);
+  int st = dw_step_env(s, w->eff, n_ticks, params, w, diag,
+                       params->fast_termination != 0);
   DW_LANE0 {
     if (st != DWC1_OK) s->done = 1;
     dw_body_states(s->q, s->v, w->bodies13);
@@ -1817,21 +1886,7 @@ static DW_HD void dw_step_policy_env(DwState* s, const float* action,
                        w->bodies13[DW_PAIR_BODY_A[1]][0]};
     float r = dw_policy_reward(s, w->a64, w->app64, sole, foot_x);
     if (live) s->t += 1;
-    bool finite = dw_finite(s->q, DW_Q) && dw_finite(s->v, DW_N);
-    // Tilt up-scalar per the header's up-axis (world-Z component of the
-    // model's body up axis): duck body +Z -> R[2][2] = 1-2(qx^2+qy^2);
-    // H0 humanoid body +Y -> R[2][1] = 2(qy*qz + qx*qw)
-    // (humanoid_native_lane.tilt). q[3..6] is root quat xyzw.
-#if DW_ENV_UP_AXIS == 1
-    double up = 2.0 * ((double)s->q[4] * (double)s->q[5]
-                       + (double)s->q[3] * (double)s->q[6]);
-#else
-    double up = 1.0 - 2.0 * ((double)s->q[3] * (double)s->q[3]
-                             + (double)s->q[4] * (double)s->q[4]);
-#endif
-    bool fell = ((double)s->q[2] < DW_ENV_MIN_HEIGHT_FRACTION
-                                   * (double)DW_INITIAL_QPOS[2])
-             || (up < DWP_COS_MAX_TILT) || !finite;
+    bool fell = dw_policy_fell(s);   // height / up-axis tilt / nonfinite
     if (live && (fell || s->t >= DWP_HORIZON)) s->done = 1;
     *reward_out = live ? r : 0.0f;
     for (int j = 0; j < DW_J; j++) {
