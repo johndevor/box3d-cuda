@@ -11,7 +11,7 @@ x commands (0.10, 0.15, 0.20) m/s.
 The grid ladder is defined here as named stages (single source of truth for
 the curriculum runner walk/train/grid_curriculum.py):
 
-  flush   8x8 static grid, spacing == cube_size, zero height jitter
+  flush   45x10 static grid, spacing == cube_size, zero height jitter
   rough4  same, 4 mm height jitter, terrain seed follows the env seed
   rough8  same, 8 mm height jitter, terrain seed follows the env seed
 
@@ -19,11 +19,21 @@ The terrain seed is deliberately left unset in every stage spec so
 grid_lane.resolve_grid pins it to the env seed: each acceptance seed walks
 its own deterministic terrain, and re-running is bit-reproducible.
 
-Geometry note (baseline context): the 8x8 grid is 0.48 m square, centered
-under the duck, with cube tops cube_size = 60 mm above the floor. An 8 s
-episode at any accepted command walks off the +x edge, so every stage
-includes a 60 mm step-down onto the floor mid-episode. That transition is
-part of the terrain task the judge measures.
+Geometry: dwv1 places cube [ix, iz] at
+x = origin_x + (ix - (nx-1)/2) * pitch, y = origin_y + (iz - (nz-1)/2) *
+pitch (duck_world_v1.cpp), so nx runs along world +x — the commanded travel
+direction — and the lattice is centered on (origin_x, origin_y); the duck's
+base starts at (0, 0). The stages must cover the strict protocol's whole
+travel envelope (worst case 0.20 m/s x 8 s x 150% translation bound = 2.4 m
+ahead, plus margin behind and laterally), otherwise the episode ends in a
+60 mm step-down off the edge instead of cube walking — exactly what the
+first 8x8 baseline measured. With cube_size = spacing = 0.06 m:
+nx=45, nz=10, origin_x=1.05 covers x in [-0.30, +2.40] and y in
+[-0.30, +0.30] (cube edges included: centers span +-(n-1)/2*pitch, plus a
+half cube each side). 450 static cubes is above the dwv1 capacity gate's
+validated 225 (test_capacity.py) but well under the 1024 header cap; a
+50-step static hold at this size passes with ~13.8 ms/tick for E=1 —
+indistinguishable from the 8x8 grid's cost.
 
 Usage:
   .venv/bin/python -B -m walk.eval.grid_acceptance \
@@ -44,18 +54,27 @@ SEEDS = (4242, 7, 1913, 90210)
 COMMANDS = (0.10, 0.15, 0.20)
 EPISODE_SECONDS = 8.0
 
-# Named curriculum stages. nx/nz/cube_size/spacing follow the known-good
-# static-grid specs of walk/env/tests/test_grid.py (FLUSH_GRID); jitter
+# Named curriculum stages. cube_size/spacing/static follow the known-good
+# static-grid specs of walk/env/tests/test_grid.py (FLUSH_GRID); the lattice
+# covers the full strict-protocol travel envelope (see module docstring:
+# x in [-0.30, +2.40], y in [-0.30, +0.30] around the duck's start). Jitter
 # stages add uniform per-cube height jitter. No "seed" key: the terrain seed
 # follows the env seed (grid_lane.resolve_grid default_seed).
+_STAGE_BASE = dict(nx=45, nz=10, cube_size=0.06, spacing=0.06,
+                   origin_x=1.05, origin_y=0.0, dynamic=False)
 STAGES = {
-    "flush": dict(nx=8, nz=8, cube_size=0.06, spacing=0.06,
-                  height_jitter=0.0, dynamic=False),
-    "rough4": dict(nx=8, nz=8, cube_size=0.06, spacing=0.06,
-                   height_jitter=0.004, dynamic=False),
-    "rough8": dict(nx=8, nz=8, cube_size=0.06, spacing=0.06,
-                   height_jitter=0.008, dynamic=False),
+    "flush": dict(_STAGE_BASE, height_jitter=0.0),
+    "rough4": dict(_STAGE_BASE, height_jitter=0.004),
+    "rough8": dict(_STAGE_BASE, height_jitter=0.008),
 }
+
+
+def _json_default(o):
+    """gait.py's criteria details can carry numpy scalars (e.g. np.bool_ from
+    float-vs-np.float64 comparisons); serialize them as their Python values."""
+    if hasattr(o, "item"):
+        return o.item()
+    raise TypeError(f"not JSON serializable: {type(o).__name__}")
 
 
 def stage_grid(stage: str) -> dict:
@@ -237,7 +256,8 @@ def main(argv=None) -> int:
         out = Path(a.out)
         out.mkdir(parents=True, exist_ok=True)
         (out / "grid_acceptance.json").write_text(
-            json.dumps(record, indent=1, sort_keys=True) + "\n")
+            json.dumps(record, indent=1, sort_keys=True,
+                       default=_json_default) + "\n")
     return 0 if record["accepted"] else 1
 
 

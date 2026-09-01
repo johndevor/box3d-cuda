@@ -18,15 +18,34 @@ class TestStageSpecs(unittest.TestCase):
     def test_ladder_stages(self):
         self.assertEqual(sorted(ga.STAGES), ["flush", "rough4", "rough8"])
         for name, spec in ga.STAGES.items():
-            self.assertEqual((spec["nx"], spec["nz"]), (8, 8), name)
+            self.assertEqual((spec["nx"], spec["nz"]), (45, 10), name)
             self.assertEqual(spec["cube_size"], 0.06, name)
             self.assertEqual(spec["spacing"], 0.06, name)   # flush pitch
             self.assertFalse(spec["dynamic"], name)
             self.assertNotIn("seed", spec,
                              "terrain seed must follow the env seed")
+            self.assertLessEqual(spec["nx"] * spec["nz"], 1024)  # dwv1 cap
         self.assertEqual(ga.STAGES["flush"]["height_jitter"], 0.0)
         self.assertEqual(ga.STAGES["rough4"]["height_jitter"], 0.004)
         self.assertEqual(ga.STAGES["rough8"]["height_jitter"], 0.008)
+
+    def test_stage_covers_strict_travel_envelope(self):
+        """dwv1 places cube ix at origin_x + (ix - (nx-1)/2) * pitch, so the
+        terrain (cube edges included) must cover the worst-case strict
+        translation bound ahead of the duck's start at x = 0 — 0.20 m/s x
+        8 s x 150% = 2.4 m — plus margin behind and laterally."""
+        for name, spec in ga.STAGES.items():
+            pitch = spec["spacing"]
+            half = spec["cube_size"] / 2
+            x_lo = spec["origin_x"] - (spec["nx"] - 1) / 2 * pitch - half
+            x_hi = spec["origin_x"] + (spec["nx"] - 1) / 2 * pitch + half
+            y_lo = spec["origin_y"] - (spec["nz"] - 1) / 2 * pitch - half
+            y_hi = spec["origin_y"] + (spec["nz"] - 1) / 2 * pitch + half
+            eps = 1e-9
+            self.assertLessEqual(x_lo, -0.30 + eps, name)    # margin behind
+            self.assertGreaterEqual(x_hi, 2.40 - eps, name)  # 0.20 * 8 * 1.5
+            self.assertLessEqual(y_lo, -0.30 + eps, name)    # lateral margin
+            self.assertGreaterEqual(y_hi, 0.30 - eps, name)
 
     def test_terrain_seed_follows_env_seed(self):
         for stage in ga.STAGES:
@@ -103,7 +122,8 @@ class TestJudgeTinyReal(unittest.TestCase):
             res = ga.judge_seed(str(actor_path), "flush", seed=0,
                                 commands=(0.15,), seconds=0.4)
         self.assertEqual(res["grid"]["seed"], 0)     # terrain seed = env seed
-        self.assertEqual(res["grid"]["nx"], 8)
+        self.assertEqual(res["grid"]["nx"], 45)
+        self.assertEqual(res["grid"]["origin_x"], 1.05)
         rec = res["episodes"]["seed0-cmd0.15"]
         self.assertFalse(rec["passed"])
         for key in ("qualified", "left", "right", "failed_criteria",
@@ -113,7 +133,17 @@ class TestJudgeTinyReal(unittest.TestCase):
         detail = res["details"]["seed0-cmd0.15"]
         self.assertEqual(detail["schema"], "duckgridwalk.gait_eval/1")
         self.assertIn("single_episode_no_reset_or_failure", detail["criteria"])
-        self.assertTrue(json.dumps(res))             # JSON-serialisable
+        # JSON-serialisable with the judge's writer settings
+        self.assertTrue(json.dumps(res, default=ga._json_default))
+
+    def test_json_default_handles_numpy_scalars(self):
+        """gait.py criteria can contain np.bool_ / np.float64 (surfaced by
+        the first rough4 baseline with qualified footfalls)."""
+        blob = {"a": np.bool_(True), "b": np.float64(1.5), "c": np.int64(3)}
+        self.assertEqual(json.loads(json.dumps(blob, default=ga._json_default)),
+                         {"a": True, "b": 1.5, "c": 3})
+        with self.assertRaises(TypeError):
+            json.dumps({"x": object()}, default=ga._json_default)
 
 
 class TestObsParitySmoke(unittest.TestCase):
