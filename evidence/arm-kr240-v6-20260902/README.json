@@ -1,0 +1,4 @@
+{
+ "status": "3/12 on CPU authority (first GPU leg, 63M steps, fresh init)",
+ "notes": "reward v6 + self-gating ladder; reached judge_tight stage; all tier-0 acquire 5/5 in ~4.5s (3 pass, 1 speed-clause miss); speed excess is now the dominant remaining clause at GPU scale (local CPU run had 0%); continuation chain running"
+}
