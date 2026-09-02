@@ -10,20 +10,24 @@ sliding (humanoid/PHASE2.md section 8), i.e. v1's standing subsidy
 standing penalty (double-support -0.5). V2 makes commanded standing
 STRICTLY LOSING and doubles the stepping differential:
 
-  back-of-envelope per policy step at |cmd| > 0 (see
-  humanoid/tests/test_humanoid_reward_v2.py, which pins these on authored
-  trajectories):
-    perfect stand+lean (v1):  +0.28 .. +0.45  <- the observed attractor
-    perfect stand+lean (v2):  -0.89 .. -1.00  (strictly worse than falling
-                                               at t=0, which scores ~0)
-    crude in-phase stepper (v2): >= +1.5      (gap > 2.4/step)
+  measured per policy step at |cmd| > 0 (pinned on authored trajectories
+  by humanoid/tests/test_humanoid_reward_v2.py):
+    perfect stand+lean (v1):    +0.28 .. +0.45  <- the observed attractor
+    perfect stand+lean (v2):    -0.89 .. -1.00  (strictly worse than
+                                                 falling at t=0, ~0)
+    perfect stand+lean (v2.1):  -0.61 .. -0.72  (imitation leak +0.24
+                                                 included; still strictly
+                                                 negative every step)
+    imitating in-phase stepper (v2.1): +2.11 .. +2.54  (gap 2.8-3.2/step,
+                                                 WIDER than v2's 2.6-2.9)
 
 The four changed weights (rationale one-liners at each constant):
 TRACK_SIGMA_SQ 0.25 -> 0.09, W_AIR_TIME 1.5 -> 3.0,
 W_DOUBLE_SUPPORT 0.5 -> 1.5, W_PHASE 0.5 -> 1.0. Everything else is v1.
 
 Known residual loophole (documented, not yet observed): a PERMANENT
-one-legged stand pays no double-support penalty and nets ~+0.6/step; the
+one-legged stand pays no double-support penalty and nets ~+0.6/step
+(~+0.85 with the v2.1 imitation leak); the
 signed phase term nets it 0 rather than negative (same as the duck). If a
 one-foot-lean attractor emerges, the counter is a no-swing term (penalize
 any foot with continuous stance OR air beyond ~2 slowest cycles at
@@ -40,12 +44,13 @@ semantics match reward.py line for line so the future in-kernel port can
 diff the two files; walk/env/reward.py itself is untouched and remains the
 duck's contract.
 
-NO SELF-IMITATION TERM (duck term 8a): no humanoid reference gait exists
-anywhere (humanoid/FEASIBILITY.md section 3, "constants that exist
-nowhere"). The hook is kept explicitly empty -- W_IMIT = 0.0, REF_GAIT =
-None below, and the generated kernel header pins an all-zero
-DW_REF_GAIT[64][12] placeholder -- so wiring a future reference cycle is a
-constants-only change here and a regeneration of the header.
+SELF-IMITATION (duck term 8a) is LIVE since v2.1: no AUTHORED reference
+gait exists anywhere for H0 (humanoid/FEASIBILITY.md section 3), so the
+reference is a SYNTHETIC analytic cycle we author ourselves
+(humanoid/author_reference_gait.py -> humanoid/reference_gait.json,
+FK-validated before use) -- the duck's own REF_GAIT is likewise
+self-generated (its best verified cycle). The generated kernel header pins
+the same table into DW_REF_GAIT.
 
 State dict fields are identical to reward.py's (J=12-wide where the duck
 is 14-wide); the GaitTracker is reused unchanged from reward.py (it is
@@ -58,17 +63,38 @@ by the duck's own recipe step_length = v / (2 * phase_hz).
 """
 from __future__ import annotations
 
+import json as _json
+from pathlib import Path as _Path
+
 import numpy as np
 
 from .reward import GaitTracker  # noqa: F401  (re-exported; J-independent)
 
 CONTROL_DT = 0.02                # duck env contract policy step (flat.py)
 
-# ---- self-imitation hook (EMPTY, see module docstring) ---------------------
-REF_GAIT = None                  # no humanoid reference gait exists (yet)
-REF_BINS = 64                    # bin layout reserved to match the duck's
-W_IMIT = 0.0                     # term disabled until a reference exists
-IMIT_SIGMA_SQ = 0.04             # placeholder kept for header pinning
+# ---- self-imitation (v2.1: the 8a hook is now LIVE) -------------------------
+# Synthetic analytic reference cycle authored by
+# humanoid/author_reference_gait.py (design + FK-verified numbers in its
+# docstring; kinematic per-frame validation pinned by
+# humanoid/tests/test_reference_gait.py). Same table feeds DW_REF_GAIT in
+# the generated kernel header, so env and in-kernel imitation stay
+# bit-comparable (the kernel imitation path is the duck-tested one).
+_REF = _json.loads((_Path(__file__).resolve().parents[2] / "humanoid"
+                    / "reference_gait.json").read_text())
+REF_GAIT = np.asarray(_REF["table"], dtype=np.float64)       # [64, 12]
+REF_BINS = int(_REF["bins"])
+W_IMIT = 0.5             # [0.5] duck's proven weight, re-justified against
+                         # the v2 magnitudes: max bonus 0.5 = half of
+                         # W_TRACK's 1.0 and a quarter of the +-2.0 phase
+                         # differential -> a guide, not a rail; a stander
+                         # at HOME still leaks ~+0.17/step from it (the
+                         # reference passes near HOME twice per cycle),
+                         # which does NOT flip v2's stand-strictly-negative
+                         # property (re-pinned in test_humanoid_reward_v2).
+IMIT_SIGMA_SQ = 0.04     # [0.04] rms 0.2 rad tolerance: the table's own
+                         # amplitudes (hip 0.087, knee 0.6) put a stander
+                         # ~1.5 sigma out at the knee-active bins --
+                         # gradient everywhere, saturation nowhere.
 
 # ---- weights (one-line rationale each; duck v12 value in [brackets]) -------
 W_TRACK = 1.0            # [1.0] primary objective, dimensionless bonus.
@@ -200,10 +226,16 @@ def reward(prev_state: dict, state: dict, action: np.ndarray,
     # 7. foot-clearance bonus
     r += W_CLEARANCE * ((~contact) & (sole >= CLEARANCE_M)).sum(1)
 
-    # 8a. self-imitation: EMPTY HOOK (no humanoid reference gait exists;
-    # see module docstring). When one lands: bin the phase into REF_BINS,
-    # msq(joint_q - REF_GAIT[bin]), bonus W_IMIT*exp(-err/IMIT_SIGMA_SQ),
-    # gated on |cmd| > 0 -- exactly reward.py lines 193-199.
+    # 8a. self-imitation: joint pose near the synthetic reference cycle at
+    # own phase (exactly reward.py lines 193-199; kernel twin is the
+    # duck-tested DW_REF_GAIT path fed by the same table).
+    jq = state.get("joint_q")
+    if jq is not None and phase is not None:
+        bins = (np.mod(np.asarray(phase, np.float64) / (2.0 * np.pi), 1.0)
+                * REF_BINS).astype(int) % REF_BINS
+        err = np.mean(np.square(np.asarray(jq, np.float64) - REF_GAIT[bins]),
+                      axis=1)
+        r += W_IMIT * np.exp(-err / IMIT_SIGMA_SQ) * (np.abs(cmd) > 0)
 
     # 8b. phase-locked stance while commanded (signed, anti-limp)
     if phase is not None:

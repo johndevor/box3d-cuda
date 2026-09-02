@@ -199,6 +199,51 @@ no-swing term (continuous stance OR air beyond ~2 slowest cycles at
 Fresh GPU legs must start from FRESH inits: the leg-1/leg-chain policies
 were optimized for the v1 landscape (lunge) and would fight v2.
 
+## 10. Reward v2.1 — synthetic reference gait + live imitation
+
+The idle DW_REF_GAIT infrastructure now carries a SYNTHETIC analytic
+reference cycle (no authored H0 gait exists; the duck's own table is
+likewise self-generated): `humanoid/author_reference_gait.py` →
+`humanoid/reference_gait.json` (64 bins × 12 joints, byte-reproducible),
+loaded by `walk/env/humanoid_reward.py` (term 8a live, duck's exact
+formula) and pinned into the header's `DW_REF_GAIT` (identical f64 values;
+the kernel imitation path is the duck-tested one — env↔kernel obs parity
+re-measured bit-identical, reward ≤ 1.9e-4).
+
+Design (planar model → analytic; FK sign conventions probe-verified):
+left stances while sin(phase) ≥ 0 (the reward's clock convention), hip =
+0.0873·cos(p) (= asin(0.075/0.86): the no-slip amplitude for the clock's
+command-independent 0.300 m stride = 1/PHASE_HZ_PER_MPS; anything larger
+over-strides the clock into slip/scuff), knee = 0.6·min(1, 2sin²p) on the
+swing side only (plateau bell: full flexion across the certified
+|sin| ≥ 0.707 half of the swing; a plain sin² bell sagged to 13 mm at the
+window edges), ankle = −(hip+knee) clipped to ±0.65 (foot-flat; ≤ 0.01 rad
+pitch at the clip), waist/neck/arms at HOME.
+
+Validation BEFORE training on it (`humanoid/tests/test_reference_gait.py`,
+real-fixture FK per frame over all 64 bins): stance sole |z| ≤ 4 mm and
+bottom-face flat; swing sole never below floor; ≥ 30 mm whole-sole
+clearance across the certified window (peak 56 mm); stance sweep 0.150 m
+per half cycle → per-swing world placement 0.30 m (judge band, 2× floor);
+all joints inside authored limits; L/R mirror; json + header drift-locked.
+Open-loop PD replay on the f64 CPU lane at the cmd-0.75 clock: fault-free,
+both feet lift inside their swing windows (not a stability claim).
+
+W_IMIT = 0.5 (duck's value, re-justified): max bonus 0.5 = half of
+W_TRACK's 1.0, a quarter of the ±2.0 phase differential — guide, not
+rail; σ² = 0.04 (rms 0.2 rad) puts a stander ~1.5σ out at knee-active
+bins. The stander's imitation leak (reference passes near HOME twice per
+cycle) is +0.24/step mean and does NOT flip v2's property:
+
+| per step, measured (pinned) | cmd 0.50 | cmd 0.75 | cmd 1.00 |
+|---|---|---|---|
+| stand+lean v2.1 (leak incl.) | −0.61 | −0.71 | −0.72 |
+| imitating in-phase stepper v2.1 | +2.54 | +2.25 | +2.11 |
+| gap (v2 was 2.89/2.70/2.56) | **3.15** | **2.96** | **2.83** |
+
+Judge-passing clean gait: +3.05/step (was +2.81). This lands as v2.1 for
+the GPU leg after the running v2 leg.
+
 ## 7. Smoke results (measured)
 
 `test_humanoid_train_smoke.py`: PPO through the unmodified

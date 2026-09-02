@@ -143,13 +143,20 @@ class HeaderPinTests(unittest.TestCase):
                       + ",".join(repr(float(c)) for c in hf.COMMANDS_MPS)
                       + "}", self.text)
 
-    def test_ref_gait_hook_is_empty(self):
-        self.assertIsNone(hr.REF_GAIT)
-        self.assertEqual(hr.W_IMIT, 0.0)
-        # header placeholder: 64 x 12 zeros
+    def test_ref_gait_live_and_pinned_in_header(self):
+        # v2.1: the imitation hook is LIVE from the synthetic reference
+        self.assertIsNotNone(hr.REF_GAIT)
+        self.assertEqual(np.asarray(hr.REF_GAIT).shape, (64, 12))
+        self.assertEqual(hr.W_IMIT, 0.5)
         block = self.text[self.text.index("DW_REF_GAIT"):]
         block = block[:block.index(";")]
-        self.assertEqual(block.count("{" + ",".join(["0.0"] * 12) + "}"), 64)
+        # bin 0's exact f64 row is embedded verbatim (full bit-parity is
+        # pinned by test_reference_gait.test_header_carries_identical_table)
+        row0 = "{" + ",".join(repr(float(x))
+                              for x in np.asarray(hr.REF_GAIT)[0]) + "}"
+        self.assertIn(row0, block)
+        self.assertNotEqual(block.count("{" + ",".join(["0.0"] * 12) + "}"),
+                            64, "header still carries the zero placeholder")
 
 
 class RewardTests(unittest.TestCase):
@@ -176,9 +183,12 @@ class RewardTests(unittest.TestCase):
             r = hr.reward(prev, state, np.zeros((2, 12)), cmd, tracker)
         # v_avg -> 0: track = exp(-cmd^2/sigma^2); alive; phase term nets 0
         # (left matches sin(0)>=0 stance, right mismatches); double-support
-        # penalty active
+        # penalty active; v2.1: imitation leak at bin 0 (phase 0, joints 0)
+        imit = hr.W_IMIT * np.exp(
+            -np.mean(np.square(np.asarray(hr.REF_GAIT)[0]))
+            / hr.IMIT_SIGMA_SQ)
         expect = (hr.W_TRACK * np.exp(-cmd ** 2 / hr.TRACK_SIGMA_SQ)
-                  + hr.W_ALIVE - hr.W_DOUBLE_SUPPORT)
+                  + hr.W_ALIVE - hr.W_DOUBLE_SUPPORT + imit)
         np.testing.assert_allclose(r, expect, atol=1e-5)
 
     def test_tracker_is_ducks(self):

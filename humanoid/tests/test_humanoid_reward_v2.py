@@ -104,8 +104,12 @@ def crude_stepper_total(cmd: float) -> np.ndarray:
         phase = 2.0 * math.pi * (k + 0.5) / cycle   # gait-locked clock
         ticks = [0 if left_air else hr.TICKS_FULL,
                  0 if right_air else hr.TICKS_FULL]
+        # v2.1: the crude stepper also imitates -- joints track the
+        # reference table at its own phase (full W_IMIT bonus)
+        bin_ = int(((k + 0.5) / cycle % 1.0) * hr.REF_BINS) % hr.REF_BINS
+        jq = np.asarray(hr.REF_GAIT)[bin_][None, :].copy()
         cur = _state(1, contact, 0.5 * cmd, foot_x.copy(), sole,
-                     phase=phase, contact_ticks=ticks)
+                     joint_q=jq, phase=phase, contact_ticks=ticks)
         out.append(float(hr.reward(prev, cur, np.zeros((1, 12)),
                                    np.array([cmd]), tracker)[0]))
         prev = cur
@@ -120,24 +124,31 @@ class AntiAttractorPins(unittest.TestCase):
         self.assertEqual(hr.W_PHASE, 1.0)
         # unchanged-from-v1 spot checks (shape frozen to the kernel's)
         self.assertEqual(hr.W_ALIVE, 0.5)
-        self.assertEqual(hr.W_IMIT, 0.0)
         self.assertEqual(hr.PLACEMENT_MIN_M, 0.15)
+        # v2.1: imitation live from the synthetic reference table
+        self.assertEqual(hr.W_IMIT, 0.5)
+        self.assertEqual(np.asarray(hr.REF_GAIT).shape, (64, 12))
 
     def test_stand_lean_strictly_negative_at_every_command(self):
+        # v2.1: the stander leaks a mean +0.24 from imitation (the reference
+        # passes near HOME twice per cycle) yet stays STRICTLY negative
+        # every settled step (measured -0.65 / -0.76 / -0.76 mean).
         for cmd in hf.COMMANDS_MPS:
             r = stand_lean_total(cmd)
             settled = r[int(0.5 / DT):]         # past EMA + grace transients
-            self.assertLess(float(settled.mean()), -0.85, cmd)
-            self.assertLess(float(settled.max()), 0.0, cmd)
+            self.assertLess(float(settled.mean()), -0.60, cmd)
+            self.assertLess(float(settled.max()), -0.35, cmd)
             self.assertLess(float(r.sum()), 0.0, cmd)  # whole episode loses
 
     def test_crude_stepper_beats_standing_decisively(self):
+        # v2.1: the imitating stepper collects the full +0.5 W_IMIT vs the
+        # stander's +0.24 leak -> the v2 gap WIDENS (measured >= 2.8/step).
         for cmd in hf.COMMANDS_MPS:
             step = crude_stepper_total(cmd)
             stand = stand_lean_total(cmd)
             gap = float(step.mean() - stand.mean())
-            self.assertGreater(float(step.mean()), 0.5, cmd)
-            self.assertGreater(gap, 2.0, (cmd, step.mean(), stand.mean()))
+            self.assertGreater(float(step.mean()), 1.5, cmd)
+            self.assertGreater(gap, 2.5, (cmd, step.mean(), stand.mean()))
         print("stand vs step (mean/step): " + ", ".join(
             f"cmd {c:.2f}: {stand_lean_total(c).mean():+.2f} -> "
             f"{crude_stepper_total(c).mean():+.2f}" for c in hf.COMMANDS_MPS),
