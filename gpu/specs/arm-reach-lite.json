@@ -1,0 +1,61 @@
+{
+  "name": "arm-reach-lite",
+  "tar_globs": [],
+  "upload_extra": [],
+  "jobs": [
+    {
+      "name": "gpu-info",
+      "command": "nvidia-smi | tee gpu-info.txt && nvcc --version | tee -a gpu-info.txt",
+      "timeout_s": 60,
+      "artifacts": [
+        "gpu-info.txt"
+      ],
+      "continue_on_error": false
+    },
+    {
+      "name": "build-arm-lite",
+      "command": "set -o pipefail; mkdir -p experimental/duck_cuda/build-arm-lite; nvcc -std=c++17 -O3 --fmad=false -gencode arch=compute_89,code=sm_89 -gencode arch=compute_120,code=sm_120 -Iarm/include/lite -Iexperimental/duck_cuda/include -Xcompiler -fPIC -shared experimental/duck_cuda/src/duck_cuda.cu -o experimental/duck_cuda/build-arm-lite/libarm_lite_cuda.so 2>&1 | tee build-arm-lite.log; g++ -std=c++17 -O2 -Wall -Wextra -ffp-contract=off -Iarm/include/lite -Iexperimental/duck_cuda/include -fPIC -shared experimental/duck_cuda/src/duck_cuda_serial.cpp -o experimental/duck_cuda/build-arm-lite/libarm_lite_cuda_serial.so 2>&1 | tee -a build-arm-lite.log; ls -la experimental/duck_cuda/build-arm-lite | tee -a build-arm-lite.log",
+      "timeout_s": 600,
+      "artifacts": [
+        "build-arm-lite.log"
+      ],
+      "continue_on_error": false
+    },
+    {
+      "name": "train",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --robot arm --variant lite --envs 4096 --horizon 64 --updates 99999 --seed 917 --device cuda --library experimental/duck_cuda/build-arm-lite/libarm_lite_cuda.so --policy ff --out gpu-train-out --lr 3e-4 --max-wall-s 900 2>&1 | tee gpu-train.log",
+      "timeout_s": 1200,
+      "artifacts": [
+        "gpu-train.log",
+        "gpu-train-out/metrics.jsonl",
+        "gpu-train-out/actor_final.pt",
+        "gpu-train-out/latest.pt"
+      ],
+      "continue_on_error": false
+    },
+    {
+      "name": "acceptance",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -B -m walk.eval.arm_acceptance --variant lite --actor gpu-train-out/actor_final.pt --lane serial --library experimental/duck_cuda/build-arm-lite/libarm_lite_cuda_serial.so --out acceptance-out 2>&1 | tee acceptance.log",
+      "timeout_s": 900,
+      "artifacts": [
+        "acceptance.log",
+        "acceptance-out/acceptance.json"
+      ],
+      "continue_on_error": true
+    }
+  ],
+  "resources": {
+    "cpu": 4,
+    "memory_gib": 16,
+    "disk_gib": 20,
+    "gpu": 1,
+    "gpu_types": [
+      "RTX-5090"
+    ],
+    "spot": false,
+    "ttl_minutes": 45,
+    "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
+  },
+  "use_snapshot": true,
+  "notes": "Same recipe as arm-reach-kr240 with the half-scale 1/8-mass 'lite' variant header (arm/include/lite). Arm obs/reward run PYTHON-SIDE over dwc1_step (no --lane-env)."
+}
