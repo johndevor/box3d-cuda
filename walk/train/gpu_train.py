@@ -79,6 +79,8 @@ from walk.train.vec import derive_seed
 @dataclasses.dataclass
 class GpuTrainConfig:
     robot: str = "duck"              # "duck" (default, byte-identical) or "humanoid"
+    curriculum: str | None = None    # tech-tree ladder (builtin name or JSON
+    #                                  path); None = today's exact behavior
     envs: int = 4096
     lane_env: bool = False
     randomization: dict | None = None
@@ -154,10 +156,21 @@ class LanePolicyEnv:
         self._lane = lane_cls(self.E, **kwargs)
         self._seed = cfg.seed
         self.fault_count = 0
+        # curriculum hook: a stage may pin resets to a command pool. None
+        # (the default, and always for the duck) leaves reset_policy's own
+        # counter-stream draw untouched -- byte-identical behavior.
+        self.command_override = None
+        self._cmd_rng = np.random.default_rng(derive_seed(cfg.seed, 0xC0DE))
 
     def reset(self, mask=None, seed=None):
-        return self._lane.reset_policy(mask=mask, seed=seed
-                                       if seed is not None else self._seed)
+        if self.command_override is None:
+            return self._lane.reset_policy(mask=mask, seed=seed
+                                           if seed is not None else self._seed)
+        pool = np.asarray(self.command_override, np.float64)
+        commands = pool[self._cmd_rng.integers(0, len(pool), self.E)]
+        return self._lane.reset_policy(
+            mask=mask, seed=seed if seed is not None else self._seed,
+            commands=commands)
 
     def step(self, action):
         obs, reward, done, diag = self._lane.step_policy(
@@ -614,6 +627,17 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
         if cfg.randomization:
             raise SystemExit("--randomization is duck-only (the humanoid lane "
                              "has no domain-randomization surface yet)")
+    controller = None
+    if cfg.curriculum:
+        # tech-tree curriculum (walk/train/curriculum_controller.py):
+        # imported lazily so the default path stays import-identical.
+        from walk.train.curriculum_controller import (  # noqa: PLC0415
+            CurriculumController, load_ladder)
+        if not cfg.lane_env:
+            raise SystemExit("--curriculum drives lane-level gate knobs; "
+                             "run with --lane-env")
+        controller = CurriculumController(
+            load_ladder(cfg.curriculum, cfg.robot), quiet=cfg.quiet)
     recurrent = cfg.policy == "gru"
     ppo_cfg = PPOConfig(lr=cfg.lr, gamma=cfg.gamma, lam=cfg.gae_lambda)
     torch.manual_seed(derive_seed(cfg.seed, 0x11))       # net init (matches run.py)
@@ -678,6 +702,18 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
             print(f"[gpu_train] resumed from {ck_path} at update {start_update}")
 
     env = make_env(cfg)
+    if controller is not None:
+        lane = getattr(env, "_lane", None)
+        if lane is None or not hasattr(lane, "set_gate_termination") \
+                or not hasattr(lane, "gate_proxy"):
+            env.close()
+            raise SystemExit("--curriculum requires a lane exposing "
+                             "gate_proxy + set_gate_termination (this lane "
+                             "predates commit 65d99b8?)")
+        controller.apply(env)
+        if not cfg.quiet:
+            print(f"[curriculum] stage '{controller.stage.name}' "
+                  f"(entry, update {start_update})")
     E = env.E
     metrics: list[dict] = []
     metrics_path = out / "metrics.jsonl"
@@ -849,6 +885,19 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                             3)
                     except Exception:
                         pass                 # metrics must never kill training
+                if controller is not None:
+                    line["curriculum_stage"] = controller.stage.name
+                    event = controller.observe(line)
+                    if event is not None:
+                        controller.apply(env)     # knobs at update boundary
+                        stage_line = {"kind": "curriculum", **event,
+                                      "env_steps": env_steps}
+                        mf.write(json.dumps(stage_line) + "\n")
+                        metrics.append(stage_line)
+                        if not cfg.quiet:
+                            print(f"[curriculum] {event['direction']} -> "
+                                  f"'{event['name']}' at u{u} "
+                                  f"({event['reason']})")
                 mf.write(json.dumps(line) + "\n")
                 mf.flush()
                 metrics.append(line)
@@ -911,6 +960,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--robot", choices=("duck", "humanoid"), default=d.robot,
                    help="robot contract: env/lane classes and OBS/ACT dims "
                         "(duck = the original byte-identical path)")
+    p.add_argument("--curriculum", default=d.curriculum, metavar="LADDER",
+                   help="tech-tree curriculum: builtin ladder name (e.g. "
+                        "humanoid-walk) or a JSON ladder file; requires "
+                        "--lane-env; off by default (exact legacy behavior)")
     p.add_argument("--envs", type=int, default=d.envs)
     p.add_argument("--horizon", type=int, default=d.horizon)
     p.add_argument("--updates", type=int, default=d.updates)
@@ -954,6 +1007,7 @@ def build_argparser() -> argparse.ArgumentParser:
 def config_from_args(args: argparse.Namespace) -> GpuTrainConfig:
     return GpuTrainConfig(
         robot=args.robot,
+        curriculum=args.curriculum,
         envs=args.envs, horizon=args.horizon, updates=args.updates, seed=args.seed,
         device=args.device, library=args.library, lane_env=args.lane_env, randomization=(json.loads(args.randomization) if args.randomization else None), out=args.out, resume=args.resume, init_actor=args.init_actor,
         max_wall_s=args.max_wall_s, policy=args.policy, lr=args.lr,

@@ -376,3 +376,49 @@ episode ≥ 0.88 s. The remaining fall is now a mixed recovery problem with
 actuation available on every axis — PPO's job, no longer a morphology
 dead end. Orchestrator command lines are unchanged (§11); artifacts
 bc_init.pt / bc_init_ckpt.pt regenerated for 58/14 and drift-locked.
+
+## 13. Tech-tree curriculum controller (walk/train/curriculum_controller.py)
+
+Training as a tech tree: one run senses which walking requirements are met
+(the gate_proxy judge-shadow metrics, commit 65d99b8) and advances its own
+difficulty through the runtime gate-termination knobs + command
+distribution, so all compute goes to the current frontier node.
+
+Controller design (auditable by construction): the ladder is DATA (Stage
+dataclass rows; builtin `humanoid-walk` or a JSON file); it reads ONLY the
+per-update metrics gpu_train already writes; acts ONLY at update
+boundaries through ONLY the two public lane knobs
+(`set_gate_termination`, per-reset command-pool override). Advance =
+median of the stage's metric over its trailing window ≥ threshold, with a
+full-window minimum dwell (a single lucky update cannot skip a node;
+windows reset on every transition). De-escalation (the fail-back-down
+edge): median ep_len below the stage floor (25 steps = 0.5 s, under even
+the BC bootstrap ceiling) for 5 CONSECUTIVE updates steps back exactly one
+stage — enforcement that kills the population leaves no gradient. Never
+past `full`, never below the first stage. Every transition logged to
+metrics.jsonl ({"kind":"curriculum", event/direction/name/from/update/
+reason}) and stdout; every train row carries `curriculum_stage`.
+
+The humanoid-walk ladder (thresholds anchored to the FROZEN judge):
+
+| stage | knobs (deadline ticks / alt cap) | commands | advance when (median over 8 updates) |
+|---|---|---|---|
+| free | 0 / 0 | 0.75 | qualified_total ≥ 0.5 — real steps exist (gate_proxy shadows duration+clearance+placement) |
+| swings_appear | 0 / 0 (log only) | 0.75 | ≥ 2 — one qualified swing per foot, the minimal alternating unit |
+| deadline_loose | 2500 (5 s) / 0 | 0.5, 0.75 | ≥ 3 — 2× the judge's FIRST_STEP_S prunes never-steppers gently |
+| deadline_judge | 1250 (2.5 s = judge) / 0 | all three | ≥ 4 — judge-exact deadline; judge scores all commands |
+| alternation_cap | 1250 / 3 | all three | ≥ 6 = judge MIN_FOOTFALLS — cap 3 kills persistent limps, tolerates learning doubles |
+| full | 1250 / 1 | all three | terminal — judge-tight; surviving 8 s here ≈ a judge-passing episode (frozen CPU judge stays the only authority) |
+
+gpu_train hooks: `--curriculum <name|ladder.json>` (default off = exact
+legacy behavior; duck fingerprint re-proven byte-identical:
+22c175f3cfb8… pre == post). Guards: no duck ladder exists (explicit
+error), requires `--lane-env`, requires a lane exposing gate_proxy +
+set_gate_termination. The command override rides
+`reset_policy(commands=…)`; `command_override=None` leaves the duck/legacy
+reset call untouched.
+
+Next GPU leg:
+    python -B -m walk.train.gpu_train --robot humanoid --lane-env \
+        --curriculum humanoid-walk --resume humanoid/bc_init_ckpt.pt \
+        --envs 16384 --device cuda --library <libduck_cuda.so with -Ihumanoid/include> ...
