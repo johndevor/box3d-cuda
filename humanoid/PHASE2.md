@@ -534,3 +534,77 @@ kg·m² pendulum inertia). The lowering, generator, env and oracle already
 carry per-joint values natively (av1 Hinge.kp/kv are per-joint); only the
 kernel consumes scalars. When it lands: set the two gains in
 h1_lowering, regenerate, UNSKIP the two gates, rerun the executed sweep.
+
+## 17. Humanoid FAMILY: H1-TALL and H1-STOCKY (parametrized variants)
+
+Why: a generalist trained across a distribution of robots of one category
+system-IDs the whole family; sim2real becomes "just another sample". The
+accepted H1.1 (section 16; WALKING ACCEPTED 12/12, evidence/
+humanoid-accepted-20260902/) is the reference member.
+
+Builder: `humanoid/h1_family.py` derives every member PARAMETRICALLY from
+h1_lowering's tables (length scales on thigh/shank/torso with anchors and
+density-preserving masses, proportional mass scale, sole width add, effort
+scale, per-group kp/kv; centers re-derived from the chain and re-seated on
+the floor). h1_lowering.py is untouched; `build(H1)` reproduces its tables
+BIT-IDENTICALLY and the "h1" header byte-for-byte (test_variants.py).
+Members: `humanoid/h1_tall_lowering.py` (legs +12 %, torso +5 %, 71.52 kg,
+hip height 1.1032 m, PROFILE duckgridwalk.humanoid.h1_tall-v1) and
+`humanoid/h1_stocky_lowering.py` (mass +20 % = 81.6 kg, legs −6 %, soles
++3 cm wide, caps +15 % = 207/161/80.5, hip height 0.9484 m, PROFILE
+duckgridwalk.humanoid.h1_stocky-v1). Hip anchors ±0.15 m for all.
+
+Plant feasibility checklist (`humanoid/feasibility_check.py`, closed-form,
+analytic CRBA at home == av1 mass matrix to 1e-15; gravity −20 kept):
+
+| check (bound)                        | H1.1 (ref)        | H1-TALL           | H1-STOCKY         |
+|--------------------------------------|-------------------|-------------------|-------------------|
+| (a) hip-pitch hold @ static lean, N·m (cap/1.3) | 42.8 / 138 PASS (4.2x) | 40.4 / 138 PASS (4.5x) | 54.3 / 159 PASS (3.8x) |
+| (b) bandwidth hip roll, Hz (≥ 3×1.67 = 5.0)     | 2.70 FAIL (1.61x) | 2.70 (1.62x) parity | 2.86 (1.71x) parity |
+| (b) bandwidth hip pitch / knee / ankle, Hz      | 6.0 / 16.6 / 15.4 PASS | 6.0 / 16.6 / 15.9 PASS | 6.2 / 17.9 / 15.7 PASS |
+| (c) kp vs 1.2·K_g, hip roll (N·m/rad)           | 500 / 466 PASS (K_g 388) | 620 / 472 PASS (393) | 620 / 569 PASS (474) |
+| (c) kp vs 1.2·K_g, knee                          | 800 / 1234 FAIL (K_g 1028, 0.78x) | 1070 / 1370 (0.94x) parity | 1000 / 1436 (0.84x) parity |
+| (d) ankle CoP authority (fraction of half-sole)  | 0.448 (0.103 m)   | 0.426             | 0.429             |
+| (e) lateral static margin, m (sign)              | −0.010 FAIL (active lean 10.0°) | −0.010 FAIL (9.0°) | +0.005 PASS (wider soles) |
+
+Calibration finding: the ACCEPTED H1.1 itself misses two absolute bars —
+hip-roll bandwidth (1.6x, not 3x; PHASE2 s15's own 2.7 Hz number) and knee
+gravitational stiffness (K_g is 1028 N·m/rad by exact accounting, not the
+~680 estimated in s16; kp 800 is 0.78x). It walks 12/12 regardless (the
+reference overdrives the roll at the cap; balance is a whole-body CoP task,
+not a joint-stiffness task). Those two bars are therefore not necessary on
+this stack and the variant gate for them is BASELINE PARITY (margin ratio
+≥ H1.1's); everything else is gated absolutely (`feasibility_check.verdict`).
+Both variants are DELIVERABLE under that rule. The ankle K_g row (~1.4–2.0
+kN·m/rad vs kp 300–360) is reported, not gated, for the same reason.
+
+Gains authored per variant (h1_family.H1_TALL / H1_STOCKY rationale):
+kp scaled by the I_eff ratio so every (b) ratio is ≥ the base's, and to
+keep (c) ≥ 1.2x at the hip roll — TALL roll/knee/hip+ankle kp 620/1070/350,
+kv 74/40/23; STOCKY 620/1000/360, kv 70/35/23 (kv by sqrt(kp·I_eff), base
+damping ratios kept, kv·dt/I_eff < 2, spectral radius at SIM_DT ≤ 1).
+
+Reference gait per variant: author_reference_gait.py --lowering NAME scales
+HIP_AMPLITUDE with leg length and ROLL_HOLD with the static balance point
+(0.16 tall, 0.19 stocky; H1 0.18 unchanged). EXECUTED validation (the
+permanent rule, test_reference_gait.VariantReferenceGates), cmd 0.50,
+seeds 4242/7, first pass, no iteration needed: H1.1 R swing 0.32 s /
+48 mm / 235 mm; TALL R 0.30 s / 43 mm / 270 mm; STOCKY R 0.32 s / 50 mm /
+310 mm — 1 qualified swing per episode each. BC seeds
+(humanoid/variants/<name>/bc_init.pt + bc_init_ckpt.pt, deliverable
+config): MSE 0.059→6.3e-4 (tall, 5360 pairs), 0.065→5.8e-4 (stocky, 5210);
+clones survive 0.74–1.30 s with 2–5 debounced swings per episode
+(test_variant_bc.py; qualification is PPO's job, as for H1.1).
+
+Plumbing: generate_model_humanoid.py --lowering, author_reference_gait.py
+--lowering, FlatFloorHumanoidEnv/NativeHumanoidLane/CudaHumanoidLane
+`variant=`, humanoid_reward.reward(ref_gait=), bc_dataset/bc_pretrain
+--variant, gpu_train --variant (robot_classes binds partials; cross-variant
+--resume refused), humanoid_acceptance --variant; a base dylib handed to a
+variant lane is refused (home-height cross-check). GPU specs
+gpu/specs/humanoid-tree-{tall,stocky}.json build with
+-Ihumanoid/variants/<name>/include (upload_extra carries the variant
+header/json/ckpt until committed). No kernel change needed: B16/J14/P2,
+8 foot vertices and the per-joint DW_KP/KV/EFFORT tables cover the family.
+The frozen judge is untouched (its 1 m-scale thresholds remain valid at
+±12 % / −6 % leg length; stride 0.60 m ≫ 0.15 m placement floor).

@@ -61,7 +61,8 @@ def humanoid_dataset(args) -> dict:
     import bc_dataset  # noqa: PLC0415
     seeds = tuple(int(s) for s in str(args.seeds).split(","))
     return bc_dataset.build_dataset(
-        seeds=seeds, envs_per_config=args.envs_per_config, steps=args.steps)
+        seeds=seeds, envs_per_config=args.envs_per_config, steps=args.steps,
+        variant=getattr(args, "variant", None))
 
 
 _DATASET_BUILDERS = {"humanoid": humanoid_dataset}
@@ -69,9 +70,10 @@ _DATASET_BUILDERS = {"humanoid": humanoid_dataset}
 
 def train_bc(robot: str, dataset: dict, epochs: int = 200,
              batch_size: int = 256, lr: float = 1e-3, seed: int = 0,
-             log_std: float = -1.0, quiet: bool = False):
+             log_std: float = -1.0, quiet: bool = False,
+             variant: str | None = None):
     """(actor, history): MSE-regress the robot's ff actor on the dataset."""
-    obs_dim, act_dim, _, _ = robot_classes(robot)
+    obs_dim, act_dim, _, _ = robot_classes(robot, variant)
     obs = torch.from_numpy(np.ascontiguousarray(dataset["obs"], np.float32))
     act = torch.from_numpy(np.ascontiguousarray(
         np.clip(dataset["act"], -0.98, 0.98), np.float32))
@@ -108,14 +110,14 @@ def save_actor(actor, path: Path) -> None:
 
 
 def save_checkpoint(robot: str, actor, path: Path, seed: int,
-                    log_std: float) -> None:
+                    log_std: float, variant: str | None = None) -> None:
     """gpu_train --resume-compatible update-0 checkpoint: BC actor + FRESH
     critic/optimizer/generators, so the flagship leg starts PPO directly
     from the cloned gait (`gpu_train --robot <robot> --resume <path>`).
     The generator states are cpu-seeded; on a cuda host gpu_train's resume
     falls back to its documented per-update reseed (handled there)."""
     from walk.train.ppo import PPOConfig as _Cfg  # noqa: PLC0415
-    obs_dim, act_dim, _, _ = robot_classes(robot)
+    obs_dim, act_dim, _, _ = robot_classes(robot, variant)
     _, critic = make_nets(obs_dim, act_dim, _Cfg(log_std_init=log_std))
     optimizer = torch.optim.Adam(
         list(actor.parameters()) + list(critic.parameters()), lr=_Cfg().lr)
@@ -135,7 +137,8 @@ def save_checkpoint(robot: str, actor, path: Path, seed: int,
         "train_wall_s": 0.0,
         "probe_wall_s": 0.0,
         "config": {"policy": "ff", "robot": robot,
-                   "bc_pretrained": True, "bc_log_std": log_std},
+                   "bc_pretrained": True, "bc_log_std": log_std,
+                   **({"variant": variant} if variant else {})},
     }, path)
 
 
@@ -144,6 +147,10 @@ def main(argv=None) -> int:
         prog="walk.train.bc_pretrain",
         description="Behavior-clone the reference gait into a fresh actor")
     p.add_argument("--robot", choices=sorted(_DATASET_BUILDERS), required=True)
+    p.add_argument("--variant", default=None,
+                   help="humanoid family member (h1_tall | h1_stocky); the "
+                        "dataset rolls on the variant's lane with its "
+                        "reference table; unset = H1.1 base")
     p.add_argument("--out", required=True)
     p.add_argument("--checkpoint-out", default=None,
                    help="also write a gpu_train --resume-compatible "
@@ -169,11 +176,11 @@ def main(argv=None) -> int:
     actor, history = train_bc(args.robot, dataset, epochs=args.epochs,
                               batch_size=args.batch_size, lr=args.lr,
                               seed=args.seed, log_std=args.log_std,
-                              quiet=args.quiet)
+                              quiet=args.quiet, variant=args.variant)
     save_actor(actor, Path(args.out))
     if args.checkpoint_out:
         save_checkpoint(args.robot, actor, Path(args.checkpoint_out),
-                        args.seed, args.log_std)
+                        args.seed, args.log_std, variant=args.variant)
         print(f"[bc] wrote resume checkpoint {args.checkpoint_out}")
     print(f"[bc] wrote {args.out}: {dataset['meta']['pairs']} pairs, "
           f"mse {history[0]:.5f} -> {history[-1]:.6f}, "

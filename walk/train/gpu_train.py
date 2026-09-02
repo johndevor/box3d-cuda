@@ -11,14 +11,21 @@ walk.train.ppo.ppo_update with the PPOConfig defaults.
         --seed 917 --device cuda --library <path-to-libduck_cuda.so> \
         --out <dir> [--resume <ckpt>] [--max-wall-s 900] [--lr 3e-4] \
         [--perturbation 0.02] [--policy {ff,gru}] [--gamma G] [--gae-lambda L] \
-        [--robot {duck,humanoid}]
+        [--robot {duck,humanoid}] [--variant NAME]
+
+--variant NAME (humanoid only) selects a FAMILY member (humanoid/h1_family.py:
+h1_tall, h1_stocky): robot_classes binds the humanoid lane/env classes to the
+variant (its header/dylib, gains, reference table); --library must then be a
+build against humanoid/variants/<name>/include. Unset = the accepted H1.1.
 
 --robot selects the env/lane contract (robot_classes): duck (default) is
 byte-identical to the pre-switch trainer (same classes, same OBS/ACT 58/14,
 same RNG streams); humanoid wires FlatFloorHumanoidEnv / CudaHumanoidLane
-(OBS/ACT 52/12) over the robot-generic dwc1 kernel. --accept-every and
---randomization are duck-only (strict gait evaluator / DR surface) and are
-rejected for other robots.
+(OBS/ACT 3*J+16 / J) over the robot-generic dwc1 kernel. --accept-every is
+duck-only (strict gait evaluator) and rejected for other robots.
+--randomization (the shared dwc1 DR contract, walk/env/cuda_lane.py: mass,
+friction, kp, damping, command latency and the ABI-v7 one-sided gravity
+scale) is accepted for every robot on the device policy path (--lane-env).
 
 --policy gru swaps in the tiny recurrent policy (walk.train.ppo
 RecurrentActor/RecurrentCritic: 1-layer GRU + reduced MLP head) for implicit
@@ -26,6 +33,18 @@ system ID: hidden state [E, H] is carried across steps, zeroed for envs that
 reset, and the update is recurrent PPO with truncated BPTT over the rollout
 window using the stored window-initial hidden states (sequence minibatches =
 env slices). --policy ff (default) is byte-identical to the pre-gru trainer.
+
+FF -> GRU WARM START (generalist recipe): with --policy gru, an --init-actor
+or --resume source that is a FEED-FORWARD actor/checkpoint is not an error:
+the recurrent nets are built with a residual feed-forward trunk of the FF
+nets' sizes and ppo.warm_start_recurrent_from_ff copies the FF weights into
+it and zeroes the GRU heads (policy bit-identical to the FF specialist at
+step 0; critic likewise when the source is a full checkpoint). For --resume
+the update/env_steps/wall counters continue and the optimizer/generators
+start fresh (an FF Adam state cannot drive GRU parameters). Resuming a GRU
+checkpoint that carries a trunk rebuilds the trunk automatically
+(ppo.trunk_hidden_from_state_dict). walk/train/gru_warmstart.py writes such
+a warm-started update-0 GRU checkpoint offline.
 
 Solver faults: a SolverFault anywhere in a rollout poisons that whole rollout
 window (no update is applied), the fault artifact is copied into <out>/faults/
@@ -72,6 +91,9 @@ from walk.train.ppo import (
     ppo_update,
     recurrent_ppo_update,
     tanh_gaussian_log_prob,
+    trunk_hidden_from_state_dict,
+    unpack_actor_file,
+    warm_start_recurrent_from_ff,
 )
 from walk.train.vec import derive_seed
 
@@ -79,6 +101,7 @@ from walk.train.vec import derive_seed
 @dataclasses.dataclass
 class GpuTrainConfig:
     robot: str = "duck"              # "duck" (default, byte-identical) or "humanoid"
+    variant: str | None = None       # humanoid family member (None = H1.1 base)
     curriculum: str | None = None    # tech-tree ladder (builtin name or JSON
     #                                  path); None = today's exact behavior
     envs: int = 4096
@@ -119,21 +142,53 @@ class Rollout:
     episodes: list          # list[(return, length)] finished this window
 
 
-def robot_classes(robot: str):
+def robot_classes(robot: str, variant: str | None = None):
     """(obs_dim, act_dim, lane_cls, flat_env_cls) for a robot.
 
     The duck row returns exactly the module-level contract dims and the
     classes the pre-robot-switch trainer used, so --robot duck (the default)
     is behavior-identical to the old hardcoded path. Humanoid classes import
-    lazily (they build/load the humanoid serial dylib on first use)."""
+    lazily (they build/load the humanoid serial dylib on first use).
+
+    `variant` (humanoid only): a family member name (humanoid/h1_family.py)
+    binds the lane/env classes to that member via functools.partial
+    (variant=...); None/"h1" returns the bare classes exactly as before."""
     if robot == "duck":
+        if variant not in (None, "", "h1"):
+            raise SystemExit("--variant is humanoid-only (family variants)")
         return OBS, ACT, CudaDuckLane, FlatFloorDuckEnv
     if robot == "humanoid":
         from walk.env import humanoid_flat
         from walk.env.humanoid_cuda_lane import CudaHumanoidLane
-        return (humanoid_flat.OBS, humanoid_flat.ACT, CudaHumanoidLane,
-                humanoid_flat.FlatFloorHumanoidEnv)
-    raise SystemExit(f"--robot must be duck or humanoid, got {robot!r}")
+        if variant in (None, "", "h1"):
+            return (humanoid_flat.OBS, humanoid_flat.ACT, CudaHumanoidLane,
+                    humanoid_flat.FlatFloorHumanoidEnv)
+        import functools
+        import h1_family
+        if variant not in h1_family.MORPHOLOGIES:
+            raise SystemExit(f"--variant must be one of "
+                             f"{sorted(h1_family.MORPHOLOGIES)}, got {variant!r}")
+        lane_cls = functools.partial(CudaHumanoidLane, variant=variant)
+        env_cls = functools.partial(humanoid_flat.FlatFloorHumanoidEnv,
+                                    variant=variant)
+        return humanoid_flat.OBS, humanoid_flat.ACT, lane_cls, env_cls
+    if robot == "arm":
+        # fixed-base 6-axis reach family (arm/arm_lowering.py): the variant
+        # ("kr240" default | "lite") is bound into both classes; obs/reward
+        # run python-side over dwc1_step (no device policy path, see
+        # arm/FEASIBILITY.md section 6), so --lane-env is rejected below.
+        import functools
+        from walk.env import arm_reach
+        from walk.env.arm_cuda_lane import CudaArmLane
+        import arm_lowering
+        variant = variant or "kr240"
+        if variant not in arm_lowering.VARIANTS:
+            raise SystemExit(f"--variant must be one of "
+                             f"{sorted(arm_lowering.VARIANTS)}, got {variant!r}")
+        return (arm_reach.OBS, arm_reach.ACT,
+                functools.partial(CudaArmLane, variant=variant),
+                functools.partial(arm_reach.ArmReachEnv, variant=variant))
+    raise SystemExit(f"--robot must be duck, humanoid or arm, got {robot!r}")
 
 
 class LanePolicyEnv:
@@ -145,14 +200,21 @@ class LanePolicyEnv:
 
     def __init__(self, cfg):
         robot = getattr(cfg, "robot", "duck")
-        self.OBS, self.ACT, lane_cls, _ = robot_classes(robot)
+        if robot == "arm":
+            raise SystemExit("--lane-env needs the in-kernel device policy "
+                             "path, which cannot express the arm's obs "
+                             "(arm/FEASIBILITY.md section 6); run --robot arm "
+                             "without --lane-env")
+        self.OBS, self.ACT, lane_cls, _ = robot_classes(
+            robot, getattr(cfg, "variant", None))
         self.E = cfg.envs
         kwargs = dict(
             joint_offsets=_perturbation_offsets(cfg) if cfg.perturbation else None,
             library_path=cfg.library)
-        if robot == "duck":          # only the duck lane has a DR surface
-            kwargs["randomization"] = cfg.randomization
-        else:                        # training lane: freeze fallen envs
+        # every dwc1 lane shares the duck's DR contract (cuda_lane.py):
+        # None = off = bit-identical physics
+        kwargs["randomization"] = cfg.randomization
+        if robot != "duck":          # training lane: freeze fallen envs
             kwargs["fast_termination"] = True
         self._lane = lane_cls(self.E, **kwargs)
         rsi = float(getattr(cfg, "rsi_fraction", 0.0) or 0.0)
@@ -196,7 +258,8 @@ class LanePolicyEnv:
 
 def _perturbation_offsets(cfg):
     import numpy as _np
-    act = robot_classes(getattr(cfg, "robot", "duck"))[1]   # duck: 14, as before
+    act = robot_classes(getattr(cfg, "robot", "duck"),
+                        getattr(cfg, "variant", None))[1]   # duck: 14, as before
     return _np.stack([
         _np.random.default_rng([cfg.seed & 0xFFFFFFFF, e, 0]).uniform(
             -cfg.perturbation, cfg.perturbation, act) for e in range(cfg.envs)])
@@ -205,7 +268,8 @@ def _perturbation_offsets(cfg):
 def make_env(cfg: GpuTrainConfig):
     if cfg.lane_env:
         return LanePolicyEnv(cfg)
-    _, _, lane_cls, flat_env_cls = robot_classes(getattr(cfg, "robot", "duck"))
+    _, _, lane_cls, flat_env_cls = robot_classes(
+        getattr(cfg, "robot", "duck"), getattr(cfg, "variant", None))
     return flat_env_cls(
         environments=cfg.envs,
         seed=cfg.seed,
@@ -588,6 +652,33 @@ def write_acceptance(out: Path, cfg: GpuTrainConfig, actor, update: int,
     return acc
 
 
+def _inspect_source(cfg: GpuTrainConfig) -> dict | None:
+    """Load the --init-actor / --resume source once and classify it:
+    {"path", "raw", "arch" ("ff"|"gru"), "actor" (state dict),
+    "critic" (state dict or None), "checkpoint" (bool)}. An actor file is
+    {"arch", "state_dict"} or a legacy plain FF state dict
+    (ppo.unpack_actor_file); a full checkpoint carries actor/critic/
+    optimizer and its config's policy."""
+    init_actor = getattr(cfg, "init_actor", None)
+    if init_actor and cfg.resume:
+        raise SystemExit("--init-actor and --resume are mutually exclusive")
+    if init_actor:
+        path = Path(init_actor)
+    elif cfg.resume:
+        path = (Path(cfg.out) / "latest.pt" if cfg.resume == "auto"
+                else Path(cfg.resume))
+    else:
+        return None
+    raw = torch.load(path, map_location="cpu", weights_only=False)
+    if isinstance(raw, dict) and "actor" in raw and "critic" in raw:
+        return {"path": path, "raw": raw, "checkpoint": True,
+                "arch": str(raw.get("config", {}).get("policy", "ff")),
+                "actor": raw["actor"], "critic": raw["critic"]}
+    arch, sd = unpack_actor_file(raw)
+    return {"path": path, "raw": raw, "checkpoint": False, "arch": arch,
+            "actor": sd, "critic": None}
+
+
 def save_checkpoint(path: Path, update: int, actor, critic, optimizer,
                     sample_gen: torch.Generator, perm_gen: torch.Generator,
                     env_steps: int, faults_total: int, cfg: GpuTrainConfig,
@@ -626,14 +717,15 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
 
     if cfg.policy not in ("ff", "gru"):
         raise SystemExit(f"--policy must be ff or gru, got {cfg.policy!r}")
-    obs_dim, act_dim, _, _ = robot_classes(cfg.robot)   # duck: exactly OBS, ACT
+    obs_dim, act_dim, _, _ = robot_classes(
+        cfg.robot, getattr(cfg, "variant", None))   # duck: exactly OBS, ACT
     if cfg.robot != "duck":
         if cfg.accept_every > 0:
             raise SystemExit("--accept-every uses the duck-only strict gait "
                              "evaluator; not available for --robot humanoid")
-        if cfg.randomization:
-            raise SystemExit("--randomization is duck-only (the humanoid lane "
-                             "has no domain-randomization surface yet)")
+        if cfg.randomization and not cfg.lane_env:
+            raise SystemExit("--randomization for --robot humanoid runs on "
+                             "the device policy path; add --lane-env")
     controller = None
     if cfg.curriculum:
         # tech-tree curriculum (walk/train/curriculum_controller.py):
@@ -647,9 +739,21 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
             load_ladder(cfg.curriculum, cfg.robot), quiet=cfg.quiet)
     recurrent = cfg.policy == "gru"
     ppo_cfg = PPOConfig(lr=cfg.lr, gamma=cfg.gamma, lam=cfg.gae_lambda)
+    # Peek at the warm-start / resume source BEFORE building the nets: a GRU
+    # policy may need a residual feed-forward trunk (FF -> GRU warm start,
+    # or a GRU checkpoint that already carries one), and the optimizer must
+    # see every parameter at construction.
+    source = _inspect_source(cfg)
+    gru_trunk = None
+    if recurrent and source is not None:
+        if source["arch"] == "ff":
+            gru_trunk = trunk_hidden_from_state_dict(source["actor"], "mu_net.")
+        else:
+            gru_trunk = trunk_hidden_from_state_dict(source["actor"], "ff.")
     torch.manual_seed(derive_seed(cfg.seed, 0x11))       # net init (matches run.py)
     if recurrent:
-        actor, critic = make_recurrent_nets(obs_dim, act_dim, ppo_cfg)
+        actor, critic = make_recurrent_nets(obs_dim, act_dim, ppo_cfg,
+                                            ff_hidden=gru_trunk)
     else:
         actor, critic = make_nets(obs_dim, act_dim, ppo_cfg)
     actor.to(device)
@@ -669,34 +773,54 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
     if getattr(cfg, "init_actor", None):
         if cfg.resume:
             raise SystemExit("--init-actor and --resume are mutually exclusive")
-        from walk.train.ppo import unpack_actor_file
-        raw = torch.load(Path(cfg.init_actor), map_location="cpu",
-                         weights_only=False)
-        arch, sd = unpack_actor_file(raw)
-        if arch != cfg.policy:
+        arch, sd = source["arch"], source["actor"]
+        if arch == cfg.policy:
+            actor.load_state_dict(sd)
+            note = "(critic/optimizer fresh)"
+        elif arch == "ff" and recurrent:
+            # FF -> residual GRU warm start (policy bit-identical at step 0)
+            warm_start_recurrent_from_ff(actor, sd, critic, source.get("critic"))
+            note = ("via FF->GRU residual warm start (trunk "
+                    f"{gru_trunk}, critic {'warm' if source.get('critic') else 'fresh'})")
+        else:
             raise SystemExit(f"--init-actor is a {arch} actor but --policy "
                              f"{cfg.policy} was requested")
-        actor.load_state_dict(sd)
         if not cfg.quiet:
-            print(f"[gpu_train] actor initialized from {cfg.init_actor} "
-                  "(critic/optimizer fresh)")
+            print(f"[gpu_train] actor initialized from {cfg.init_actor} {note}")
     if cfg.resume:
-        ck_path = out / "latest.pt" if cfg.resume == "auto" else Path(cfg.resume)
-        ck = torch.load(ck_path, map_location="cpu", weights_only=False)
-        ck_policy = ck.get("config", {}).get("policy", "ff")
-        if ck_policy != cfg.policy:
+        ck_path = source["path"]
+        ck = source["raw"]
+        ck_policy = source["arch"]
+        ck_variant = ck.get("config", {}).get("variant") or "h1"
+        if cfg.robot == "humanoid" and ck_variant != (
+                getattr(cfg, "variant", None) or "h1"):
+            raise SystemExit(
+                f"checkpoint {ck_path} belongs to humanoid variant "
+                f"{ck_variant!r}, but --variant {cfg.variant!r} was requested")
+        if ck_policy == cfg.policy:
+            actor.load_state_dict(ck["actor"])
+            critic.load_state_dict(ck["critic"])
+            optimizer.load_state_dict(ck["optimizer"])
+        elif ck_policy == "ff" and recurrent:
+            # cross-arch: FF checkpoint -> residual GRU. Counters continue
+            # (lineage accounting); optimizer + generators start fresh.
+            warm_start_recurrent_from_ff(actor, ck["actor"], critic, ck["critic"])
+            if not cfg.quiet:
+                print(f"[gpu_train] cross-arch warm start: FF checkpoint "
+                      f"{ck_path} -> residual GRU (trunk {gru_trunk}; "
+                      "optimizer/generators fresh)")
+        else:
             raise SystemExit(
                 f"checkpoint {ck_path} was trained with --policy {ck_policy}, "
                 f"but --policy {cfg.policy} was requested")
-        actor.load_state_dict(ck["actor"])
-        critic.load_state_dict(ck["critic"])
-        optimizer.load_state_dict(ck["optimizer"])
         start_update = int(ck["update"])
         env_steps = int(ck["env_steps"])
         faults_total = int(ck["faults_total"])
         prev_train_wall = float(ck.get("train_wall_s", 0.0))
         prev_probe_wall = float(ck.get("probe_wall_s", 0.0))
         try:
+            if ck_policy != cfg.policy:
+                raise ValueError("cross-arch warm start: fresh generators")
             if ck.get("sample_gen_device", "cpu") == str(sample_gen.device):
                 sample_gen.set_state(ck["sample_gen_state"])
             else:
@@ -964,9 +1088,14 @@ def build_argparser() -> argparse.ArgumentParser:
         prog="walk.train.gpu_train",
         description="Single-process PPO trainer over the batched CUDA lane")
     d = GpuTrainConfig()
-    p.add_argument("--robot", choices=("duck", "humanoid"), default=d.robot,
+    p.add_argument("--robot", choices=("duck", "humanoid", "arm"), default=d.robot,
                    help="robot contract: env/lane classes and OBS/ACT dims "
                         "(duck = the original byte-identical path)")
+    p.add_argument("--variant", default=d.variant, metavar="NAME",
+                   help="robot FAMILY member (validated per robot by "
+                        "robot_classes): humanoid -> h1_tall | h1_stocky "
+                        "(unset = the accepted H1.1 base, humanoid/"
+                        "h1_family.py); arm -> kr240 | lite; duck: none")
     p.add_argument("--curriculum", default=d.curriculum, metavar="LADDER",
                    help="tech-tree curriculum: builtin ladder name (e.g. "
                         "humanoid-walk) or a JSON ladder file; requires "
@@ -987,8 +1116,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--resume", nargs="?", const="auto", default=None,
                    help="checkpoint path, or bare flag for <out>/latest.pt")
     p.add_argument("--init-actor", default=None,
-                   help="actor file for weights-only init (BC pretrain); "
-                        "critic/optimizer start fresh")
+                   help="actor file (or full checkpoint) for weights-only "
+                        "init; critic/optimizer start fresh. With --policy "
+                        "gru an FF source triggers the residual FF->GRU "
+                        "warm start (see module docstring)")
     p.add_argument("--rsi-fraction", type=float, default=0.0,
                    help="fraction of resets initialized from reference-gait "
                         "states (DeepMimic RSI); requires a lane with set_rsi")
@@ -1017,6 +1148,7 @@ def build_argparser() -> argparse.ArgumentParser:
 def config_from_args(args: argparse.Namespace) -> GpuTrainConfig:
     return GpuTrainConfig(
         robot=args.robot,
+        variant=args.variant,
         curriculum=args.curriculum,
         envs=args.envs, horizon=args.horizon, updates=args.updates, seed=args.seed,
         device=args.device, library=args.library, lane_env=args.lane_env, randomization=(json.loads(args.randomization) if args.randomization else None), out=args.out, resume=args.resume, init_actor=args.init_actor, rsi_fraction=args.rsi_fraction,

@@ -79,8 +79,23 @@ CONTROL_DT = 0.02                # duck env contract policy step (flat.py)
 # humanoid/tests/test_reference_gait.py). Same table feeds DW_REF_GAIT in
 # the generated kernel header, so env and in-kernel imitation stay
 # bit-comparable (the kernel imitation path is the duck-tested one).
-_REF = _json.loads((_Path(__file__).resolve().parents[2] / "humanoid"
-                    / "reference_gait.json").read_text())
+_REF_PATH = (_Path(__file__).resolve().parents[2] / "humanoid"
+             / "reference_gait.json")
+
+
+def load_reference(path=None) -> np.ndarray:
+    """[bins, J] f64 reference table from a reference_gait.json (default:
+    the H1 table). Family VARIANTS (humanoid/h1_family.py) carry their own
+    table under humanoid/variants/<name>/reference_gait.json; the env
+    passes it through `reward(..., ref_gait=...)`."""
+    data = _json.loads(_Path(path or _REF_PATH).read_text())
+    table = np.asarray(data["table"], dtype=np.float64)
+    if table.shape[0] != int(data["bins"]):
+        raise ValueError(f"{path}: table rows != bins")
+    return table
+
+
+_REF = _json.loads(_REF_PATH.read_text())
 REF_GAIT = np.asarray(_REF["table"], dtype=np.float64)       # [64, 12]
 REF_BINS = int(_REF["bins"])
 W_IMIT = 0.5             # [0.5] duck's proven weight, re-justified against
@@ -148,8 +163,12 @@ W_PHASE = 1.0            # [0.5] v2 (was 0.5): doubles the in-phase stepping
 
 def reward(prev_state: dict, state: dict, action: np.ndarray,
            command: np.ndarray, tracker: GaitTracker,
-           dt: float = CONTROL_DT) -> np.ndarray:
+           dt: float = CONTROL_DT, ref_gait: np.ndarray | None = None
+           ) -> np.ndarray:
     """Per-env float32 reward; updates `tracker` in place.
+
+    `ref_gait` ([REF_BINS, J], default the module's H1 REF_GAIT) is the
+    self-imitation table: family variants pass their own (same bins).
 
     Structure mirrors walk/env/reward.py::reward term for term; the only
     removed term is 8a (self-imitation -- empty hook, module docstring).
@@ -233,7 +252,8 @@ def reward(prev_state: dict, state: dict, action: np.ndarray,
     if jq is not None and phase is not None:
         bins = (np.mod(np.asarray(phase, np.float64) / (2.0 * np.pi), 1.0)
                 * REF_BINS).astype(int) % REF_BINS
-        err = np.mean(np.square(np.asarray(jq, np.float64) - REF_GAIT[bins]),
+        ref = REF_GAIT if ref_gait is None else ref_gait
+        err = np.mean(np.square(np.asarray(jq, np.float64) - ref[bins]),
                       axis=1)
         r += W_IMIT * np.exp(-err / IMIT_SIGMA_SQ) * (np.abs(cmd) > 0)
 

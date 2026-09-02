@@ -62,6 +62,7 @@ from walk.env import humanoid_flat as hf  # noqa: E402
 from walk.env import humanoid_reward as hr  # noqa: E402
 
 import h1_lowering as lowering  # noqa: E402  (ACTIVE lowering: H1)
+import h1_family  # noqa: E402  (family variants: their own REF + lane)
 
 REF = np.asarray(hr.REF_GAIT, dtype=np.float64)          # [64, J]
 BINS = int(hr.REF_BINS)
@@ -91,17 +92,26 @@ ROLLS = ((_JN.index("left_hip_roll"), _JN.index("right_hip_roll"))
          if "left_hip_roll" in _JN else ())
 
 
-def reference_actions(obs: np.ndarray) -> np.ndarray:
+def reference_table(variant: str | None = None) -> np.ndarray:
+    """[64, J] reference for a family member (base: the module REF)."""
+    if h1_family.is_base(variant):
+        return REF
+    return hr.load_reference(h1_family.reference_gait_path(variant))
+
+
+def reference_actions(obs: np.ndarray, ref: np.ndarray | None = None
+                      ) -> np.ndarray:
     """[E, J] demonstrator actions from the observations alone:
     lead-compensated reference tracking + ankle-pitch and (H1) hip-roll
-    balance assists."""
+    balance assists. `ref` = the member's table (default: H1 REF)."""
+    table = REF if ref is None else np.asarray(ref, np.float64)
     obs = np.asarray(obs, dtype=np.float64)
     phase = np.arctan2(obs[:, IDX_SIN], obs[:, IDX_COS])   # [-pi, pi]
     hz = hf.PHASE_HZ_BASE + hf.PHASE_HZ_PER_MPS * obs[:, IDX_CMD]
     frac = np.mod(phase / (2.0 * np.pi)
                   + LEAD_STEPS * hz * hf.CONTROL_DT, 1.0)
     bins = (frac * BINS).astype(int) % BINS
-    a = (REF[bins] - hf.HOME) / hf.ACTION_SCALE
+    a = (table[bins] - hf.HOME) / hf.ACTION_SCALE
     pitch_assist = -(ANKLE_KP * obs[:, IDX_GRAV_X]
                      + ANKLE_KD * obs[:, IDX_PITCH_RATE])
     for j in ANKLES:
@@ -115,7 +125,8 @@ def reference_actions(obs: np.ndarray) -> np.ndarray:
     return np.clip(a, -1.0, 1.0)
 
 
-def rollout_pairs(env, steps: int) -> tuple[np.ndarray, np.ndarray]:
+def rollout_pairs(env, steps: int, ref: np.ndarray | None = None
+                  ) -> tuple[np.ndarray, np.ndarray]:
     """Roll reference actions closed-loop; (obs [N,52], act [N,12]) pairs
     from live steps only (a step's pair is recorded iff the env was live
     when the action was applied)."""
@@ -123,7 +134,7 @@ def rollout_pairs(env, steps: int) -> tuple[np.ndarray, np.ndarray]:
     live = np.ones(env.E, bool)
     xs, ys = [], []
     for _ in range(steps):
-        a = reference_actions(obs)
+        a = reference_actions(obs, ref)
         if live.any():
             xs.append(obs[live].astype(np.float32))
             ys.append(a[live].astype(np.float32))
@@ -135,42 +146,50 @@ def rollout_pairs(env, steps: int) -> tuple[np.ndarray, np.ndarray]:
             np.concatenate(ys) if ys else np.zeros((0, hf.ACT), np.float32))
 
 
-def default_lane_factory(E, offsets):
+def default_lane_factory(E, offsets, variant: str | None = None):
     """fp32 CPU-serial humanoid lane: the SAME physics the GPU legs train
     on (obs distribution match for the BC init) and ~500x faster than the
     f64 oracle lane on contact-heavy stepping. Pass lane_factory=None to
     build_dataset for this default; pass an explicit factory (e.g. the f64
-    NativeHumanoidLane) to override."""
+    NativeHumanoidLane) to override. `variant` selects the family member's
+    build (base: unchanged call)."""
     from walk.env.humanoid_cuda_lane import CudaHumanoidLane  # noqa: PLC0415
-    return CudaHumanoidLane(E, joint_offsets=offsets)
+    if h1_family.is_base(variant):
+        return CudaHumanoidLane(E, joint_offsets=offsets)
+    return CudaHumanoidLane(E, joint_offsets=offsets, variant=variant)
 
 
 def build_dataset(seeds=(11, 22, 33, 44), commands=hf.COMMANDS_MPS,
                   envs_per_config: int = 4, steps: int = 60,
                   perturbation_rad: float = 0.02,
-                  library_path=None, lane_factory=None) -> dict:
+                  library_path=None, lane_factory=None,
+                  variant: str | None = None) -> dict:
     """(obs, act) pairs across a (seed x command) spread.
 
     Per config: `envs_per_config` envs (each with its OWN counter-drawn
     phase0 and +-perturbation_rad joint-offset noise), pinned to `command`,
     rolled `steps` policy steps (~ up to steps*0.02 s; 3 cycles at cmd 0.75
-    is 1.2 s = 60 steps). Returns {"obs", "act", "meta"}.
+    is 1.2 s = 60 steps). Returns {"obs", "act", "meta"}. `variant`: family
+    member (its lane, its reference table; None = H1.1, unchanged).
     """
+    ref = reference_table(variant)
     if lane_factory is None and library_path is None:
-        lane_factory = default_lane_factory
+        lane_factory = (default_lane_factory if h1_family.is_base(variant)
+                        else (lambda E, off: default_lane_factory(E, off, variant)))
     all_obs, all_act, per_config = [], [], {}
     for seed in seeds:
         env = hf.FlatFloorHumanoidEnv(
             environments=envs_per_config, seed=int(seed),
             perturbation_rad=perturbation_rad,
-            library_path=library_path, lane_factory=lane_factory)
+            library_path=library_path, lane_factory=lane_factory,
+            variant=variant)
         try:
             for cmd in commands:
                 env.reset()
                 env.set_command(cmd)
                 # set_command after reset pins every env to cmd while each
                 # keeps its own episode-drawn phase0/noise
-                obs, act = rollout_pairs(env, steps)
+                obs, act = rollout_pairs(env, steps, ref)
                 per_config[f"seed{seed}-cmd{cmd:.2f}"] = int(len(obs))
                 all_obs.append(obs)
                 all_act.append(act)
@@ -183,4 +202,5 @@ def build_dataset(seeds=(11, 22, 33, 44), commands=hf.COMMANDS_MPS,
                      "seeds": list(map(int, seeds)),
                      "commands": [float(c) for c in commands],
                      "envs_per_config": envs_per_config, "steps": steps,
-                     "perturbation_rad": perturbation_rad}}
+                     "perturbation_rad": perturbation_rad,
+                     "variant": h1_family.canonical(variant)}}

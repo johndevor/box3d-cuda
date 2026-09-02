@@ -69,29 +69,33 @@ def make_policy(arch: str, actor):
     return policy
 
 
-def make_env(seed: int, lane: str, library: str | None):
+def make_env(seed: int, lane: str, library: str | None,
+             variant: str | None = None):
+    """`variant`: humanoid family member (humanoid/h1_family.py); None = the
+    accepted H1.1 base (unchanged construction)."""
+    vk = {} if variant in (None, "", "h1") else {"variant": variant}
     if lane == "serial":
         from walk.env.humanoid_cuda_lane import CudaHumanoidLane
         return FlatFloorHumanoidEnv(
             environments=1, seed=seed, perturbation_rad=0.0,
             lane_factory=lambda E, offsets: CudaHumanoidLane(
-                E, joint_offsets=offsets, library_path=library))
+                E, joint_offsets=offsets, library_path=library, **vk), **vk)
     if lane == "native":
         return FlatFloorHumanoidEnv(environments=1, seed=seed,
                                     perturbation_rad=0.0,
-                                    library_path=library)
+                                    library_path=library, **vk)
     raise SystemExit(f"--lane must be serial or native, got {lane!r}")
 
 
 def run_acceptance(actor_path: str, lane: str = "serial",
                    library: str | None = None,
                    seeds=SEEDS, commands=COMMANDS,
-                   quiet: bool = False) -> dict:
+                   quiet: bool = False, variant: str | None = None) -> dict:
     """Full multi-seed multi-command acceptance; returns the result dict."""
     arch, actor = load_actor(actor_path)
     results, all_pass = {}, True
     for seed in seeds:
-        env = make_env(seed, lane, library)
+        env = make_env(seed, lane, library, variant)
         try:
             for cmd in commands:
                 t = capture_episodes(env, make_policy(arch, actor),
@@ -123,6 +127,7 @@ def run_acceptance(actor_path: str, lane: str = "serial",
     return {"schema": "duckgridwalk.humanoid-multiseed-acceptance/1",
             "actor": str(actor_path), "arch": arch, "lane": lane,
             "seeds": list(seeds), "commands": list(commands),
+            "variant": variant or "h1",
             "episodes": results, "accepted": all_pass}
 
 
@@ -135,8 +140,12 @@ def main():
     ap.add_argument("--library", default=None,
                     help="optional pinned dylib path for the chosen lane")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--variant", default=None,
+                    help="humanoid family member (h1_tall | h1_stocky); "
+                         "unset = the accepted H1.1 base")
     a = ap.parse_args()
-    result = run_acceptance(a.actor, lane=a.lane, library=a.library)
+    result = run_acceptance(a.actor, lane=a.lane, library=a.library,
+                            variant=a.variant)
     if a.out:
         out = Path(a.out)
         out.mkdir(parents=True, exist_ok=True)

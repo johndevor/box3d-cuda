@@ -35,6 +35,7 @@ from . import native_lane
 from .native_lane import LaneState, quat_to_rot, build_library  # noqa: F401
 
 import h1_lowering as h0  # noqa: E402  (ACTIVE lowering: H1)
+import h1_family  # noqa: E402  (family variants; load_lowering("h1") is h0)
 
 LEFT_FOOT_BODY, RIGHT_FOOT_BODY = h0.FOOT_BODIES
 FOOT_BODIES = h0.FOOT_BODIES
@@ -61,27 +62,33 @@ class NativeHumanoidLane:
 
     def __init__(self, environments: int, joint_offsets: np.ndarray | None = None,
                  library_path: str | Path | None = None,
-                 h11_gains: bool | None = None):
+                 h11_gains: bool | None = None,
+                 variant: str | None = None):
         # h11_gains: per-joint kp/kv tables (h1_lowering.KP_TABLE/KV_TABLE).
         # None follows h1_lowering.H11_GAINS_ENABLED (False until the fp32
         # kernel's DW_KP_TABLE lands, to keep oracle<->serial parity); the
         # executed-validation gate passes True explicitly.
+        # variant: family member (humanoid/h1_family.py); None/"h1" is the
+        # h1_lowering module itself -- the default path is unchanged.
+        lw = h1_family.load_lowering(variant)
+        self.variant = h1_family.canonical(variant)
+        self.lowering = lw
         native = self._native = native_lane._native()
         self.library_path = Path(library_path) if library_path else build_library()
         lib = self._lib = native.library(self.library_path)
         self.E = int(environments)
-        self.J = h0.J
-        self.B = h0.B
+        self.J = lw.J
+        self.B = lw.B
         self.P = 2
-        self._scene, fixture = h0.scene(lib, self.E, joint_offsets=joint_offsets,
+        self._scene, fixture = lw.scene(lib, self.E, joint_offsets=joint_offsets,
                                         h11_gains=h11_gains)
-        self.joint_limits = np.array([(j[4], j[5]) for j in h0.JOINTS])
-        self.home_joint_q = np.array(h0.HOME_TARGETS)
-        self.home_root_height = float(h0.reset_qpos()[2])
-        self.kp = float(h0.KP)
-        self.kv = float(h0.KV)
-        self.effort_cap = np.array(h0.EFFORT)     # PER-JOINT (unlike the duck)
-        self.foot_vertices = np.array([h0.foot_vertices()] * 2)  # [2, 8, 3]
+        self.joint_limits = np.array([(j[4], j[5]) for j in lw.JOINTS])
+        self.home_joint_q = np.array(lw.HOME_TARGETS)
+        self.home_root_height = float(lw.reset_qpos()[2])
+        self.kp = float(lw.KP)
+        self.kv = float(lw.KV)
+        self.effort_cap = np.array(lw.EFFORT)     # PER-JOINT (unlike the duck)
+        self.foot_vertices = np.array([lw.foot_vertices()] * 2)  # [2, 8, 3]
         self._snapshot = self._scene.capture()    # initial (perturbed) state
 
     # -- stepping ---------------------------------------------------------

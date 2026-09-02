@@ -236,6 +236,52 @@ class OpenLoopPhysicsSmoke(unittest.TestCase):
             lane.close()
 
 
+def executed_qualified_swings(variant: str | None, seed: int,
+                              command: float = 0.50) -> tuple[int, list]:
+    """The EXECUTED-VALIDATION measurement for one family member: the
+    demonstrator (humanoid/bc_dataset.reference_actions with the member's
+    reference table) rolled closed-loop on the member's fp32 serial lane
+    from the pinned mid-transfer phase; returns (debounced qualified swing
+    count, swing summaries). variant None/"h1" = the accepted H1.1."""
+    import bc_dataset as bd
+    import diagnose_swings as dg
+    import h1_family as fam
+    from walk.env import humanoid_flat as hf
+    from walk.env.humanoid_cuda_lane import CudaHumanoidLane
+    vk = {} if fam.is_base(variant) else {"variant": variant}
+    ref = bd.reference_table(variant)
+    env = hf.FlatFloorHumanoidEnv(
+        environments=1, seed=seed,
+        lane_factory=lambda E, off: CudaHumanoidLane(
+            E, joint_offsets=off, **vk), **vk)
+    try:
+        env.set_command(command)
+        obs = env.pin_phase(2.0 * math.pi * 0.075)
+        trace = {"ticks": {"time_s": [], "foot_pos": [],
+                           "sole_height": [], "contact": []}}
+
+        def on_tick(st, trace=trace):
+            tk = trace["ticks"]
+            tk["time_s"].append(float(st.time[0]))
+            tk["foot_pos"].append(
+                [list(map(float, st.foot_pos[0, f])) for f in (0, 1)])
+            tk["sole_height"].append(list(map(float, st.sole_height[0])))
+            tk["contact"].append([bool(x) for x in st.foot_contact[0]])
+        for _ in range(400):
+            a = bd.reference_actions(obs, ref).astype(np.float32)
+            obs, _, done, _ = env.step(a, on_tick=on_tick)
+            if done.all():
+                break
+    finally:
+        env.close()
+    swings = dg.swings_from_trace(trace, debounce=True)
+    summary = [(s["foot"], round(s["duration_s"], 2),
+                round(s["peak_clearance_m"] * 1000),
+                round(s["placement_m"] * 1000), s["first_fail"])
+               for s in swings]
+    return sum(s["qualified"] for s in swings), summary
+
+
 class ExecutedValidation(unittest.TestCase):
     """MANDATORY executed-validation gate (the FK-only lesson,
     institutionalized), ACTIVE since H1.1 landed (per-joint kp/kv tables
@@ -251,47 +297,66 @@ class ExecutedValidation(unittest.TestCase):
     0.14 s / 23 mm / 111 mm -- the phase-indexed swing window shrinks with
     command while the 180 N*m-capped transfer takes constant TIME
     (~0.25 s); levers if it must qualify pre-PPO: per-command tables or a
-    slower clock. PPO's feedback owns it meanwhile (PHASE2.md s16)."""
+    slower clock. PPO's feedback owns it meanwhile (PHASE2.md s16).
+
+    FAMILY RULE (permanent): the same gate runs PER VARIANT
+    (humanoid/h1_family.py); a member whose reference fails it is NOT
+    deliverable. Measured at delivery (cmd 0.50, seeds 4242/7, identical
+    across seeds): h1_tall R swing 0.30 s / 43 mm / 270 mm; h1_stocky
+    R swing 0.32 s / 50 mm / 310 mm."""
 
     def test_demonstrator_produces_debounced_qualified_swings_cmd050(self):
-        import bc_dataset as bd
-        import diagnose_swings as dg
-        from walk.env import humanoid_flat as hf
-        from walk.env.humanoid_cuda_lane import CudaHumanoidLane
         for seed in (4242, 7):
-            env = hf.FlatFloorHumanoidEnv(
-                environments=1, seed=seed,
-                lane_factory=lambda E, off: CudaHumanoidLane(
-                    E, joint_offsets=off))
-            try:
-                env.set_command(0.50)
-                obs = env.pin_phase(2.0 * math.pi * 0.075)
-                trace = {"ticks": {"time_s": [], "foot_pos": [],
-                                   "sole_height": [], "contact": []}}
+            qualified, summary = executed_qualified_swings(None, seed)
+            self.assertGreaterEqual(qualified, 1, (seed, summary))
 
-                def on_tick(st, trace=trace):
-                    tk = trace["ticks"]
-                    tk["time_s"].append(float(st.time[0]))
-                    tk["foot_pos"].append(
-                        [list(map(float, st.foot_pos[0, f])) for f in (0, 1)])
-                    tk["sole_height"].append(
-                        list(map(float, st.sole_height[0])))
-                    tk["contact"].append(
-                        [bool(x) for x in st.foot_contact[0]])
-                for _ in range(400):
-                    a = bd.reference_actions(obs).astype(np.float32)
-                    obs, _, done, _ = env.step(a, on_tick=on_tick)
-                    if done.all():
-                        break
-            finally:
-                env.close()
-            swings = dg.swings_from_trace(trace, debounce=True)
-            qualified = sum(s["qualified"] for s in swings)
-            self.assertGreaterEqual(
-                qualified, 1,
-                (seed, [(s["foot"], round(s["duration_s"], 2),
-                         round(s["peak_clearance_m"] * 1000),
-                         s["first_fail"]) for s in swings]))
+
+class VariantReferenceGates(unittest.TestCase):
+    """Per-variant reference gates: json drift (the author parametrized by
+    the member's leg length), header DW_REF_GAIT == the member's json,
+    limits/action box, and the MANDATORY executed-validation gate."""
+
+    def _drift(self, v):
+        import h1_family as fam
+        author = _author_module()
+        lw = fam.load_lowering(v)
+        path = fam.reference_gait_path(v)
+        fresh = json.dumps(author.payload(lw), indent=1) + "\n"
+        self.assertEqual(fresh, path.read_text(),
+                         f"{v} reference_gait.json drifted; rerun "
+                         f"author_reference_gait.py --lowering {v}")
+        data = json.loads(fresh)
+        table = np.asarray(data["table"])
+        self.assertEqual(table.shape, (64, 14))
+        self.assertEqual(data["variant"], v)
+        k = author.Kinematics.for_lowering(lw)
+        self.assertEqual(data["constants"]["leg_length_m"], lw.LEG_LENGTH_M)
+        self.assertAlmostEqual(data["constants"]["roll_hold_rad"], k.roll_hold)
+        self.assertLessEqual(float(np.abs(table).max()), author.ACTION_BOX + 1e-12)
+        lim = np.array([(j[4], j[5]) for j in lw.JOINTS])
+        self.assertTrue((table >= lim[:, 0]).all() and (table <= lim[:, 1]).all())
+        text = fam.header_path(v).read_text()
+        block = text[text.index("DW_REF_GAIT"):]
+        block = block[block.index("{") + 1:block.index(";") - 1]
+        rows = [r.strip("{}").split(",") for r in block.split("},{")]
+        np.testing.assert_array_equal(
+            np.array([[float(x) for x in row] for row in rows]), table, v)
+
+    def _executed(self, v):
+        for seed in (4242, 7):
+            qualified, summary = executed_qualified_swings(v, seed)
+            print(f"[{v}] executed validation seed {seed}: qualified "
+                  f"{qualified} {summary}", file=sys.stderr)
+            self.assertGreaterEqual(qualified, 1, (v, seed, summary))
+
+
+for _v in ("h1_tall", "h1_stocky"):
+    def _mk(name, v=_v):
+        return lambda self: getattr(self, name)(v)
+    setattr(VariantReferenceGates, f"test_reference_drift_{_v}", _mk("_drift"))
+    setattr(VariantReferenceGates,
+            f"test_demonstrator_debounced_qualified_swings_cmd050_{_v}",
+            _mk("_executed"))
 
 
 if __name__ == "__main__":
