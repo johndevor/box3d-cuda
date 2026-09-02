@@ -924,9 +924,15 @@ def execute_run(spec, repo_root, run_dir, provider, redactor, deadline,
                 "artifacts": arts,
             })
             if result.exit_code != 0:
-                log(f"[launcher] job {job.name} FAILED (exit {result.exit_code})")
-                exit_code = EXIT_JOB_FAILED
-                if not job.continue_on_error:
+                if job.continue_on_error:
+                    # A soft job (e.g. an acceptance verdict of "not
+                    # accepted") is a RESULT, not a run failure: the run
+                    # exits 0 and downstream (chain.py) judges the artifacts.
+                    log(f"[launcher] job {job.name} exited {result.exit_code} "
+                        "(continue_on_error: recorded, run continues)")
+                else:
+                    log(f"[launcher] job {job.name} FAILED (exit {result.exit_code})")
+                    exit_code = EXIT_JOB_FAILED
                     stop = True
             else:
                 log(f"[launcher] job {job.name} ok ({wall}s)")
