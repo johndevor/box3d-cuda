@@ -11,15 +11,13 @@ Gates:
   52 -> (256, 256) -> 12 ff actor with the documented log_std -1.0;
 - the committed humanoid/bc_init.pt matches a deterministic regeneration
   (drift lock; regenerate with the module command line on mismatch);
-- CLOSED-LOOP STEPPING (the coordinator gate): the BC'd actor replayed
-  deterministically on the fp32 CPU-serial lane measurably steps -- feet
-  alternate lifts for the first few swings before the (expected,
-  morphology-bounded) fall. The planar model has zero roll authority and
-  single support is laterally ~1 cm statically unstable, so EVERY
-  non-feedback-rich policy falls within ~1 s; measured on the committed
-  actor across 3 commands x 3 seeds: 18 lifts, 6 alternations, best
-  sequence LRLR, all envs alive >= 0.7 s. The pins below sit under those
-  with margin. Surviving longer is PPO's job.
+- CLOSED-LOOP STEPPING (the coordinator gate, H1): the BC'd actor
+  replayed deterministically on the fp32 CPU-serial lane measurably steps
+  AND -- with the hip-roll authority H1 added -- survives measurably
+  longer than the H0 clone's ~0.76 s lateral-tip ceiling. Measured on the
+  committed H1 actor across 3 commands x 3 seeds: mean survival 0.978 s,
+  every episode >= 0.88 s, 23 lifts, 6 alternations. The pins below sit
+  under those with margin. Walking to horizon is PPO's job.
 """
 from __future__ import annotations
 
@@ -90,20 +88,22 @@ class BcPretrainGates(unittest.TestCase):
         obs, act = self.dataset["obs"], self.dataset["act"]
         meta = self.dataset["meta"]
         self.assertGreaterEqual(meta["pairs"], 2000)
-        self.assertEqual(obs.shape, (meta["pairs"], 52))
-        self.assertEqual(act.shape, (meta["pairs"], 12))
+        self.assertEqual(obs.shape, (meta["pairs"], hf.OBS))
+        self.assertEqual(act.shape, (meta["pairs"], hf.ACT))
         self.assertTrue(np.isfinite(obs).all() and np.isfinite(act).all())
         self.assertLessEqual(float(np.abs(act).max()), 1.0)
         # real-lane obs: both contact states appear; gravity channel live
-        self.assertEqual(set(np.unique(obs[:, 48:50])), {0.0, 1.0})
-        self.assertGreater(float(obs[:, 36].std()), 0.01)
+        T = 3 * hf.ACT
+        self.assertEqual(set(np.unique(obs[:, T + 12:T + 14])), {0.0, 1.0})
+        self.assertGreater(float(obs[:, T].std()), 0.01)
         # every (seed, command) config contributed
         self.assertEqual(len(meta["per_config"]),
                          len(meta["seeds"]) * len(meta["commands"]))
         self.assertTrue(all(v > 0 for v in meta["per_config"].values()))
         # knee plateau saturates by design; nothing else should pin at 1
         sat = np.abs(act) > 0.999
-        self.assertGreater(float(sat[:, [3, 6]].mean()), 0.01)
+        knees = [4, 8]                     # H1 joint order
+        self.assertGreater(float(sat[:, knees].mean()), 0.01)
         self.assertLess(float(sat.mean()), 0.25)
 
     # -- convergence ----------------------------------------------------------
@@ -121,11 +121,11 @@ class BcPretrainGates(unittest.TestCase):
             arch, sd = unpack_actor_file(
                 torch.load(path, map_location="cpu", weights_only=False))
         self.assertEqual(arch, "ff")
-        fresh = Actor(52, 12)
+        fresh = Actor(hf.OBS, hf.ACT)
         fresh.load_state_dict(sd)              # shape-checked load
         shapes = [tuple(v.shape) for v in sd.values()]
-        self.assertIn((256, 52), shapes)
-        self.assertIn((12, 256), shapes)
+        self.assertIn((256, hf.OBS), shapes)
+        self.assertIn((hf.ACT, 256), shapes)
         np.testing.assert_allclose(sd["log_std"].numpy(), -1.0, atol=1e-7)
 
     def test_committed_bc_init_matches_regeneration(self):
@@ -165,25 +165,35 @@ class BcPretrainGates(unittest.TestCase):
     def test_closed_loop_replay_steps_before_falling(self):
         actor = self.actor.eval()
         total_lifts = total_alt = best_alt = 0
+        total_s = 0.0
+        n = 0
         per_cmd_lifts = {c: 0 for c in hf.COMMANDS_MPS}
         for cmd in hf.COMMANDS_MPS:
             for seed in (4242, 7, 1913):
                 alive_s, seq, alt = _replay(actor, cmd, seed)
                 total_lifts += len(seq)
                 total_alt += alt
+                total_s += alive_s
+                n += 1
                 best_alt = max(best_alt, alt)
                 per_cmd_lifts[cmd] += len(seq)
-                self.assertGreaterEqual(alive_s, 0.5, (cmd, seed))
+                self.assertGreaterEqual(alive_s, 0.7, (cmd, seed))
                 print(f"bc replay cmd {cmd:.2f} seed {seed}: {alive_s:.2f}s "
                       f"lifts [{seq}] alternations {alt}", file=sys.stderr)
-        # measured on the committed config: 18 lifts / 6 alternations /
-        # best 3; pins with margin:
-        self.assertGreaterEqual(total_lifts, 10, "clone stopped stepping")
+        # H1 measured on the committed config: mean survival 0.978 s (H0
+        # clone ceiling was ~0.76 s), 23 lifts / 6 alternations / best 2,
+        # every episode >= 0.88 s; pins with margin:
+        self.assertGreater(total_s / n, 0.85,
+                           "H1 clone no longer outlives the H0 ~0.76 s "
+                           "lateral-tip ceiling")
+        self.assertGreaterEqual(total_lifts, 12, "clone stopped stepping")
         self.assertGreaterEqual(total_alt, 3, "clone stopped alternating")
         self.assertGreaterEqual(best_alt, 2,
                                 "no episode shows an L-R-L alternation run")
         for cmd, lifts in per_cmd_lifts.items():
             self.assertGreaterEqual(lifts, 1, f"no lifts at cmd {cmd}")
+        print(f"bc replay MEAN SURVIVAL {total_s / n:.3f}s "
+              f"(H0 ceiling ~0.76s)", file=sys.stderr)
 
 
 if __name__ == "__main__":

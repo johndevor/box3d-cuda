@@ -42,50 +42,51 @@ class ObsLayoutTests(unittest.TestCase):
 
     def test_dims_and_class_attributes(self):
         # walk/train reads OBS/ACT off the factory class (run.py:236-237)
-        self.assertEqual(FlatFloorHumanoidEnv.OBS, 52)
-        self.assertEqual(FlatFloorHumanoidEnv.ACT, 12)
+        self.assertEqual(FlatFloorHumanoidEnv.OBS, 58)   # H1: 3*14+16
+        self.assertEqual(FlatFloorHumanoidEnv.ACT, 14)
         self.assertEqual(hf.OBS, 3 * hf.ACT + 16)
 
     def test_reset_obs_layout(self):
         obs = self.env.reset()
-        self.assertEqual(obs.shape, (2, 52))
+        A, T = hf.ACT, 3 * hf.ACT
+        self.assertEqual(obs.shape, (2, hf.OBS))
         self.assertEqual(obs.dtype, np.float32)
         # home pose: q-HOME, qdot, prev action all zero
-        np.testing.assert_array_equal(obs[:, 0:36], 0.0)
+        np.testing.assert_array_equal(obs[:, 0:T], 0.0)
         # gravity in body frame: authored y-up-local body frame -> (0,-1,0)
-        np.testing.assert_allclose(obs[:, 36:39], [[0.0, -1.0, 0.0]] * 2,
+        np.testing.assert_allclose(obs[:, T:T + 3], [[0.0, -1.0, 0.0]] * 2,
                                    atol=1e-6)
         # root velocities zero at reset
-        np.testing.assert_array_equal(obs[:, 39:45], 0.0)
+        np.testing.assert_array_equal(obs[:, T + 3:T + 9], 0.0)
         # command slot mirrors the per-env command
-        np.testing.assert_allclose(obs[:, 45], self.env.command, atol=0)
+        np.testing.assert_allclose(obs[:, T + 9], self.env.command, atol=0)
         # reserved zeros (duck obs[52:54] convention)
-        np.testing.assert_array_equal(obs[:, 46:48], 0.0)
+        np.testing.assert_array_equal(obs[:, T + 10:T + 12], 0.0)
         # phase clock is a unit vector matching phase0 (t=0)
-        np.testing.assert_allclose(np.hypot(obs[:, 50], obs[:, 51]), 1.0,
+        np.testing.assert_allclose(np.hypot(obs[:, -2], obs[:, -1]), 1.0,
                                    atol=1e-6)
-        np.testing.assert_allclose(obs[:, 50], np.sin(self.env._phase0),
+        np.testing.assert_allclose(obs[:, -2], np.sin(self.env._phase0),
                                    atol=1e-6)
 
     def test_step_obs_slots_move_coherently(self):
         self.env.reset()
-        a = np.full((2, 12), 0.1, np.float32)
+        a = np.full((2, hf.ACT), 0.1, np.float32)
         obs, r, done, info = self.env.step(a)
         self.assertFalse(done.any())
         # prev-action slot echoes the clipped action
-        np.testing.assert_allclose(obs[:, 24:36], 0.1, atol=1e-6)
+        np.testing.assert_allclose(obs[:, 2 * hf.ACT:3 * hf.ACT], 0.1, atol=1e-6)
         # joints moved toward the +0.1*scale targets
-        self.assertGreater(float(obs[:, 0:12].mean()), 0.0)
+        self.assertGreater(float(obs[:, 0:hf.ACT].mean()), 0.0)
         # both feet still planted after one gentle step
-        np.testing.assert_array_equal(obs[:, 48:50], 1.0)
+        np.testing.assert_array_equal(obs[:, 3 * hf.ACT + 12:3 * hf.ACT + 14], 1.0)
         # phase advanced by 2*pi*hz*dt from phase0
         hz = hf.PHASE_HZ_BASE + hf.PHASE_HZ_PER_MPS * self.env.command
         expect = self.env._phase0 + 2.0 * math.pi * hz * hf.CONTROL_DT
-        np.testing.assert_allclose(obs[:, 50], np.sin(expect), atol=1e-6)
+        np.testing.assert_allclose(obs[:, -2], np.sin(expect), atol=1e-6)
 
     def test_action_slew_and_limit_clip(self):
         self.env.reset()
-        a = np.ones((2, 12), np.float32)          # request HOME + 0.5
+        a = np.ones((2, hf.ACT), np.float32)      # request HOME + 0.5
         self.env.step(a)
         # one step can move targets at most MAX_TARGET_INCREMENT = 0.16
         np.testing.assert_allclose(
@@ -132,8 +133,8 @@ class HeaderPinTests(unittest.TestCase):
         for macro, value in pins.items():
             self.assertEqual(_macro(self.text, macro), repr(float(value)),
                              macro)
-        self.assertEqual(_macro(self.text, "DW_ENV_OBS"), "52")
-        self.assertEqual(_macro(self.text, "DW_ENV_ACT"), "12")
+        self.assertEqual(_macro(self.text, "DW_ENV_OBS"), str(hf.OBS))
+        self.assertEqual(_macro(self.text, "DW_ENV_ACT"), str(hf.ACT))
         self.assertEqual(_macro(self.text, "DW_ENV_TICKS_PER_STEP"), "10u")
         self.assertEqual(_macro(self.text, "DW_ENV_HORIZON_STEPS"),
                          f"{hf.HORIZON_STEPS}u")
@@ -146,7 +147,7 @@ class HeaderPinTests(unittest.TestCase):
     def test_ref_gait_live_and_pinned_in_header(self):
         # v2.1: the imitation hook is LIVE from the synthetic reference
         self.assertIsNotNone(hr.REF_GAIT)
-        self.assertEqual(np.asarray(hr.REF_GAIT).shape, (64, 12))
+        self.assertEqual(np.asarray(hr.REF_GAIT).shape, (64, hf.ACT))
         self.assertEqual(hr.W_IMIT, 0.5)
         block = self.text[self.text.index("DW_REF_GAIT"):]
         block = block[:block.index(";")]
@@ -155,7 +156,7 @@ class HeaderPinTests(unittest.TestCase):
         row0 = "{" + ",".join(repr(float(x))
                               for x in np.asarray(hr.REF_GAIT)[0]) + "}"
         self.assertIn(row0, block)
-        self.assertNotEqual(block.count("{" + ",".join(["0.0"] * 12) + "}"),
+        self.assertNotEqual(block.count("{" + ",".join(["0.0"] * hf.ACT) + "}"),
                             64, "header still carries the zero placeholder")
 
 
@@ -166,10 +167,10 @@ class RewardTests(unittest.TestCase):
             "root_ang_vel": np.zeros((E, 3)),
             "foot_contact": np.full((E, 2), bool(contact)),
             "sole_height": np.zeros((E, 2)),
-            "action": np.zeros((E, 12)),
-            "torque": np.zeros((E, 12)),
+            "action": np.zeros((E, hf.ACT)),
+            "torque": np.zeros((E, hf.ACT)),
             "foot_x": np.zeros((E, 2)),
-            "joint_q": np.zeros((E, 12)),
+            "joint_q": np.zeros((E, hf.ACT)),
             "phase": np.zeros(E),
         }
 
@@ -180,7 +181,7 @@ class RewardTests(unittest.TestCase):
         cmd = np.array([0.75, 0.5])
         r = None
         for _ in range(20):   # exceed the 0.25 s double-support grace
-            r = hr.reward(prev, state, np.zeros((2, 12)), cmd, tracker)
+            r = hr.reward(prev, state, np.zeros((2, hf.ACT)), cmd, tracker)
         # v_avg -> 0: track = exp(-cmd^2/sigma^2); alive; phase term nets 0
         # (left matches sin(0)>=0 stance, right mismatches); double-support
         # penalty active; v2.1: imitation leak at bin 0 (phase 0, joints 0)
@@ -202,22 +203,22 @@ class RewardTests(unittest.TestCase):
         s = self._state(E=1)
         s["contact_ticks"] = np.full((1, 2), hr.TICKS_FULL)
         for _ in range(10):
-            hr.reward(prev, s, np.zeros((1, 12)), cmd, tracker)
+            hr.reward(prev, s, np.zeros((1, hf.ACT)), cmd, tracker)
         # left foot lifts off...
         air = self._state(E=1)
         air["foot_contact"] = np.array([[False, True]])
         air["contact_ticks"] = np.array([[0, hr.TICKS_FULL]])
         prev_c = s
         for _ in range(int(0.2 / hr.CONTROL_DT)):   # 0.2 s swing, in window
-            r_air = hr.reward(prev_c, air, np.zeros((1, 12)), cmd, tracker)
+            r_air = hr.reward(prev_c, air, np.zeros((1, hf.ACT)), cmd, tracker)
             prev_c = air
         # ...and touches down 0.2 m forward at left-stance phase (sin>=0)
         down = self._state(E=1)
         down["foot_x"] = np.array([[0.2, 0.0]])
         down["contact_ticks"] = np.full((1, 2), hr.TICKS_FULL)
         down["phase"] = np.array([0.5])              # sin > 0: left window
-        r = hr.reward(prev_c, down, np.zeros((1, 12)), cmd, tracker)
-        r_base = hr.reward(down, down, np.zeros((1, 12)), cmd,
+        r = hr.reward(prev_c, down, np.zeros((1, hf.ACT)), cmd, tracker)
+        r_base = hr.reward(down, down, np.zeros((1, hf.ACT)), cmd,
                            hr.GaitTracker(1))
         # the touchdown step must contain the qualified-step bonus
         self.assertGreater(float(r[0]), float(r_air[0]) + hr.W_AIR_TIME - 1.0)
@@ -237,7 +238,7 @@ class TerminationTests(unittest.TestCase):
                             humanoid_gait.TILT_MAX_DEG)
             # done stays terminal until reset (no auto-reset), duck contract
             env._done[:] = True
-            obs, r, done, info = env.step(np.zeros((1, 12)))
+            obs, r, done, info = env.step(np.zeros((1, hf.ACT)))
             self.assertTrue(done.all())
             self.assertEqual(float(r[0]), 0.0)
         finally:

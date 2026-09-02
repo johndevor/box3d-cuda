@@ -59,7 +59,7 @@ sys.path.insert(0, str(ROOT / "humanoid"))
 
 from walk.env import humanoid_cuda_lane as hc  # noqa: E402
 from walk.env import humanoid_native_lane as hn  # noqa: E402
-import h0_lowering as h0  # noqa: E402
+import h1_lowering as h0  # noqa: E402  (ACTIVE lowering: H1)
 
 TOOLS = ROOT / "experimental" / "duck_cuda" / "tools"
 
@@ -247,7 +247,7 @@ class HumanoidSerialParityTests(unittest.TestCase):
     def test_info_reports_humanoid_dims(self):
         lane = hc.CudaHumanoidLane(3)
         try:
-            self.assertEqual((lane.B, lane.J, lane.P), (14, 12, 2))
+            self.assertEqual((lane.B, lane.J, lane.P), (16, 14, 2))
             self.assertAlmostEqual(lane.home_root_height, 1.15, places=6)
             self.assertEqual(lane.kp, 90.0)
             self.assertEqual(lane.kv, 8.0)
@@ -255,7 +255,7 @@ class HumanoidSerialParityTests(unittest.TestCase):
             np.testing.assert_allclose(
                 lane.joint_limits,
                 np.array([(j[4], j[5]) for j in h0.JOINTS]), atol=1e-6)
-            np.testing.assert_array_equal(lane.home_joint_q, np.zeros(12))
+            np.testing.assert_array_equal(lane.home_joint_q, np.zeros(h0.J))
         finally:
             lane.close()
 

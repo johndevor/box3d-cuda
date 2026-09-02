@@ -40,7 +40,7 @@ sys.path.insert(0, str(ROOT / "humanoid"))
 from walk.env import humanoid_cuda_lane as hc  # noqa: E402
 from walk.env import humanoid_flat as hf  # noqa: E402
 from walk.env.cuda_lane import DIAG_DTYPE, Diagnostic, _fp  # noqa: E402
-import h0_lowering as h0  # noqa: E402
+import h1_lowering as h0  # noqa: E402  (ACTIVE lowering: H1)
 
 E = 4
 OBS, ACT = hf.OBS, hf.ACT
@@ -131,8 +131,9 @@ class HumanoidPolicyParityTests(unittest.TestCase):
             obs_dev = dev.reset()                # episode 2
             np.testing.assert_array_equal(obs_py, obs_dev,
                                           "reset observations")
+            command_idx = 3 * h0.J + 9          # obs tail: command channel
             self.assertTrue(np.array_equal(env.command.astype(np.float32),
-                                           obs_dev[:, 45]))
+                                           obs_dev[:, command_idx]))
             rng = np.random.default_rng(0)
             worst_obs = worst_rew = 0.0
             resets = fault_pairs = 0

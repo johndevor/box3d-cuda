@@ -7,7 +7,8 @@ the registration), same lane surface, H0 fixture from
 humanoid kernel build (walk/env/humanoid_cuda_lane.py).
 
 Differences from the duck lane, all traceable to the H0 lowering:
-- 14 contact bodies; body 6 = left_foot, body 9 = right_foot; body 0 = the
+- B contact bodies from the ACTIVE lowering (H1: 16; left/right foot at
+  h0.FOOT_BODIES = (7, 11)); body 0 = the
   fixed floor plane z = 0. 2 contact pairs (no foot-vs-foot: H0 authors no
   self-collision).
 - foot collider = the exact 8 box corners (single-OBB feet), so whole-sole
@@ -33,7 +34,7 @@ if str(ROOT / "humanoid") not in sys.path:
 from . import native_lane
 from .native_lane import LaneState, quat_to_rot, build_library  # noqa: F401
 
-import h0_lowering as h0  # noqa: E402
+import h1_lowering as h0  # noqa: E402  (ACTIVE lowering: H1)
 
 LEFT_FOOT_BODY, RIGHT_FOOT_BODY = h0.FOOT_BODIES
 FOOT_BODIES = h0.FOOT_BODIES

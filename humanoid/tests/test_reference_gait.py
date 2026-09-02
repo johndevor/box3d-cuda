@@ -41,7 +41,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "humanoid"))
 sys.path.insert(0, str(ROOT / "walk" / "env"))
 
-import h0_lowering as h0  # noqa: E402
+import h1_lowering as h0  # noqa: E402  (ACTIVE lowering: H1)
 import native_lane  # noqa: E402
 
 JSON_PATH = ROOT / "humanoid" / "reference_gait.json"
@@ -71,11 +71,11 @@ class TableTests(unittest.TestCase):
                          "humanoid/author_reference_gait.py")
 
     def test_shape_and_posture(self):
-        self.assertEqual(self.table.shape, (64, 12))
+        self.assertEqual(self.table.shape, (64, 14))  # H1
         self.assertEqual(self.data["bins"], 64)
         self.assertEqual(tuple(self.data["joints"]), h0.JOINT_NAMES)
         # waist/neck/shoulders/elbows at HOME
-        np.testing.assert_array_equal(self.table[:, [0, 1, 8, 9, 10, 11]], 0.0)
+        np.testing.assert_array_equal(self.table[:, [0, 1, 10, 11, 12, 13]], 0.0)
 
     def test_within_authored_limits(self):
         lim = np.array([(j[4], j[5]) for j in h0.JOINTS])
@@ -84,7 +84,12 @@ class TableTests(unittest.TestCase):
 
     def test_mirror_symmetry(self):
         rolled = self.table[(np.arange(64) + 32) % 64]
-        np.testing.assert_allclose(self.table[:, 5:8], rolled[:, 2:5],
+        # sagittal leg columns: right(b) == left(b + half cycle)
+        np.testing.assert_allclose(self.table[:, 7:10], rolled[:, 3:6],
+                                   atol=1e-12)
+        # roll columns: equal L/R (parallel legs), antisymmetric by half cycle
+        np.testing.assert_allclose(self.table[:, 2], self.table[:, 6], atol=0)
+        np.testing.assert_allclose(self.table[:, 2], -rolled[:, 2],
                                    atol=1e-12)
 
     def test_header_carries_identical_table(self):
@@ -93,7 +98,7 @@ class TableTests(unittest.TestCase):
         block = block[block.index("{") + 1:block.index(";") - 1]
         rows = [r.strip("{}").split(",") for r in block.split("},{")]
         header_table = np.array([[float(x) for x in row] for row in rows])
-        self.assertEqual(header_table.shape, (64, 12))
+        self.assertEqual(header_table.shape, (64, 14))
         np.testing.assert_array_equal(header_table, self.table,
                                       "header DW_REF_GAIT != json (regenerate)")
 
@@ -114,13 +119,21 @@ class KinematicValidation(unittest.TestCase):
         cls.fixture = h0.fixture()
         cls.table = np.asarray(json.loads(JSON_PATH.read_text())["table"])
         cls.verts = np.array(h0.foot_vertices())
+        # SAGITTAL validation uses the roll-zeroed table: the roll columns
+        # are LOAD COMPENSATION (0.25 rad commands what sags to the desired
+        # ~0.1 rad lean under the single-support gravity moment); their
+        # pure-FK pose over-leans by design, so stance flatness/clearance
+        # are the sagittal columns' contract and the roll columns get their
+        # own amplitude/timing checks (test_roll_columns).
+        cls.sagittal = cls.table.copy()
+        cls.sagittal[:, [2, 6]] = 0.0
         # nominal pelvis path: constant height (straight-leg bob <= 3.3 mm
         # is measured on the FEET below, not compensated here)
         cls.poses = []
         for b in range(64):
             q = h0.reset_qpos()
-            q[7:] = cls.table[b]
-            rc, ev = cls.fixture.evaluate(cls.lib, q, np.zeros(18),
+            q[7:] = cls.sagittal[b]
+            rc, ev = cls.fixture.evaluate(cls.lib, q, np.zeros(h0.N),
                                           gravity=(0.0, 0.0, -h0.GRAVITY))
             assert rc == 0, b
             cls.poses.append(ev.pose.copy())
@@ -133,7 +146,8 @@ class KinematicValidation(unittest.TestCase):
     def test_per_frame_alternation_clearance_and_flatness(self):
         for b in range(64):
             phase = 2.0 * math.pi * (b + 0.5) / 64.0
-            stance, swing = (6, 9) if math.sin(phase) >= 0 else (9, 6)
+            left, right = h0.FOOT_BODIES
+            stance, swing = (left, right) if math.sin(phase) >= 0 else (right, left)
             z_st, _ = self._sole(self.poses[b], stance)
             z_sw, _ = self._sole(self.poses[b], swing)
             # stance foot: whole sole on the floor within the pelvis bob;
@@ -152,7 +166,7 @@ class KinematicValidation(unittest.TestCase):
         left_x = []
         for b in range(64):
             phase = 2.0 * math.pi * (b + 0.5) / 64.0
-            z_l, x_l = self._sole(self.poses[b], 6)
+            z_l, x_l = self._sole(self.poses[b], h0.FOOT_BODIES[0])
             left_x.append(x_l)
             if math.sin(phase) < 0:                 # left swing bins
                 clear.append(float(z_l.min()))
@@ -166,6 +180,27 @@ class KinematicValidation(unittest.TestCase):
         self.assertGreaterEqual(2.0 * float(sweep),
                                 humanoid_gait.PLACEMENT_MIN_M * 1.9)
 
+    def test_roll_columns(self):
+        """H1 roll channel: amplitude, timing and limit checks."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "arg", ROOT / "humanoid" / "author_reference_gait.py")
+        arg = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(arg)
+        p = 2.0 * np.pi * (np.arange(64) + 0.5) / 64.0
+        expect = arg.ROLL_AMPLITUDE * np.sin(p + arg.ROLL_PHASE_ADVANCE)
+        np.testing.assert_allclose(self.table[:, 2], expect, atol=1e-12)
+        # inside the authored roll limit with headroom
+        self.assertLessEqual(float(np.abs(self.table[:, 2]).max()),
+                             h0.HIP_ROLL_LIMIT - 0.1)
+        # action-box reachable (targets = 0.25 <= ACTION_SCALE 0.5)
+        self.assertLessEqual(float(np.abs(self.table[:, 2]).max()) / 0.5, 1.0)
+        # lean is TOWARD the stance side and pre-established at liftoff:
+        # positive (pelvis -> left foot at -y) through most of left stance
+        left_stance = np.sin(p) >= 0
+        self.assertGreater(float(self.table[left_stance, 2].mean()), 0.1)
+        self.assertGreater(float(self.table[0, 2]), 0.05)   # already leaning
+
 
 class OpenLoopPhysicsSmoke(unittest.TestCase):
     def test_open_loop_replay_lifts_alternating_feet(self):
@@ -177,7 +212,8 @@ class OpenLoopPhysicsSmoke(unittest.TestCase):
         lane = NativeHumanoidLane(1)
         try:
             hz = 3.33 * 0.75                    # env clock, cmd 0.75
-            air_in_window = {6: False, 9: False}
+            lf, rf = h0.FOOT_BODIES
+            air_in_window = {lf: False, rf: False}
             for tick in range(300):             # 0.6 s = 1.5 cycles
                 t = tick * h0.SIM_DT
                 frac = (hz * t) % 1.0
@@ -188,11 +224,11 @@ class OpenLoopPhysicsSmoke(unittest.TestCase):
                 self.assertTrue(x.finite().all(), tick)
                 phase = 2.0 * math.pi * frac
                 if math.sin(phase) < 0 and not x.foot_contact[0, 0]:
-                    air_in_window[6] = True     # left airborne in left swing
+                    air_in_window[lf] = True    # left airborne in left swing
                 if math.sin(phase) >= 0 and not x.foot_contact[0, 1]:
-                    air_in_window[9] = True     # right airborne in right swing
-            self.assertTrue(air_in_window[6], "left foot never lifted")
-            self.assertTrue(air_in_window[9], "right foot never lifted")
+                    air_in_window[rf] = True    # right airborne in right swing
+            self.assertTrue(air_in_window[lf], "left foot never lifted")
+            self.assertTrue(air_in_window[rf], "right foot never lifted")
         finally:
             lane.close()
 

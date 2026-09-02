@@ -287,6 +287,7 @@ handoff-tested by humanoid/tests/test_bc_pretrain.py):
     .venv/bin/python -B -m walk.train.bc_pretrain --robot humanoid \
         --out humanoid/bc_init.pt --checkpoint-out humanoid/bc_init_ckpt.pt \
         --epochs 300 --seeds 11,22,33,44,55,66,77,88
+(H0-era paragraph; superseded by §12's H1 command lines.)
 Flagship leg = v2.1 reward + 16384 envs, started from the cloned gait via
 the turnkey resume path (verified: resumes at update 0, first PPO update
 clean):
@@ -312,3 +313,66 @@ resets them immediately):
   policy spends most steps falling; fall states are the expensive solves —
   see FEASIBILITY.md §6 note). Throughput is a non-goal for the CPU smoke;
   batch training waits on the kernel policy-layer edit + orchestrator GPU.
+
+## 12. H1: hip-roll lateral actuation (B16/J14) — the morphology fix
+
+Empirical driver: the H0 flagship leg (BC + v2.1, 16384 envs) stepped
+immediately (reward ~2.0) but ep_len saturated at ~69 steps (~1.4 s — the
+predicted lateral tipping timescale) and the judge rejected 0/12 on early
+termination. All 12 H0 joint axes are sagittal; no policy can regulate
+roll on that morphology.
+
+H1 (`humanoid/h1_lowering.py`, now the ACTIVE lowering; H0 stays
+importable and archived under its own tests): adds exactly TWO hip-roll
+joints. Rationale: the authored fixture is strictly planar (NO roll
+joints exist anywhere in humanoid.rs, so any lateral joint is our
+authorship); hip roll is the primary frontal-plane stabilizer with full
+lateral CoM authority; ankle roll would double the invented surface with
+no authored tier to join (minimal-change). Rolls join the AUTHORED hip
+tier (180 N·m, kp 90/kv 8), limits ±0.4 rad, axis = parent-local
+[1,0,0] (forward; FK-probed sign). The stack is body-per-joint, so each
+roll carries a small inserted hip-link body (0.5 kg, 0.06 m cube, both
+hip joints coincident at the H0 hip point → home FK is IDENTICAL to H0
+for every H0 body); MASS-NEUTRAL: link mass carved from the thigh
+(7.0 → 6.5 kg), total stays 68.0 kg. Everything else inherited from
+h0_lowering by import, not copy.
+
+Pure-regeneration proof: reference table + header regenerated (B16/J14,
+OBS/ACT 58/14 — coincidentally the duck's exact DW_J/N/Q sizes);
+`shasum -c` over duck_cuda_kernel.h / duck_cuda_serial.cpp / duck_cuda.h /
+cuda_compat.h before vs after: ALL OK — zero kernel edits, the
+robot-generic pipeline claim held. Env↔kernel policy parity on H1:
+obs AND reward bit-identical (0.0/0.0) over the parity window. Oracle
+home-hold on H1: 1000/1000 ticks, momentum ≤ 2.4e-15, tilt 0.
+
+Reference gait v2 (H1): roll columns roll_L = roll_R =
+0.25·sin(p + 0.4). The 0.25 rad is a LOAD-COMPENSATION target: single
+support loads the stance hip-roll with ~166 N·m (CoM 0.15 m inboard of
+the hip — H0's unfixable torque), so the PD sags to ~0.1 rad of achieved
+lean ≈ 0.09 m of CoM shift; kinematic-margin sizing (0.05 rad) measured
+NO better than zero roll. Phase advance 0.4 rad establishes the lean
+BEFORE the swing foot lifts; the sinusoid still crosses zero near the
+transfers. FK gates: sagittal columns validated with rolls zeroed
+(unchanged numbers: stance |z| ≤ 3.3 mm, clearance ≥ 30 mm certified
+window / 56 mm peak, sweep 0.150 m, limits OK) + dedicated roll
+amplitude/timing/limit checks; open-loop physics replay still lifts both
+feet in-window, fault-free.
+
+BC redo on H1 (`humanoid/bc_dataset.py` demonstrator, all channel indices
+J-derived): lead-2 reference + swept assists — ankle pitch −3.0·grav_x,
+hip pitch share 1.2× (ankles alone saturate their 140 N·m cap during
+recovery), hip roll +5.0·grav_lat − 0.3·roll_rate (the authority H0
+lacked). Dataset 4590 pairs (envs live longer); BC MSE 0.0796 → 0.000207.
+Closed-loop clone (3 commands × 3 seeds, pinned):
+
+| cmd | survivals (s, seeds 4242/7/1913) | lifts/alt |
+|---|---|---|
+| 0.50 | 1.04 / 0.90 / 1.02 | 8 / 2 |
+| 0.75 | 0.98 / 0.88 / 0.96 | 10 / 2 |
+| 1.00 | 1.04 / 0.94 / 1.04 | 5 / 2 |
+
+**Mean survival 0.978 s vs the H0 clone's ~0.76 s ceiling (+29%)**, every
+episode ≥ 0.88 s. The remaining fall is now a mixed recovery problem with
+actuation available on every axis — PPO's job, no longer a morphology
+dead end. Orchestrator command lines are unchanged (§11); artifacts
+bc_init.pt / bc_init_ckpt.pt regenerated for 58/14 and drift-locked.

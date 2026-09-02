@@ -44,7 +44,7 @@ from .cuda_lane import CudaLaneState
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "humanoid") not in sys.path:
     sys.path.insert(0, str(ROOT / "humanoid"))
-import h0_lowering as h0  # noqa: E402
+import h1_lowering as h0  # noqa: E402  (ACTIVE lowering: H1)
 
 DUCK_CUDA = ROOT / "experimental" / "duck_cuda"
 HUMANOID_INCLUDE = ROOT / "humanoid" / "include"

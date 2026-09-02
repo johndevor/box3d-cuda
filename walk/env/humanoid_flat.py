@@ -6,19 +6,19 @@ duck's contract). OBS = 52, ACT = 12; one policy step = 10 native ticks x
 0.002 s = 0.02 s (the duck env contract's cadence -- see
 humanoid/h0_lowering.py SIM_DT note).
 
-Observation layout (52 = 3*J + 16, structurally identical to the duck's
-58 = 3*14 + 16; the tail block is the same 16 channels):
+Observation layout (3*J + 16 with J from the ACTIVE lowering -- H1: J=14,
+OBS=58; the tail block is the duck's same 16 channels at base T = 3*J):
 
-    [ 0:12]  joint q - HOME (rad)                     HOME = zeros (H0 reset)
-    [12:24]  0.05 * joint qdot                        QDOT_OBS_SCALE, duck pin
-    [24:36]  previous action (live envs only)
-    [36:39]  gravity direction, body frame (-R[2,:])  = (0,-1,0) at reset
-    [39:42]  root angular velocity, body frame (R^T w)
-    [42:45]  root linear velocity, body frame (R^T v)
-    [45]     commanded forward velocity (m/s)
-    [46:48]  reserved zeros (duck obs[52:54] convention)
-    [48:50]  foot contact flags (left, right)
-    [50:52]  gait phase clock (sin, cos)
+    [   0:J]  joint q - HOME (rad)                    HOME = zeros (reset)
+    [  J:2J]  0.05 * joint qdot                       QDOT_OBS_SCALE
+    [ 2J:3J]  previous action (live envs only)
+    [T   :T+3]  gravity direction, body frame (-R[2,:]) = (0,-1,0) at reset
+    [T+3 :T+6]  root angular velocity, body frame (R^T w)
+    [T+6 :T+9]  root linear velocity, body frame (R^T v)
+    [T+9]       commanded forward velocity (m/s)
+    [T+10:T+12] reserved zeros (duck convention)
+    [T+12:T+14] foot contact flags (left, right)
+    [T+14:T+16] gait phase clock (sin, cos)
 
 Action semantics (duck recipe with humanoid-sourced numbers):
     requested = HOME + ACTION_SCALE * action, slew-limited per policy step
@@ -62,14 +62,15 @@ from .contract import DuckEnvBatch, SolverFault
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "humanoid") not in sys.path:
     sys.path.insert(0, str(ROOT / "humanoid"))
-import h0_lowering as h0  # noqa: E402
+import h1_lowering as h0  # noqa: E402  (ACTIVE lowering: H1)
 
 FAULT_DIR = ROOT / "runs" / "faults"
 
-ACT = 12
-OBS = 3 * ACT + 16                                 # 52; duck: 3*14+16 = 58
+ACT = h0.J                          # active lowering's joint count (H1: 14)
+OBS = 3 * ACT + 16                                 # H1: 58; H0 was 52
+_T = 3 * ACT                        # obs tail-block base (J-derived offsets)
 
-HOME = np.zeros(ACT)                # authored H0 reset pose (h0_lowering)
+HOME = np.zeros(ACT)                # authored reset pose (all joints 0)
 CONTROL_DT = h0.CONTROL_DT          # 0.02 s
 SIM_DT = h0.SIM_DT                  # 0.002 s
 TICKS_PER_STEP = h0.TICKS_PER_CONTROL   # 10
@@ -277,17 +278,17 @@ class FlatFloorHumanoidEnv(DuckEnvBatch):
     def _observe(self, state) -> np.ndarray:
         obs = np.zeros((self.E, OBS), np.float32)
         rot = humanoid_native_lane.quat_to_rot(state.q[:, 3:7])
-        obs[:, 0:12] = state.q[:, 7:] - HOME
-        obs[:, 12:24] = QDOT_OBS_SCALE * state.v[:, 6:]
-        obs[:, 24:36] = self._prev_action
-        obs[:, 36:39] = -rot[:, 2, :]                        # gravity, body
-        obs[:, 39:42] = np.einsum("eji,ej->ei", rot, state.v[:, 3:6])
-        obs[:, 42:45] = np.einsum("eji,ej->ei", rot, state.v[:, 0:3])
-        obs[:, 45] = self._command
-        obs[:, 48:50] = state.foot_contact
+        obs[:, 0:ACT] = state.q[:, 7:] - HOME
+        obs[:, ACT:2 * ACT] = QDOT_OBS_SCALE * state.v[:, 6:]
+        obs[:, 2 * ACT:_T] = self._prev_action
+        obs[:, _T:_T + 3] = -rot[:, 2, :]                    # gravity, body
+        obs[:, _T + 3:_T + 6] = np.einsum("eji,ej->ei", rot, state.v[:, 3:6])
+        obs[:, _T + 6:_T + 9] = np.einsum("eji,ej->ei", rot, state.v[:, 0:3])
+        obs[:, _T + 9] = self._command
+        obs[:, _T + 12:_T + 14] = state.foot_contact
         phase = self._phase()
-        obs[:, 50] = np.sin(phase)
-        obs[:, 51] = np.cos(phase)
+        obs[:, _T + 14] = np.sin(phase)
+        obs[:, _T + 15] = np.cos(phase)
         return obs
 
     # ------------------------------------------------------------------

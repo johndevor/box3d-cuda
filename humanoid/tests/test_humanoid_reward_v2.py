@@ -49,10 +49,10 @@ def _state(E, contact, vx, foot_x, sole, joint_q=None, phase=0.0,
         "root_ang_vel": np.zeros((E, 3)),
         "foot_contact": np.asarray(contact, bool).reshape(E, 2),
         "sole_height": np.asarray(sole, float).reshape(E, 2),
-        "action": np.zeros((E, 12)),
-        "torque": np.zeros((E, 12)),
+        "action": np.zeros((E, hf.ACT)),
+        "torque": np.zeros((E, hf.ACT)),
         "foot_x": np.asarray(foot_x, float).reshape(E, 2),
-        "joint_q": np.zeros((E, 12)) if joint_q is None else joint_q,
+        "joint_q": np.zeros((E, hf.ACT)) if joint_q is None else joint_q,
         "phase": np.full(E, float(phase)),
         "contact_ticks": (np.full((E, 2), hr.TICKS_FULL, int)
                           if contact_ticks is None
@@ -70,7 +70,7 @@ def stand_lean_total(cmd: float, creep_mps: float = 0.054) -> np.ndarray:
         phase = 2.0 * math.pi * phase_hz * t * DT
         cur = _state(1, [True, True], creep_mps, [0.0, 0.0], [0.0, 0.0],
                      phase=phase)
-        out.append(float(hr.reward(prev, cur, np.zeros((1, 12)),
+        out.append(float(hr.reward(prev, cur, np.zeros((1, hf.ACT)),
                                    np.array([cmd]), tracker)[0]))
         prev = cur
     return np.asarray(out)
@@ -110,7 +110,7 @@ def crude_stepper_total(cmd: float) -> np.ndarray:
         jq = np.asarray(hr.REF_GAIT)[bin_][None, :].copy()
         cur = _state(1, contact, 0.5 * cmd, foot_x.copy(), sole,
                      joint_q=jq, phase=phase, contact_ticks=ticks)
-        out.append(float(hr.reward(prev, cur, np.zeros((1, 12)),
+        out.append(float(hr.reward(prev, cur, np.zeros((1, hf.ACT)),
                                    np.array([cmd]), tracker)[0]))
         prev = cur
     return np.asarray(out)
@@ -127,7 +127,7 @@ class AntiAttractorPins(unittest.TestCase):
         self.assertEqual(hr.PLACEMENT_MIN_M, 0.15)
         # v2.1: imitation live from the synthetic reference table
         self.assertEqual(hr.W_IMIT, 0.5)
-        self.assertEqual(np.asarray(hr.REF_GAIT).shape, (64, 12))
+        self.assertEqual(np.asarray(hr.REF_GAIT).shape, (64, hf.ACT))
 
     def test_stand_lean_strictly_negative_at_every_command(self):
         # v2.1: the stander leaks a mean +0.24 from imitation (the reference
@@ -181,7 +181,7 @@ class AntiAttractorPins(unittest.TestCase):
             phase = 2.0 * math.pi * ((tt - 0.3) % 0.6) / 0.6 + 0.1
             cur = _state(1, contact[t], cmd, foot_pos[t, :, 0], sole[t],
                          phase=phase, contact_ticks=ticks_full[t])
-            rewards.append(float(hr.reward(prev, cur, np.zeros((1, 12)),
+            rewards.append(float(hr.reward(prev, cur, np.zeros((1, hf.ACT)),
                                            np.array([cmd]), tracker)[0]))
             prev = cur
         clean = float(np.mean(rewards))
@@ -198,7 +198,7 @@ class AntiAttractorPins(unittest.TestCase):
             rews = []
             for _ in range(10):
                 _, r, done, _ = env.step(
-                    rng.uniform(-1.0, 1.0, (2, 12)).astype(np.float32))
+                    rng.uniform(-1.0, 1.0, (2, hf.ACT)).astype(np.float32))
                 rews.extend(np.asarray(r)[~np.asarray(done)])
                 if np.asarray(done).all():
                     env.reset()

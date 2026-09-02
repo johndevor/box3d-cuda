@@ -10,9 +10,9 @@ The action label is the demonstrator policy's output at this obs:
     a = clip((ref_q(bin(phase + LEAD*2*pi*hz*CONTROL_DT)) - HOME)
              / ACTION_SCALE  +  ankle_balance_assist, -1, 1)
 
-computed FROM THE OBSERVATION alone -- phase channels (obs[50:52]),
-command (obs[45]), gravity-x (obs[36]) and body-frame pitch rate
-(obs[41]); no privileged state leaks into the labels. Two measured
+computed FROM THE OBSERVATION alone -- phase/command/gravity/rate
+channels at their J-derived offsets; no privileged state leaks into the
+labels. Two measured
 refinements over the raw next-phase reference lookup (which produced a
 non-stepping clone -- the open-loop demonstrator tipped before its first
 alternation):
@@ -21,15 +21,17 @@ alternation):
   leading the phase keeps the PHYSICAL joints near the reference at its
   own phase (demonstrator alternation improved measurably).
 
-  ankle_balance_assist g = -(2.0*obs[36] + 0.1*obs[41]) added to BOTH
-  ankle actions: minimal sagittal balance feedback (gains swept across
-  commands x seeds for max alternating lifts). Feedback in the labels is
-  the point of closing the loop over real obs -- the clone learns
-  reference-tracking AND the reflex. NOTE the morphology has zero roll
-  authority (all 12 axes are sagittal) and single support is laterally
-  statically unstable by ~1 cm, so EVERY open-loop-ish demonstrator falls
-  within ~1 s; the dataset intentionally contains that honest instability.
-  PPO owns survival.
+  balance assists (gains swept across commands x seeds for max survival
+  and alternating lifts; all channel indices J-derived): sagittal --
+  pitch_assist = -ANKLE_KP*grav_x on both ankles plus HIP_PITCH_SHARE of
+  it on both hip pitches (ankles alone saturate their 140 N*m cap once
+  the lean grows; the hips share the recovery); lateral (H1) --
+  roll_assist = ROLL_KP*grav_lat + ROLL_KD*roll_rate on both hip rolls,
+  the channel H0 lacked. Feedback in the labels is the point of closing
+  the loop over real obs -- the clone learns reference-tracking AND the
+  reflexes. The demonstrator still falls in ~1 s (open-loop-ish); the
+  dataset intentionally contains that honest instability. PPO owns
+  survival.
 
 The knee plateau (0.6 rad) saturates at a = 1.0 (target 0.5 = the action
 box edge): labels and rollout stay mutually consistent because the SAME
@@ -59,29 +61,53 @@ if str(ROOT / "humanoid") not in sys.path:
 from walk.env import humanoid_flat as hf  # noqa: E402
 from walk.env import humanoid_reward as hr  # noqa: E402
 
-REF = np.asarray(hr.REF_GAIT, dtype=np.float64)          # [64, 12]
+import h1_lowering as lowering  # noqa: E402  (ACTIVE lowering: H1)
+
+REF = np.asarray(hr.REF_GAIT, dtype=np.float64)          # [64, J]
 BINS = int(hr.REF_BINS)
 LEAD_STEPS = 2            # PD + slew lag compensation (module docstring)
-ANKLE_KP = 2.0            # ankle assist vs gravity-x (obs[36]); swept
-ANKLE_KD = 0.1            # ankle assist vs body pitch rate (obs[41]); swept
-LEFT_ANKLE, RIGHT_ANKLE = 4, 7
+# balance-assist gains (swept for max alternating lifts / survival):
+ANKLE_KP = 3.0            # ankle pitch vs gravity-x
+ANKLE_KD = 0.0            # ankle pitch vs body-frame pitch rate
+HIP_PITCH_SHARE = 1.2     # hips carry 1.2x the ankle pitch assist
+ROLL_KP = 5.0             # hip roll vs lateral gravity (H1's new authority)
+ROLL_KD = -0.3            # hip roll vs body-frame roll rate
+# J-derived obs channel indices (walk/env/humanoid_flat.py layout)
+_T = 3 * hf.ACT
+IDX_GRAV_X = _T           # forward gravity component (pitch lean)
+IDX_GRAV_LAT = _T + 2     # lateral gravity component (roll lean)
+IDX_ROLL_RATE = _T + 3    # body-frame omega x
+IDX_PITCH_RATE = _T + 5   # body-frame omega z (sagittal axes are local z)
+IDX_CMD = _T + 9
+IDX_SIN, IDX_COS = hf.OBS - 2, hf.OBS - 1
+_JN = list(lowering.JOINT_NAMES)
+ANKLES = (_JN.index("left_ankle"), _JN.index("right_ankle"))
+HIPS = (_JN.index("left_hip"), _JN.index("right_hip"))
+ROLLS = ((_JN.index("left_hip_roll"), _JN.index("right_hip_roll"))
+         if "left_hip_roll" in _JN else ())
 
 
 def reference_actions(obs: np.ndarray) -> np.ndarray:
-    """[E, 12] demonstrator actions from the observations alone:
-    lead-compensated reference tracking + ankle balance assist."""
+    """[E, J] demonstrator actions from the observations alone:
+    lead-compensated reference tracking + ankle-pitch and (H1) hip-roll
+    balance assists."""
     obs = np.asarray(obs, dtype=np.float64)
-    sin_p, cos_p = obs[:, 50], obs[:, 51]
-    cmd = obs[:, 45]
-    phase = np.arctan2(sin_p, cos_p)                     # [-pi, pi]
-    hz = hf.PHASE_HZ_BASE + hf.PHASE_HZ_PER_MPS * cmd
+    phase = np.arctan2(obs[:, IDX_SIN], obs[:, IDX_COS])   # [-pi, pi]
+    hz = hf.PHASE_HZ_BASE + hf.PHASE_HZ_PER_MPS * obs[:, IDX_CMD]
     frac = np.mod(phase / (2.0 * np.pi)
                   + LEAD_STEPS * hz * hf.CONTROL_DT, 1.0)
     bins = (frac * BINS).astype(int) % BINS
     a = (REF[bins] - hf.HOME) / hf.ACTION_SCALE
-    assist = -(ANKLE_KP * obs[:, 36] + ANKLE_KD * obs[:, 41])
-    a[:, LEFT_ANKLE] += assist
-    a[:, RIGHT_ANKLE] += assist
+    pitch_assist = -(ANKLE_KP * obs[:, IDX_GRAV_X]
+                     + ANKLE_KD * obs[:, IDX_PITCH_RATE])
+    for j in ANKLES:
+        a[:, j] += pitch_assist
+    for j in HIPS:
+        a[:, j] += HIP_PITCH_SHARE * pitch_assist
+    roll_assist = (ROLL_KP * obs[:, IDX_GRAV_LAT]
+                   + ROLL_KD * obs[:, IDX_ROLL_RATE])
+    for j in ROLLS:
+        a[:, j] += roll_assist
     return np.clip(a, -1.0, 1.0)
 
 

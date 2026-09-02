@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "humanoid"))
 
 from walk.env import humanoid_native_lane as hn  # noqa: E402
-import h0_lowering as h0  # noqa: E402
+import h1_lowering as h0  # noqa: E402  (ACTIVE lowering: H1)
 
 TICKS = 1000                      # 2.0 s at SIM_DT = 0.002
 MOMENTUM_GATE = 1e-8
@@ -128,14 +128,14 @@ class HumanoidOracleHomeHold(unittest.TestCase):
         native = hn.native_lane._native()
         lib = native.library(str(hn.build_library()))
         f = h0.fixture()
-        rc, ev = f.evaluate(lib, h0.reset_qpos(), np.zeros(18),
+        rc, ev = f.evaluate(lib, h0.reset_qpos(), np.zeros(h0.N),
                             gravity=(0.0, 0.0, -h0.GRAVITY))
         self.assertEqual(rc, 0)
         minv = np.linalg.inv(ev.mass)
-        n = 18
+        n = h0.N
         kp = np.zeros((n, n))
         kd = np.zeros((n, n))
-        for j in range(12):
+        for j in range(h0.J):
             kp[6 + j, 6 + j] = h0.KP
             kd[6 + j, 6 + j] = h0.KV
         def radius(dt):

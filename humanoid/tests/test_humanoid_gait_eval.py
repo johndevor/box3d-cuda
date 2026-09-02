@@ -220,8 +220,16 @@ class Leg1ActorIntegration(unittest.TestCase):
         if not LEG1_ACTOR.is_file():
             raise unittest.SkipTest(f"leg-1 actor not present: {LEG1_ACTOR}")
         from walk.eval.humanoid_acceptance import run_acceptance
-        result = run_acceptance(str(LEG1_ACTOR), lane="serial",
-                                seeds=(4242,), quiet=True)
+        try:
+            result = run_acceptance(str(LEG1_ACTOR), lane="serial",
+                                    seeds=(4242,), quiet=True)
+        except RuntimeError as error:
+            if "size mismatch" in str(error):
+                raise unittest.SkipTest(
+                    "leg-1 actor is H0-era (52/12); morphology is now H1 "
+                    "(58/14) -- historical diagnostic retired, see "
+                    "PHASE2.md section 8/12") from error
+            raise
         self.assertEqual(len(result["episodes"]), 3)
         for key, ep in result["episodes"].items():
             self.assertIsInstance(ep["failed_criteria"], list, key)

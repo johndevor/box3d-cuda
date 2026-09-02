@@ -57,7 +57,7 @@ class RobotSwitchTests(unittest.TestCase):
 
     def test_robot_classes_humanoid(self):
         obs, act, lane_cls, env_cls = gt.robot_classes("humanoid")
-        self.assertEqual((obs, act), (52, 12))
+        self.assertEqual((obs, act), (58, 14))  # H1
         self.assertIs(lane_cls, CudaHumanoidLane)
         self.assertIs(env_cls, hf.FlatFloorHumanoidEnv)
         with self.assertRaises(SystemExit):
@@ -68,11 +68,11 @@ class RobotSwitchTests(unittest.TestCase):
                                 perturbation=0.0)
         env = gt.LanePolicyEnv(cfg)
         try:
-            self.assertEqual((env.OBS, env.ACT), (52, 12))
+            self.assertEqual((env.OBS, env.ACT), (58, 14))
             obs = env.reset(seed=7)
-            self.assertEqual(obs.shape, (1, 52))
-            obs, rew, done, info = env.step(np.zeros((1, 12), np.float32))
-            self.assertEqual(obs.shape, (1, 52))
+            self.assertEqual(obs.shape, (1, 58))
+            obs, rew, done, info = env.step(np.zeros((1, 14), np.float32))
+            self.assertEqual(obs.shape, (1, 58))
             self.assertEqual(info["faults"], 0)
             self.assertFalse(done.any())
         finally:
@@ -116,7 +116,7 @@ class EnvVsKernelPolicyParity(unittest.TestCase):
             rng = np.random.default_rng(99)
             worst_obs = worst_rew = 0.0
             for t in range(steps):
-                a = np.clip(rng.normal(0.0, 0.1, (E, 12)),
+                a = np.clip(rng.normal(0.0, 0.1, (E, hf.ACT)),
                             -0.2, 0.2).astype(np.float32)
                 oe, re_, de, _ = env.step(a)
                 ol, rl, dl, diag = lane.step_policy(a)
@@ -156,14 +156,14 @@ class HumanoidGpuTrainSmoke(unittest.TestCase):
                 Path(cfg.out) / "actor_final.pt", map_location="cpu",
                 weights_only=False))
             self.assertEqual(arch, "ff")
-            actor, _ = ppo.make_nets(52, 12, ppo.PPOConfig())
+            actor, _ = ppo.make_nets(58, 14, ppo.PPOConfig())
             actor.load_state_dict(sd)          # raises on any shape mismatch
             shapes = [tuple(v.shape) for v in sd.values()]
-            self.assertIn((256, 52), shapes)   # input layer consumes 52
-            self.assertIn((12, 256), shapes)   # mu head emits 12
+            self.assertIn((256, 58), shapes)   # input layer consumes 58 (H1)
+            self.assertIn((14, 256), shapes)   # mu head emits 14 (H1)
             with torch.no_grad():
-                mu = actor.deterministic(torch.zeros(1, 52))
-            self.assertEqual(tuple(mu.shape), (1, 12))
+                mu = actor.deterministic(torch.zeros(1, 58))
+            self.assertEqual(tuple(mu.shape), (1, 14))
             saved = json.loads((Path(cfg.out) / "config.json").read_text())
             self.assertEqual(saved["robot"], "humanoid")
             print("gpu_train humanoid smoke:",

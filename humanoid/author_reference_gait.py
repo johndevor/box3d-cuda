@@ -1,9 +1,32 @@
-"""Author the synthetic H0 reference gait table (humanoid/reference_gait.json).
+"""Author the synthetic H1 reference gait table (humanoid/reference_gait.json).
 
-64-phase x 12-joint kinematic walking cycle for the reward's self-imitation
+64-phase x 14-joint kinematic walking cycle for the reward's self-imitation
 term (duck v12 term 8a; DW_REF_GAIT kernel infra). Deterministic analytic
 construction -- rerunning this script reproduces the json byte-for-byte
 (drift-checked by humanoid/tests/test_reference_gait.py).
+
+V2 (H1): adds the two hip-roll columns -- a lateral weight shift toward
+the stance side, timed to the same phase clock:
+
+    roll_L(p) = roll_R(p) = ROLL_AMPLITUDE * sin(p + ROLL_PHASE_ADVANCE)
+
+Equal values keep the legs parallel; with the stance foot planted the
+pelvis leans toward the stance side (left stance on sin >= 0, pelvis
+toward the left foot at world y = -0.15; FK-probed sign: positive roll
+swings the FREE leg toward +y, i.e. the planted-foot reaction leans the
+pelvis toward -y). ROLL_AMPLITUDE = 0.25 rad is a LOAD-COMPENSATION
+target, not a kinematic pose: during single support the stance hip-roll
+carries ~55 kg x 20 x 0.15 m = 166 N*m (the CoM sits 0.15 m inboard of
+the hip -- H0's unfixable tipping torque), so the PD (kp 90, cap 180)
+sags well below any commanded angle; commanding 0.25 rad yields ~0.1 rad
+of ACHIEVED lean = ~0.09 m of CoM shift over the stance foot. Swept
+empirically (0.05 kinematic-margin sizing survived no longer than roll
+zero; 0.25 with ROLL_PHASE_ADVANCE 0.4 -- the lean must be established
+BEFORE the swing foot lifts -- maximized demonstrator survival x
+alternations). Because the roll channel is load compensation, the
+kinematic FK gates validate the SAGITTAL columns with rolls zeroed and
+the roll columns get amplitude/timing/limit checks of their own
+(humanoid/tests/test_reference_gait.py).
 
 DESIGN (planar model: every joint axis is parallel, so foot pitch is the
 plain sum hip+knee+ankle; FK sign conventions verified against the real
@@ -58,9 +81,12 @@ import math
 from pathlib import Path
 
 BINS = 64
-JOINTS = ("waist", "neck", "left_hip", "left_knee", "left_ankle",
-          "right_hip", "right_knee", "right_ankle",
+JOINTS = ("waist", "neck",
+          "left_hip_roll", "left_hip", "left_knee", "left_ankle",
+          "right_hip_roll", "right_hip", "right_knee", "right_ankle",
           "left_shoulder", "left_elbow", "right_shoulder", "right_elbow")
+ROLL_AMPLITUDE = 0.25          # rad; rationale in the module docstring
+ROLL_PHASE_ADVANCE = 0.4       # rad; lean established BEFORE liftoff
 LEG_LENGTH_M = 0.86            # hip->knee 0.54 + knee->ankle 0.32 (humanoid.rs)
 STRIDE_M = 0.15 / 0.5          # v / (3.33*v): clock-encoded, command-free
 HIP_AMPLITUDE = math.asin((STRIDE_M / 4.0) / LEG_LENGTH_M)  # 0.0873.. rad
@@ -84,19 +110,23 @@ def table() -> list[list[float]]:
         p = 2.0 * math.pi * (b + 0.5) / BINS
         lh, lk, la = leg(p)                    # left: stance on sin >= 0
         rh, rk, ra = leg(p + math.pi)          # right: half-cycle shift
-        rows.append([0.0, 0.0, lh, lk, la, rh, rk, ra, 0.0, 0.0, 0.0, 0.0])
+        roll = ROLL_AMPLITUDE * math.sin(p + ROLL_PHASE_ADVANCE)
+        rows.append([0.0, 0.0, roll, lh, lk, la, roll, rh, rk, ra,
+                     0.0, 0.0, 0.0, 0.0])
     return rows
 
 
 def payload() -> dict:
     return {
-        "schema": "duckgridwalk.humanoid_reference_gait/1",
+        "schema": "duckgridwalk.humanoid_reference_gait/2",
         "generator": "humanoid/author_reference_gait.py (analytic; rerun "
                      "reproduces byte-identically)",
         "bins": BINS,
         "joints": list(JOINTS),
         "constants": {
             "hip_amplitude_rad": HIP_AMPLITUDE,
+            "roll_amplitude_rad": ROLL_AMPLITUDE,
+            "roll_phase_advance_rad": ROLL_PHASE_ADVANCE,
             "knee_peak_rad": KNEE_PEAK,
             "stride_m": STRIDE_M,
             "leg_length_m": LEG_LENGTH_M,
