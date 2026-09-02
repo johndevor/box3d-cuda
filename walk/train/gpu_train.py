@@ -127,6 +127,7 @@ class GpuTrainConfig:
     preflight_steps: int = 100
     torch_threads: int = 4
     quiet: bool = False
+    validate_only: bool = False      # config/flag validation, then exit 0
 
 
 @dataclasses.dataclass
@@ -707,7 +708,8 @@ def save_checkpoint(path: Path, update: int, actor, critic, optimizer,
 def train(cfg: GpuTrainConfig) -> list[dict]:
     torch.set_num_threads(max(1, cfg.torch_threads))
     device = torch.device(cfg.device)
-    if device.type == "cuda" and not torch.cuda.is_available():
+    if (device.type == "cuda" and not cfg.validate_only
+            and not torch.cuda.is_available()):
         raise SystemExit("--device cuda requested but torch.cuda.is_available() is False")
 
     out = Path(cfg.out)
@@ -737,6 +739,14 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                              "run with --lane-env")
         controller = CurriculumController(
             load_ladder(cfg.curriculum, cfg.robot), quiet=cfg.quiet)
+    if cfg.validate_only:
+        # Launcher preflight: every flag/robot/curriculum check above has
+        # passed from the archived payload; also require the relay files.
+        for label, path in (("--resume", cfg.resume), ("--init-actor", cfg.init_actor)):
+            if path and not Path(path).is_file():
+                raise SystemExit(f"{label} file not found: {path}")
+        print("[gpu_train] validate-only: configuration OK")
+        return []
     recurrent = cfg.policy == "gru"
     ppo_cfg = PPOConfig(lr=cfg.lr, gamma=cfg.gamma, lam=cfg.gae_lambda)
     # Peek at the warm-start / resume source BEFORE building the nets: a GRU
@@ -1142,6 +1152,9 @@ def build_argparser() -> argparse.ArgumentParser:
                    help="random-action reward-sensitivity steps; 0 skips")
     p.add_argument("--torch-threads", type=int, default=d.torch_threads)
     p.add_argument("--quiet", action="store_true")
+    p.add_argument("--validate-only", action="store_true",
+                   help="validate flags/robot/curriculum/relay files, then exit 0 "
+                        "(launcher preflight from the archived payload)")
     return p
 
 
@@ -1151,7 +1164,7 @@ def config_from_args(args: argparse.Namespace) -> GpuTrainConfig:
         variant=args.variant,
         curriculum=args.curriculum,
         envs=args.envs, horizon=args.horizon, updates=args.updates, seed=args.seed,
-        device=args.device, library=args.library, lane_env=args.lane_env, randomization=(json.loads(args.randomization) if args.randomization else None), out=args.out, resume=args.resume, init_actor=args.init_actor, rsi_fraction=args.rsi_fraction,
+        device=args.device, library=args.library, lane_env=args.lane_env, randomization=(json.loads(args.randomization) if args.randomization else None), out=args.out, resume=args.resume, init_actor=args.init_actor, rsi_fraction=args.rsi_fraction, validate_only=args.validate_only,
         max_wall_s=args.max_wall_s, policy=args.policy, lr=args.lr,
         gamma=args.gamma, gae_lambda=args.gae_lambda, perturbation=args.perturbation,
         accept_every=args.accept_every,

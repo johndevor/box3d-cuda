@@ -369,6 +369,36 @@ def payload_import_check(repo_root, tar_path, spec):
             "payload import check FAILED — the git-archived payload does not "
             "import cleanly (uncommitted file referenced by committed code?): "
             + " | ".join(tail))
+    # Trainer flag validation: replay every `-m walk.train.gpu_train ...`
+    # invocation from the spec with --validate-only inside the archive
+    # (2026-09-02: a leg died because the archived trainer rejected a flag
+    # the spec passed). Relay files come from upload_extra, so they exist.
+    import shlex
+    for job in spec.jobs:
+        cmd = job.get("command", "") if isinstance(job, dict) else getattr(job, "command", "")
+        if "-m walk.train.gpu_train" not in cmd:
+            continue
+        toks = shlex.split(cmd[cmd.index("-m walk.train.gpu_train"):])
+        args = []
+        for t in toks[2:]:
+            if t in ("2>&1", "|", "||", "&&", ";") or t.startswith(">"):
+                break
+            args.append(t)
+        with tempfile.TemporaryDirectory(prefix="payload-validate-") as tmp:
+            with tarfile.open(tar_path, "r") as tf:
+                tf.extractall(tmp, filter="data")
+            proc = subprocess.run(
+                [py, "-B", "-m", "walk.train.gpu_train", *args, "--validate-only",
+                 "--out", str(Path(tmp) / "_validate_out")],
+                cwd=tmp, capture_output=True, text=True,
+                env={**os.environ, "PYTHONPATH": tmp, "PYTHONDONTWRITEBYTECODE": "1"},
+            )
+        if proc.returncode != 0:
+            tail = (proc.stderr.strip() or proc.stdout.strip()).splitlines()[-3:]
+            raise LauncherError(
+                f"trainer flag validation FAILED for job "
+                f"{job.get('name') if isinstance(job, dict) else getattr(job, 'name', '?')}: "
+                + " | ".join(tail))
 
 
 def tar_member_names(tar_path):
