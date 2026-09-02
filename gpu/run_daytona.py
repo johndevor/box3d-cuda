@@ -330,7 +330,45 @@ def build_payload_tar(repo_root, spec, out_path):
                 _require(src.is_file(), f"upload_extra file not found: {rel}")
                 if rel not in existing:
                     tf.add(src, arcname=rel)
+    payload_import_check(repo_root, out_path, spec)
     return sha
+
+
+# Modules every payload must import cleanly from the ARCHIVE (not the working
+# tree). Catches the failure class of 2026-09-02: a committed module importing
+# a file that exists locally but was never committed (humanoid/h1_family.py)
+# -- three GPU legs died at preflight before this check existed.
+PAYLOAD_IMPORT_MODULES = (
+    "walk.train.gpu_train",
+    "walk.env.humanoid_flat",
+    "walk.env.humanoid_cuda_lane",
+)
+
+
+def payload_import_check(repo_root, tar_path, spec):
+    """Extract the payload tar to a temp dir and import the trainer/env
+    modules from THERE with the project venv. Mirrors the remote preflight's
+    first failure mode locally, before any sandbox is created."""
+    import tempfile
+    modules = list(getattr(spec, "payload_import_check", None)
+                   or PAYLOAD_IMPORT_MODULES)
+    venv_py = Path(repo_root).resolve() / ".venv/bin/python"
+    py = str(venv_py) if venv_py.is_file() else sys.executable
+    with tempfile.TemporaryDirectory(prefix="payload-import-") as tmp:
+        with tarfile.open(tar_path, "r") as tf:
+            tf.extractall(tmp, filter="data")
+        code = "import importlib,sys\n" + "".join(
+            f"importlib.import_module({m!r})\n" for m in modules)
+        proc = subprocess.run(
+            [py, "-B", "-c", code], cwd=tmp, capture_output=True, text=True,
+            env={**os.environ, "PYTHONPATH": tmp, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+    if proc.returncode != 0:
+        tail = proc.stderr.strip().splitlines()[-3:]
+        raise LauncherError(
+            "payload import check FAILED — the git-archived payload does not "
+            "import cleanly (uncommitted file referenced by committed code?): "
+            + " | ".join(tail))
 
 
 def tar_member_names(tar_path):
