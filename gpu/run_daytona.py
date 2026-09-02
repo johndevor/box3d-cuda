@@ -369,6 +369,25 @@ def payload_import_check(repo_root, tar_path, spec):
             "payload import check FAILED — the git-archived payload does not "
             "import cleanly (uncommitted file referenced by committed code?): "
             + " | ".join(tail))
+    # Inline `python -c "<snippet>"` syntax check: shlex-split each job
+    # command and compile() every -c payload locally (2026-09-02: an arm
+    # preflight one-liner had a `; for` SyntaxError only the sandbox saw).
+    import shlex
+    for job in spec.jobs:
+        cmd = job.command if hasattr(job, "command") else job.get("command", "")
+        try:
+            toks = shlex.split(cmd)
+        except ValueError as e:
+            raise LauncherError(f"job {getattr(job, 'name', '?')}: unbalanced quoting in command: {e}")
+        for i, t in enumerate(toks[:-1]):
+            if t == "-c" and i > 0 and ("python" in toks[i - 1] or toks[i - 1] in ("$PY", "${PY}")):
+                snippet = toks[i + 1]
+                try:
+                    compile(snippet, f"<{getattr(job, 'name', '?')} -c>", "exec")
+                except SyntaxError as e:
+                    raise LauncherError(
+                        f"job {getattr(job, 'name', '?')}: inline python -c snippet has a "
+                        f"SyntaxError (line {e.lineno}: {e.msg}) -- move it to a script file")
     # Trainer flag validation: replay every `-m walk.train.gpu_train ...`
     # invocation from the spec with --validate-only inside the archive
     # (2026-09-02: a leg died because the archived trainer rejected a flag
