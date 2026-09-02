@@ -17,6 +17,11 @@ static floor body); both are gate-pinned by arm/tests.
 
 No contact pairs are registered (P = 0): the arm never touches the floor in
 this lowering; the judge's proxy clause keeps it clear.
+
+ACTION CONTRACT: this lane is physics-only (targets in, state out) and
+carries no action contract; ArmReachEnv over it uses its `action_mode`
+argument or arm_reach.ACTION_MODE ("delta"). The kernel lane
+(arm_cuda_lane.CudaArmLane) reports the contract its header compiled.
 """
 from __future__ import annotations
 

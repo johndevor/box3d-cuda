@@ -85,9 +85,27 @@ the URDF limit (|u_j| <= 1; 0 for done envs):
         transfer at the IK baseline's 0.8x on two joints costs 0.13/step),
         0.25 on the wrist a4-a6 (bang-bang full-slew wrist jitter costs
         0.75/step -- 60x what v1's action-rate term charged it); all six
-        saturating costs 1.05/step < W_ALIVE + far-field
+        saturating costs 1.05/step < W_ALIVE + far-field.
+        DELTA contract (arm_reach.ACTION_MODE "delta"): u_j == a_j away
+        from the joint limits (u_j = clip-attenuated a_j at a limit), so
+        this IS a direct action-magnitude penalty -- "hold" (a = 0) is
+        free, exploration noise with pre-tanh std s costs about
+        sum_j w_j E[tanh(s z)^2] per step (0.1-0.25 * ~0.3 at s = 0.6),
+        which is the gradient that pulls the std down. The weights need no
+        resizing: the sizing argument above is stated in u (commanded
+        speed fraction), which the contract change leaves unchanged --
+        the same |u| = 1 is the same physical full-slew command in either
+        mode, the worst case is still 1.05/step, and the dense maximum 7.0
+        and the W_SPEED bound 7.04 > 7.0 are untouched.
   - sum_j W_ACTION_RATE_J[j] * (a_j - a_prev_j)^2   0.05 on a1-a3, 0.20 on
-                                                    the wrist a4-a6 (jitter)
+                                                    the wrist a4-a6 (jitter);
+                                                    under DELTA this is a
+                                                    commanded-ACCELERATION
+                                                    penalty (change of speed
+                                                    fraction per step),
+                                                    exactly the term that
+                                                    smooths the PD's target
+                                                    steps
   - W_TORQUE * mean_j (tau_j / cap_j)^2             PD torque estimate
   - W_SPEED * sum_j max(0, |qd_j| / vlim_j - SPEED_FRAC)^2
         boundary quadratic excess above SPEED_FRAC = 1.0 x the URDF limit

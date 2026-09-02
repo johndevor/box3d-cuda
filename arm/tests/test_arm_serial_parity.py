@@ -72,12 +72,23 @@ class ArmSerialParityTests(unittest.TestCase):
         gen = _load("generate_model_arm")
         low = gen.load_lowering()
         for v in VARIANTS:
-            fresh = gen.emit(low, v)
-            committed = ac.header_path(v).read_text()
-            self.assertEqual(fresh, committed,
-                             f"arm/include/{v}/duck_model.h drifted; regenerate "
-                             f"with tools/generate_model_arm.py --variant {v}")
-            self.assertIn("DW_HINGE_PARENT[DW_J] = {0,2,3,4,5,6}", committed)
+            for mode in ("delta", "abs"):
+                fresh = gen.emit(low, v, mode)
+                committed = ac.header_path(v, mode).read_text()
+                self.assertEqual(fresh, committed,
+                                 f"{ac.header_path(v, mode)} drifted; regenerate "
+                                 f"with tools/generate_model_arm.py --variant {v} "
+                                 f"--action-mode {mode}")
+                self.assertIn("DW_HINGE_PARENT[DW_J] = {0,2,3,4,5,6}", committed)
+                self.assertIn(f"#define DW_ENV_ACTION_MODE {1 if mode == 'delta' else 0}",
+                              committed)
+            # the two contracts share every physics/reward line: only the
+            # action-mode line and the banner differ
+            d = ac.header_path(v, "delta").read_text().splitlines()
+            a = ac.header_path(v, "abs").read_text().splitlines()
+            self.assertEqual(len(d), len(a))
+            diff = [i for i, (x, y) in enumerate(zip(d, a)) if x != y]
+            self.assertEqual(len(diff), 2, diff)
 
     def test_duck_header_untouched_by_arm_work(self):
         gen = _load("generate_model")

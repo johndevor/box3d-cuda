@@ -14,12 +14,21 @@ OBS (27, identical for both variants so one policy can span the family):
     [15:18]  tip (flange) xyz (m, world)
     [18:21]  target - tip (m)
     [21:27]  previous action (live envs only)
-ACT (6): joint position targets scaled to the per-joint URDF limits:
-    requested_j = lower_j + (a_j + 1) / 2 * (upper_j - lower_j), a in [-1, 1],
-    slew-limited per policy step to MAX_TARGET_INCREMENT_j = URDF velocity_j
-    * CONTROL_DT (the URDF speed limit's host-side shaping role, exactly the
-    humanoid's slew rationale), held for all 10 ticks. The PD (per-joint
-    kp/kv/effort tables from arm_lowering.gains) does the rest.
+ACT (6), a in [-1, 1], two header-selected contracts (ACTION_MODES; the
+kernel's DW_ENV_ACTION_MODE; the lane reports which it compiled):
+  "delta" (default): target_j = clip(target_j + a_j * MAX_TARGET_INCREMENT_j,
+    limits) -- a = 0 HOLDS the current target exactly, |a| = 1 commands the
+    URDF speed limit (MAX_TARGET_INCREMENT_j = velocity_j * CONTROL_DT).
+    Adopted after the absolute contract's v5 CPU runs: with absolute
+    targets the exploration noise (std ~0.4 on a full +-3.2 rad range,
+    slew-saturated) jittered the tip 1.7 cm/step and a 14-boundary 2 cm
+    hold was never sampled; with deltas "hold" is the tanh centre.
+  "abs": requested_j = lower_j + (a_j + 1) / 2 * (upper_j - lower_j),
+    slew-limited per policy step to +- MAX_TARGET_INCREMENT_j (the v1-v5
+    lineage; kept byte-identical so those actors stay evaluable).
+Either way the target is held for all 10 ticks and the PD (per-joint
+kp/kv/effort tables from arm_lowering.gains) does the rest. `prev action`
+in the obs is the previous action in the env's own contract.
 
 TASK: a seeded sequence of targets uniformly sampled in the reachable
 workspace (sample_target: uniform joint-space draw over TARGET_JOINT_BOX,
@@ -58,6 +67,8 @@ FAULT_DIR = ROOT / "runs" / "faults"
 
 ACT = al.J
 OBS = 27
+ACTION_MODES = ("abs", "delta")       # index == DW_ENV_ACTION_MODE
+ACTION_MODE = "delta"                 # default contract (header default)
 CONTROL_DT = al.CONTROL_DT
 SIM_DT = al.SIM_DT
 TICKS_PER_STEP = al.TICKS_PER_CONTROL
@@ -96,6 +107,49 @@ def episode_draw(spec: al.ArmSpec, seed: int, env: int, episode: int,
     drawn = int(rng.integers(len(judge.TIERS)))
     tier = drawn if tier_pin is None else int(tier_pin)
     return rng, tier, sample_target(spec, rng, tier)
+
+
+def abs_to_delta_action(spec: al.ArmSpec, a_abs: np.ndarray,
+                        targets: np.ndarray) -> np.ndarray:
+    """Re-express an ABSOLUTE limit-scaled action as the DELTA action that
+    reaches the same slew-limited target from `targets` [E,J] (the env's
+    current targets): a_delta = clip((requested - targets) / MAX_INC, +-1).
+    Exact up to f64 rounding of the product a_delta * MAX_INC."""
+    lim = al.joint_limits(spec)
+    inc = al.velocity_limits(spec) * CONTROL_DT
+    a = np.clip(np.asarray(a_abs, float), -1.0, 1.0)
+    requested = lim[:, 0] + 0.5 * (a + 1.0) * (lim[:, 1] - lim[:, 0])
+    return np.clip((requested - np.asarray(targets, float)) / inc, -1.0, 1.0)
+
+
+class DeltaActionAdapter:
+    """Wrap a policy that emits ABSOLUTE actions (e.g. the scripted IK
+    baseline) for a DELTA-contract env. Shadows the env's target state
+    from the home pose with the env's own arithmetic, so it needs no env
+    handle; create one per episode (fresh targets = home)."""
+
+    def __init__(self, abs_policy, spec: al.ArmSpec, environments: int = 1):
+        self.policy = abs_policy
+        self.spec = spec
+        self._lim = al.joint_limits(spec)
+        self._inc = al.velocity_limits(spec) * CONTROL_DT
+        self._targets = np.tile(np.asarray(spec.home_q, float), (environments, 1))
+
+    def __call__(self, obs: np.ndarray) -> np.ndarray:
+        obs = np.asarray(obs)
+        if self._targets.shape[0] != obs.shape[0]:
+            self._targets = np.tile(np.asarray(self.spec.home_q, float),
+                                    (obs.shape[0], 1))
+        a = abs_to_delta_action(self.spec, self.policy(obs), self._targets)
+        self.register(a)
+        return a.astype(np.float32)
+
+    def register(self, a_delta: np.ndarray) -> None:
+        """Advance the target shadow by a delta action applied to the env
+        from elsewhere (interleaved exploration steps in the parity tests)."""
+        a = np.clip(np.asarray(a_delta, float), -1.0, 1.0)
+        self._targets = np.clip(self._targets + a * self._inc,
+                                self._lim[:, 0], self._lim[:, 1])
 
 
 def sample_target(spec: al.ArmSpec, rng: np.random.Generator, tier: int
@@ -140,7 +194,7 @@ class ArmReachEnv(DuckEnvBatch):
     def __init__(self, environments: int = 16, seed: int = 0,
                  perturbation_rad: float = 0.0, variant: str = "kr240",
                  tier: int | None = None, library_path=None,
-                 lane_factory=None):
+                 lane_factory=None, action_mode: str | None = None):
         if not 0.0 <= float(perturbation_rad) <= MAX_PERTURBATION_RAD:
             raise ValueError(
                 f"perturbation_rad must be in [0, {MAX_PERTURBATION_RAD}]")
@@ -154,6 +208,9 @@ class ArmReachEnv(DuckEnvBatch):
         self._lane_factory = lane_factory or (
             lambda E, offsets: _default_lane(self.variant, E, offsets,
                                              self._library_path))
+        if action_mode is not None and action_mode not in ACTION_MODES:
+            raise ValueError(f"action_mode must be one of {ACTION_MODES}")
+        self._action_mode_arg = action_mode
         self._build_lane()
         self.reach = al.reach(self.spec)
         self.joint_limits = al.joint_limits(self.spec)
@@ -187,6 +244,14 @@ class ArmReachEnv(DuckEnvBatch):
         if getattr(self._lane, "variant", self.variant) != self.variant:
             raise ValueError("lane variant %r != env variant %r"
                              % (self._lane.variant, self.variant))
+        # action contract: explicit arg, else the lane's compiled contract
+        # (CudaArmLane reads DW_ENV_ACTION_MODE), else the module default;
+        # a lane compiled for the other contract is refused.
+        lane_mode = getattr(self._lane, "action_mode", None)
+        self.action_mode = self._action_mode_arg or lane_mode or ACTION_MODE
+        if lane_mode is not None and lane_mode != self.action_mode:
+            raise ValueError(f"lane action contract {lane_mode!r} != env "
+                             f"action_mode {self.action_mode!r}")
 
     def _clip_limits(self, targets: np.ndarray) -> np.ndarray:
         lim = al.joint_limits(self.spec)
@@ -254,10 +319,15 @@ class ArmReachEnv(DuckEnvBatch):
                     -1.0, 1.0)
         live = ~self._done
         lim = self.joint_limits
-        requested = lim[:, 0] + 0.5 * (a + 1.0) * (lim[:, 1] - lim[:, 0])
-        new_targets = np.clip(requested,
-                              self._targets - self.max_target_increment,
-                              self._targets + self.max_target_increment)
+        if self.action_mode == "delta":
+            # target += a * MAX_INC, clamped to the limits (a = 0 holds)
+            requested = self._targets + a * self.max_target_increment
+            new_targets = np.clip(requested, lim[:, 0], lim[:, 1])
+        else:
+            requested = lim[:, 0] + 0.5 * (a + 1.0) * (lim[:, 1] - lim[:, 0])
+            new_targets = np.clip(requested,
+                                  self._targets - self.max_target_increment,
+                                  self._targets + self.max_target_increment)
         previous_targets = self._targets
         self._targets = np.where(live[:, None], new_targets, self._targets)
         # commanded speed as a fraction of the URDF limit (reward v3; 0 for

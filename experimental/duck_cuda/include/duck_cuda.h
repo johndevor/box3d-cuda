@@ -62,6 +62,12 @@ int dwc1_abi_version(void);
 enum { DWC1_ENV_KIND_LOCOMOTION = 0, DWC1_ENV_KIND_REACH = 1 };
 int dwc1_env_kind(void);
 int dwc1_obs_width(void);
+// REACH action contract this build compiled (DW_ENV_ACTION_MODE, additive
+// export): 0 = ABS (limit-scaled absolute targets, slew-limited), 1 =
+// DELTA (target += a * MAX_TARGET_INCREMENT, clamped to the limits;
+// a = 0 holds). Locomotion builds report 0 (no meaning).
+enum { DWC1_ACTION_MODE_ABS = 0, DWC1_ACTION_MODE_DELTA = 1 };
+int dwc1_action_mode(void);
 
 enum {
   DWC1_OK = 0,

@@ -23,8 +23,14 @@ from walk.eval.arm_acceptance import ScriptedIKPolicy  # noqa: E402
 import arm_lowering as al  # noqa: E402
 
 
-def _serial(variant):
-    return lambda E, off: CudaArmLane(E, variant=variant, joint_offsets=off)
+def _serial(variant, action_mode="delta"):
+    return lambda E, off: CudaArmLane(E, variant=variant, joint_offsets=off,
+                                      action_mode=action_mode)
+
+
+def _ik(variant, E=1):
+    """The scripted IK baseline emits ABSOLUTE actions; adapt for delta."""
+    return ar.DeltaActionAdapter(ScriptedIKPolicy(variant), al.spec(variant), E)
 
 
 class ContractTests(unittest.TestCase):
@@ -58,10 +64,58 @@ class ContractTests(unittest.TestCase):
             finally:
                 env.close()
 
-    def test_action_maps_to_limit_scaled_targets_with_slew(self):
+    def test_delta_action_contract(self):
+        """DELTA (default): a = 0 holds the target exactly, |a| = 1 moves it
+        by MAX_INC per step, clamped to the limits; the lane reports the
+        compiled contract and the env adopts it."""
         env = ar.ArmReachEnv(environments=2, seed=2, variant="kr240",
                              lane_factory=_serial("kr240"))
         try:
+            self.assertEqual(env.action_mode, "delta")
+            self.assertEqual(env._lane.action_mode, "delta")
+            t0 = env._targets.copy()
+            env.step(np.zeros((2, 6), np.float32))
+            np.testing.assert_array_equal(env._targets, t0)        # exact hold
+            inc = env.max_target_increment
+            a = np.array([[1.0] * 6, [-1.0] * 6], np.float32)
+            for k in range(1, 4):
+                env.step(a)
+                lim = env.joint_limits
+                np.testing.assert_allclose(env._targets[0], np.minimum(t0[0] + k * inc, lim[:, 1]))
+                np.testing.assert_allclose(env._targets[1], np.maximum(t0[1] - k * inc, lim[:, 0]))
+            # an abs library handed to a delta env is refused
+            with self.assertRaises(ValueError):
+                ar.ArmReachEnv(environments=1, seed=2, variant="kr240",
+                               action_mode="delta",
+                               lane_factory=_serial("kr240", "abs"))
+        finally:
+            env.close()
+
+    def test_abs_to_delta_adapter_reproduces_absolute_targets(self):
+        """The adapter's delta actions steer a delta env onto the same
+        slew-limited targets an abs env reaches from the same absolute
+        actions (up to f64 rounding of a * MAX_INC)."""
+        ea = ar.ArmReachEnv(environments=2, seed=5, variant="lite",
+                            lane_factory=_serial("lite", "abs"))
+        ed = ar.ArmReachEnv(environments=2, seed=5, variant="lite",
+                            lane_factory=_serial("lite"))
+        try:
+            rng = np.random.default_rng(3)
+            adapter = ar.DeltaActionAdapter(lambda obs: adapter.last, al.spec("lite"), 2)
+            for t in range(40):
+                adapter.last = rng.uniform(-1, 1, (2, 6))
+                ea.step(np.asarray(adapter.last, np.float32))
+                ed.step(adapter(ed._observe(ed._lane.read())))
+                np.testing.assert_allclose(ed._targets, ea._targets, atol=1e-12)
+        finally:
+            ea.close()
+            ed.close()
+
+    def test_action_maps_to_limit_scaled_targets_with_slew(self):
+        env = ar.ArmReachEnv(environments=2, seed=2, variant="kr240",
+                             lane_factory=_serial("kr240", "abs"))
+        try:
+            self.assertEqual(env.action_mode, "abs")
             lim = env.joint_limits
             a = np.array([[1.0] * 6, [-1.0] * 6], np.float32)
             t0 = env._targets.copy()
@@ -127,7 +181,7 @@ class TaskTests(unittest.TestCase):
         for v in ("kr240", "lite"):
             env = ar.ArmReachEnv(environments=1, seed=4242, variant=v, tier=0)
             try:
-                pol = ScriptedIKPolicy(v)
+                pol = _ik(v)
                 obs = env.reset()
                 bonuses = 0
                 for t in range(200):
@@ -148,7 +202,7 @@ class TaskTests(unittest.TestCase):
         """Driving the tip below the floor margin (a2 down, a3 straight)
         terminates with the proxy flag and a W_PROXY-sized penalty."""
         env = ar.ArmReachEnv(environments=1, seed=3, variant="kr240",
-                             lane_factory=_serial("kr240"))
+                             lane_factory=_serial("kr240", "abs"))
         try:
             env.reset()
             lim = env.joint_limits
@@ -182,7 +236,7 @@ class TaskTests(unittest.TestCase):
                 np.testing.assert_array_equal(eo.target, es.target)
                 worst_o = worst_r = 0.0
                 rng = np.random.default_rng(5)
-                pol = ScriptedIKPolicy(v)
+                pol = _ik(v, 2)
                 for t in range(60):
                     a = pol(oo) if t % 2 else rng.uniform(-0.3, 0.3, (2, 6))
                     a = np.asarray(a, np.float32)

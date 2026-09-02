@@ -100,25 +100,32 @@ def _obs_dim() -> int:
     return int(arm_reach.OBS)
 
 
-def header_path(variant: str) -> Path:
-    return ARM_INCLUDE / al.spec(variant).variant / "duck_model.h"
+def header_path(variant: str, action_mode: str = "delta") -> Path:
+    """Generated header per (variant, action contract): the DELTA contract
+    (default) lives in arm/include/<variant>/, the ABS lineage in
+    arm/include/<variant>-abs/ (generate_model_arm.py --action-mode)."""
+    suffix = "" if action_mode == "delta" else f"-{action_mode}"
+    return ARM_INCLUDE / f"{al.spec(variant).variant}{suffix}" / "duck_model.h"
 
 
-def _source_digest(variant: str) -> str:
+def _source_digest(variant: str, action_mode: str) -> str:
     h = hashlib.sha256()
     h.update(" ".join(_FLAGS).encode())
-    for p in _KERNEL_SOURCES + [header_path(variant)]:
+    for p in _KERNEL_SOURCES + [header_path(variant, action_mode)]:
         h.update(str(p.relative_to(ROOT)).encode())
         h.update(p.read_bytes())
     return h.hexdigest()[:16]
 
 
-def build_library(variant: str) -> Path:
-    """Build (or reuse the cached) serial ARM dwc1 dylib for `variant`."""
+def build_library(variant: str, action_mode: str = "delta") -> Path:
+    """Build (or reuse the cached) serial ARM dwc1 dylib for `variant` and
+    action contract."""
     variant = al.spec(variant).variant
     suffix = ".dylib" if sys.platform == "darwin" else ".so"
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
-    out = BUILD_DIR / f"libarm_{variant}_cuda_serial-{_source_digest(variant)}{suffix}"
+    tag = "" if action_mode == "delta" else f"_{action_mode}"
+    out = BUILD_DIR / (f"libarm_{variant}{tag}_cuda_serial-"
+                       f"{_source_digest(variant, action_mode)}{suffix}")
     if out.is_file():
         return out
     compiler = shutil.which("clang++")
@@ -126,7 +133,7 @@ def build_library(variant: str) -> Path:
         raise RuntimeError("clang++ toolchain required to build the serial arm lane")
     tmp = out.with_suffix(out.suffix + ".tmp")
     cmd = [compiler, *_FLAGS,
-           "-I", str(header_path(variant).parent),   # MUST precede duck include
+           "-I", str(header_path(variant, action_mode).parent),   # precedes duck
            "-I", str(DUCK_CUDA / "include"),
            "-fPIC", "-shared", str(_KERNEL_SOURCES[0]), "-o", str(tmp)]
     subprocess.run(cmd, cwd=ROOT, check=True, capture_output=True)
@@ -144,11 +151,15 @@ class CudaArmLane:
                  library_path: str | Path | None = None,
                  fast_termination: bool = False,
                  randomization: dict | None = None,
-                 tier: int | None = None):
+                 tier: int | None = None, action_mode: str = "delta"):
+        from .arm_reach import ACTION_MODES  # noqa: PLC0415
+        if action_mode not in ACTION_MODES:
+            raise ValueError(f"action_mode must be one of {ACTION_MODES}")
         self.spec = al.spec(variant)
         self.variant = self.spec.variant
         path = library_path or os.environ.get(f"ARM_{self.variant.upper()}_CUDA_LIBRARY")
-        self.library_path = Path(path) if path else build_library(self.variant)
+        self.library_path = (Path(path) if path
+                             else build_library(self.variant, action_mode))
         self._lib = load_library(self.library_path)
         abi = int(self._lib.dwc1_abi_version())
         if abi != cuda_lane.ABI_VERSION:
@@ -159,6 +170,13 @@ class CudaArmLane:
             raise RuntimeError(f"{self.library_path} compiled env kind {kind}; "
                                "the arm lane needs DW_ENV_KIND_REACH (an arm "
                                "header build)")
+        # the action contract the LIBRARY compiled is authoritative (an
+        # explicit library_path may carry either); the env cross-checks it
+        compiled = int(self._lib.dwc1_action_mode())
+        self.action_mode = ACTION_MODES[compiled]
+        if path is None and self.action_mode != action_mode:
+            raise RuntimeError(f"{self.library_path} compiled action mode "
+                               f"{self.action_mode!r}, expected {action_mode!r}")
         self.OBS = _obs_dim()
         if int(self._lib.dwc1_obs_width()) != self.OBS:
             raise RuntimeError(f"{self.library_path} writes "

@@ -149,6 +149,7 @@ extern "C" {
 int dwc1_abi_version(void) { return DWC1_ABI_VERSION; }
 int dwc1_env_kind(void) { return DW_ENV_KIND; }
 int dwc1_obs_width(void) { return DWP_OBS; }
+int dwc1_action_mode(void) { return DW_ENV_ACTION_MODE; }
 
 int dwc1_create(uint32_t environments, const float* joint_offsets,
                 const dwc1_randomization* randomization, dwc1_scene** out) {

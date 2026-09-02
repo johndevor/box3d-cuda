@@ -49,16 +49,23 @@ E = 4
 OBS_TOL, REW_TOL = 1e-5, 1e-5
 
 
-def _serial(variant):
-    return lambda n, off: CudaArmLane(n, variant=variant, joint_offsets=off)
+def _serial(variant, action_mode="delta"):
+    return lambda n, off: CudaArmLane(n, variant=variant, joint_offsets=off,
+                                      action_mode=action_mode)
+
+
+def _ik(variant, mode, E=1):
+    pol = ScriptedIKPolicy(variant)          # absolute actions
+    return pol if mode == "abs" else ar.DeltaActionAdapter(pol, al.spec(variant), E)
 
 
 class DevicePolicyParityTests(unittest.TestCase):
-    def _parity(self, variant, seed=0, steps=420):   # > horizon: masked resets
+    def _parity(self, variant, mode="delta", seed=0, steps=420):  # > horizon
         env = ar.ArmReachEnv(environments=E, seed=seed, variant=variant,
-                             lane_factory=_serial(variant))
-        dev = CudaArmLane(E, variant=variant)
+                             lane_factory=_serial(variant, mode))
+        dev = CudaArmLane(E, variant=variant, action_mode=mode)
         try:
+            self.assertEqual((env.action_mode, dev.action_mode), (mode, mode))
             obs_py = env.reset()                 # episode-2 draws
             dev.reset_policy(seed=seed)          # episode 1
             obs_dev = dev.reset_policy()         # episode 2
@@ -67,14 +74,19 @@ class DevicePolicyParityTests(unittest.TestCase):
             np.testing.assert_array_equal(env.target,
                                           dev.reach_state()["target"])
             rng = np.random.default_rng(seed)
-            pol = ScriptedIKPolicy(variant)
+            pol = _ik(variant, mode, E)
             worst_obs = worst_rew = 0.0
             resets = acquisitions = 0
             exact_obs = exact_rew = True
             for t in range(steps):
                 # IK-driven steps acquire targets (exercising the queue);
                 # noisy steps exercise slew / speed / torque terms.
-                a = pol(obs_py) if t % 3 else rng.uniform(-0.4, 0.4, (E, 6))
+                if t % 3:
+                    a = pol(obs_py)
+                else:
+                    a = rng.uniform(-0.4, 0.4, (E, 6))
+                    if mode == "delta":
+                        pol.register(a)          # keep the adapter's shadow
                 a = np.asarray(a, np.float32)
                 o_py, r_py, d_py, info = env.step(a)
                 o_dev, r_dev, d_dev, diag = dev.step_policy(a)
@@ -104,7 +116,7 @@ class DevicePolicyParityTests(unittest.TestCase):
             self.assertGreater(resets, 0, "no masked reset exercised")
             self.assertLess(worst_obs, OBS_TOL, "obs parity gate")
             self.assertLess(worst_rew, REW_TOL, "reward parity gate")
-            print(f"{variant} device_policy_parity obs={worst_obs:.3e} "
+            print(f"{variant}/{mode} device_policy_parity obs={worst_obs:.3e} "
                   f"reward={worst_rew:.3e} bit_exact obs={exact_obs} "
                   f"reward={exact_rew} acquisitions={acquisitions} "
                   f"masked_resets={resets}", file=sys.stderr)
@@ -112,19 +124,25 @@ class DevicePolicyParityTests(unittest.TestCase):
             env.close()
             dev.close()
 
-    def test_parity_kr240(self):
-        self._parity("kr240")
+    def test_parity_kr240_delta(self):
+        self._parity("kr240", "delta")
 
-    def test_parity_lite(self):
-        self._parity("lite")
+    def test_parity_lite_delta(self):
+        self._parity("lite", "delta")
+
+    def test_parity_kr240_abs(self):
+        self._parity("kr240", "abs")
+
+    def test_parity_lite_abs(self):
+        self._parity("lite", "abs")
 
     def test_proxy_crash_terminates_in_parity(self):
         """Driving a2 down (arm_env's proxy test) must terminate BOTH paths
         at the same step with the proxy penalty and reason FELL; the done
         env then freezes (reward 0, obs constant) until reset."""
         env = ar.ArmReachEnv(environments=1, seed=3, variant="kr240",
-                             lane_factory=_serial("kr240"))
-        dev = CudaArmLane(1, variant="kr240")
+                             lane_factory=_serial("kr240", "abs"))
+        dev = CudaArmLane(1, variant="kr240", action_mode="abs")
         try:
             env.reset()
             dev.reset_policy(seed=3)
@@ -196,7 +214,7 @@ class JudgeCrossCheckTests(unittest.TestCase):
         try:
             actions = []
             if policy_name == "ik":
-                pol = ScriptedIKPolicy(variant)
+                pol = _ik(variant, "delta", 1)
 
                 def policy(obs):
                     a = np.asarray(pol(obs), np.float32)
@@ -304,7 +322,7 @@ class GateProxyAndAbiTests(unittest.TestCase):
     def test_episode_snapshot_and_gate_termination_knobs(self):
         dev = CudaArmLane(2, variant="kr240", tier=0)
         try:
-            pol = ScriptedIKPolicy("kr240")
+            pol = _ik("kr240", "delta", 2)
             obs = dev.reset_policy(seed=4242)
             for _t in range(150):
                 obs, _r, done, diag = dev.step_policy(pol(obs))
@@ -331,15 +349,12 @@ class GateProxyAndAbiTests(unittest.TestCase):
             self.assertTrue((snap["valid"] == 1).all())
             self.assertTrue((snap["next_valid"] == 1).all())
             self.assertEqual(int(gp["episode_termination_reason"][0]), 0)
-            # first-acquisition deadline: a standing arm (zero action holds
-            # mid-range... use HOME-holding actions) never acquires -> dies
-            # at exactly the deadline tick (300 ticks = step 30, 0-indexed 29)
+            # first-acquisition deadline: a holding arm (delta a = 0 holds
+            # the home target) never acquires -> dies at exactly the
+            # deadline tick (300 ticks = step 30, 0-indexed 29)
             dev.set_gate_termination(first_deadline_ticks=300)
             dev.reset_policy()
-            lim = dev.joint_limits
-            home_a = (2.0 * (dev.home_joint_q - lim[:, 0])
-                      / (lim[:, 1] - lim[:, 0]) - 1.0)[None].astype(np.float32)
-            home_a = np.repeat(home_a, 2, 0)
+            home_a = np.zeros((2, 6), np.float32)
             died_at = None
             for t in range(80):
                 _o, _r, done, _d = dev.step_policy(home_a)
@@ -394,7 +409,7 @@ class GateProxyAndAbiTests(unittest.TestCase):
             self.assertEqual((int(rs["valid"][0]), int(rs["next_valid"][0])), (1, 0))
             dev._index[:] = 0
             dev._refill_queue = lambda: None     # host deliberately silent
-            pol = ScriptedIKPolicy("kr240")
+            pol = _ik("kr240", "delta", 1)
             obs = dev.observe()
             reason = None
             for _t in range(300):
@@ -419,6 +434,14 @@ class GateProxyAndAbiTests(unittest.TestCase):
             self.assertEqual(int(duck._lib.dwc1_obs_width()), cuda_lane.OBS)
             self.assertEqual(int(arm._lib.dwc1_env_kind()), cuda_lane.ENV_KIND_REACH)
             self.assertEqual(int(arm._lib.dwc1_obs_width()), ar.OBS)
+            self.assertEqual(int(arm._lib.dwc1_action_mode()), 1)   # DELTA
+            self.assertEqual(int(duck._lib.dwc1_action_mode()), 0)
+            abs_arm = CudaArmLane(1, variant="lite", action_mode="abs")
+            try:
+                self.assertEqual(int(abs_arm._lib.dwc1_action_mode()), 0)
+                self.assertEqual(abs_arm.action_mode, "abs")
+            finally:
+                abs_arm.close()
             out = (cuda_lane.ReachState * 1)()
             self.assertEqual(duck._lib.dwc1_reach_get(duck._h, out), 1)
             t = np.zeros(3)

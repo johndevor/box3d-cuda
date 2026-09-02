@@ -116,9 +116,14 @@ class SyntheticJudgeTests(unittest.TestCase):
 
 class ScriptedBaselineAcceptance(unittest.TestCase):
     def _accept(self, variant):
-        res = aa.run_acceptance(variant, lambda: aa.ScriptedIKPolicy(variant),
-                                lane="serial", quiet=True,
-                                policy_name="scripted-ik")
+        # the harness's default env is the DELTA contract; the scripted
+        # baseline emits absolute actions -> adapt (fresh per episode)
+        from walk.env import arm_reach as ar  # noqa: PLC0415
+        import arm_lowering as al  # noqa: PLC0415
+        res = aa.run_acceptance(
+            variant, lambda: ar.DeltaActionAdapter(aa.ScriptedIKPolicy(variant),
+                                                   al.spec(variant), 1),
+            lane="serial", quiet=True, policy_name="scripted-ik")
         eps = res["episodes"]
         n = sum(1 for e in eps.values() if e["passed"])
         for key, e in eps.items():

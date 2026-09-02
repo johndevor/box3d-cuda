@@ -394,6 +394,7 @@ def load_library(path: Path):
         # reach calls return DWC1_INVALID on locomotion builds)
         "dwc1_env_kind": [],
         "dwc1_obs_width": [],
+        "dwc1_action_mode": [],
         "dwc1_reach_set_targets": [C.c_void_p, U8P, DP, DP],
         "dwc1_reach_get": [C.c_void_p, C.POINTER(ReachState)],
     }

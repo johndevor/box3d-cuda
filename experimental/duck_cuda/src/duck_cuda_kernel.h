@@ -50,6 +50,17 @@
 #ifndef DW_ENV_KIND
 #define DW_ENV_KIND DW_ENV_KIND_LOCOMOTION
 #endif
+// REACH action contract (header-selected; arm_reach.ACTION_MODES):
+//   ABS   (0, the default when the header omits the macro): target_j =
+//         lower_j + (a_j+1)/2 (upper_j - lower_j), slew-limited to
+//         +- MAX_TARGET_INCREMENT_j per step -- the v1-v5 lineage;
+//   DELTA (1): target_j = clip(target_j + a_j MAX_TARGET_INCREMENT_j,
+//         limits) -- a = 0 holds exactly, |a| = 1 is the URDF speed.
+#define DW_ENV_ACTION_MODE_ABS 0
+#define DW_ENV_ACTION_MODE_DELTA 1
+#ifndef DW_ENV_ACTION_MODE
+#define DW_ENV_ACTION_MODE DW_ENV_ACTION_MODE_ABS
+#endif
 #if DW_ENV_KIND != DW_ENV_KIND_LOCOMOTION && DW_ENV_KIND != DW_ENV_KIND_REACH
 #error "DW_ENV_KIND must be DW_ENV_KIND_LOCOMOTION (0) or DW_ENV_KIND_REACH (1)"
 #endif
@@ -2385,15 +2396,22 @@ static DW_HD void dw_step_policy_env(DwState* s, const float* action,
     for (int j = 0; j < DW_J; j++) w->cmd64[j] = 0.0;   // done: frozen
     if (live)
       for (int j = 0; j < DW_J; j++) {
-        // requested = lower + (a + 1)/2 * (upper - lower), slew-limited to
-        // the URDF speed limit per step (f64 limits: the env's tables)
         const double lo_j = DW_ENV_LIMIT_LOWER_F64[j];
         const double hi_j = DW_ENV_LIMIT_UPPER_F64[j];
-        const double requested = lo_j + (0.5 * (w->a64[j] + 1.0)) * (hi_j - lo_j);
-        const double lo = s->targets[j] - DW_ENV_MAX_TARGET_INCREMENT_F64[j];
-        const double hi = s->targets[j] + DW_ENV_MAX_TARGET_INCREMENT_F64[j];
         const double previous = s->targets[j];
+#if DW_ENV_ACTION_MODE == DW_ENV_ACTION_MODE_DELTA
+        // DELTA: target += a * MAX_INC (a = 0 holds exactly), joint limits
+        const double requested = previous
+                               + w->a64[j] * DW_ENV_MAX_TARGET_INCREMENT_F64[j];
+        s->targets[j] = fmin(hi_j, fmax(lo_j, requested));
+#else
+        // ABS: requested = lower + (a + 1)/2 * (upper - lower), slew-limited
+        // to the URDF speed limit per step (f64 limits: the env's tables)
+        const double requested = lo_j + (0.5 * (w->a64[j] + 1.0)) * (hi_j - lo_j);
+        const double lo = previous - DW_ENV_MAX_TARGET_INCREMENT_F64[j];
+        const double hi = previous + DW_ENV_MAX_TARGET_INCREMENT_F64[j];
         s->targets[j] = fmin(hi, fmax(lo, requested));
+#endif
         // commanded speed fraction (reward v3): (new - previous) / max inc
         w->cmd64[j] = (s->targets[j] - previous)
                     / DW_ENV_MAX_TARGET_INCREMENT_F64[j];
