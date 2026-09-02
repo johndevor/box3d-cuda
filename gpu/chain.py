@@ -86,6 +86,9 @@ def main() -> int:
     ap.add_argument("--plateau-legs", type=int, default=2,
                     help="stop after this many consecutive legs with no "
                          "improvement in best probe episodes")
+    ap.add_argument("--warmstart", default=str(WARMSTART),
+                    help="checkpoint relay path the spec resumes from "
+                         "(distinct per concurrent chain)")
     ap.add_argument("--label-suffix", default=None,
                     help="passed through to run_daytona.py (concurrent chains)")
     a = ap.parse_args()
@@ -122,8 +125,8 @@ def main() -> int:
 
         actor = find_actor(run_dir)
         if actor is not None:
-            shutil.copy2(actor, WARMSTART)
-            print(f"warmstart <- {actor.relative_to(ROOT)}")
+            shutil.copy2(actor, a.warmstart)
+            print(f"warmstart {a.warmstart} <- {actor.relative_to(ROOT)}")
 
         if best > best_ever:
             best_ever, flat_legs = best, 0
