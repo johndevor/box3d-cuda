@@ -86,6 +86,8 @@ def main() -> int:
     ap.add_argument("--plateau-legs", type=int, default=2,
                     help="stop after this many consecutive legs with no "
                          "improvement in best probe episodes")
+    ap.add_argument("--label-suffix", default=None,
+                    help="passed through to run_daytona.py (concurrent chains)")
     a = ap.parse_args()
 
     best_ever, flat_legs, failed_legs = -1, 0, 0
@@ -93,7 +95,8 @@ def main() -> int:
         print(f"=== chain leg {leg}/{a.legs} ===", flush=True)
         proc = subprocess.run(
             [sys.executable, "-B", str(ROOT / "gpu/run_daytona.py"),
-             "run", "--spec", a.spec],
+             "run", "--spec", a.spec]
+            + (["--label-suffix", a.label_suffix] if a.label_suffix else []),
             cwd=ROOT, capture_output=True, text=True)
         sys.stdout.write(proc.stdout[-2000:])
         if proc.returncode != 0:
