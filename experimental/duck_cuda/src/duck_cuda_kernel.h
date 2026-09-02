@@ -250,6 +250,32 @@ typedef struct DwState {
   double damping_scale;           // scales passive joint damping
   double eff_ring[DWC1_MAX_LATENCY + 1][DW_J];  // effective-target history
   uint32_t latency_steps, rand_pad;  // PD consumes eff[t - latency_steps]
+  // ---- gate_proxy_* judge-shadow gait counters (METRICS ONLY) ----------
+  // Continuous per-env approximation of the frozen walking judge's core
+  // footfall clauses (thresholds: generated DW_GATE_* block), updated once
+  // per ACCEPTED tick and never read by reward, termination, or physics --
+  // they write only these fields, so every certified path stays
+  // bit-identical (fingerprint-proven). HONESTY: tick-resolution shadow
+  // WITHOUT the judge's 20 ms contact-debounce sensor model and without
+  // its support/slip clauses; for culling and monitoring only, never a
+  // substitute for the frozen CPU judge (walk/eval/gait.py /
+  // walk/eval/humanoid_gait.py).
+  float gp_liftoff_x[DW_PAIRS];    // foot-body world x at liftoff
+  uint32_t gp_air_ticks[DW_PAIRS]; // ticks since liftoff (current swing)
+  uint32_t gp_clear_run[DW_PAIRS]; // contiguous ticks with sole >= threshold
+  uint8_t gp_clear_ok[DW_PAIRS];   // swing achieved the contiguous clearance
+  uint8_t gp_contact[DW_PAIRS];    // per-tick contact memory (raw, no debounce)
+  int32_t gp_last_qual_foot;       // last qualified-touchdown foot (-1 none)
+  uint32_t gp_qual[DW_PAIRS];      // per-episode qualified swings (L, R)
+  uint32_t gp_alt_viol;            // consecutive same-foot qualified touchdowns
+  // last COMPLETED episode snapshot (taken by the policy reset, so a
+  // once-per-update readback sees whole-episode counts regardless of when
+  // each env was reset):
+  uint32_t gp_ep_qual[DW_PAIRS], gp_ep_alt_viol;
+  // Why the env last became done (DWC1_TERM_*, metrics only; written at
+  // the policy boundary even with the death-rule knobs off) + the last
+  // completed episode's reason snapshot.
+  uint32_t gp_term_reason, gp_ep_term_reason, gp_pad[2];
 } DwState;
 
 typedef struct DwParams {
@@ -267,6 +293,15 @@ typedef struct DwParams {
   // physics path, the duck fingerprint and the python-env parity gates
   // bit-identical.
   uint32_t fast_termination;
+  // OPT-IN judge-aligned death rules (dwc1_set_gate_termination, both 0 =
+  // OFF by default): terminate a live env at the policy boundary when
+  // (a) no gate_proxy-qualified swing has completed within
+  // gate_first_deadline_ticks accepted episode ticks, or (b) the
+  // cumulative alternation-violation count reaches
+  // gate_max_alt_violations. Runtime per-scene knobs so a curriculum can
+  // tighten them without recompiling; they compose with fast_termination
+  // (a gate-terminated env freezes identically).
+  uint32_t gate_first_deadline_ticks, gate_max_alt_violations;
 } DwParams;
 
 typedef struct DwEval {
@@ -1427,6 +1462,10 @@ static DW_HD int dw_tick(DwState* s, const float* target,
   return DWC1_OK;
 }
 
+// gate_proxy_* per-tick updater (defined after the light-FK helpers below;
+// see the DwState field block for semantics and the honesty note).
+static DW_HD void dw_gate_proxy_tick(DwState* s);
+
 // The policy termination predicate (height / tilt on the model's up-axis /
 // nonfinite), shared by the policy-step boundary check and the optional
 // mid-block fast-termination latch. Every lane computes it from the shared
@@ -1470,7 +1509,10 @@ static DW_HD int dw_step_env(DwState* s, const float* target, uint32_t n_ticks,
     int st = dw_tick(s, target, params, w, diag);
     DW_LANE0 diag->status = (uint32_t)st;
     if (st != DWC1_OK) return st;
-    DW_LANE0 diag->ticks++;
+    DW_LANE0 {
+      diag->ticks++;
+      dw_gate_proxy_tick(s);   // metrics only; writes gp_* fields exclusively
+    }
     if (latch_termination && dw_policy_fell(s)) break;
   }
   DW_SYNC();
@@ -1488,6 +1530,7 @@ static DW_HD void dw_init_state(DwState* s, const float* joint_offsets) {
                               DW_LIMIT_LOWER[j], DW_LIMIT_UPPER[j]);
   for (int j = 0; j < DW_J; j++) s->targets[j] = DW_HOME_TARGETS_F64[j];
   s->last_foot = -1;
+  s->gp_last_qual_foot = -1;
   s->mass_scale = s->friction_scale = s->kp_scale = s->damping_scale = 1.0;
   for (int k = 0; k <= DWC1_MAX_LATENCY; k++)   // ring = reset targets
     for (int j = 0; j < DW_J; j++)
@@ -1561,6 +1604,61 @@ static DW_HD void dw_sole_heights(const float body[DW_B][13], float out[2]) {
       lowest = fminf(lowest, body[b][2] + world[2]);
     }
     out[pair] = lowest;
+  }
+}
+
+// gate_proxy_* judge-shadow update, once per accepted tick (lane 0 only).
+// Clauses mirrored from the frozen judge at raw tick resolution:
+//   - swing duration in [DW_GATE_SWING_MIN_S, DW_GATE_SWING_MAX_S];
+//   - WHOLE-sole clearance (min over the baked sole vertices, exactly the
+//     judge's measure) >= DW_GATE_CLEARANCE_M for a CONTIGUOUS
+//     >= DW_GATE_CLEARANCE_MIN_S during the swing;
+//   - forward (world +x) placement >= DW_GATE_PLACEMENT_MIN_M from liftoff
+//     to touchdown (foot-body origin x; the judge uses the foot COM);
+//   - per-foot qualified counts and consecutive-same-foot (alternation
+//     violation) count.
+// NOT mirrored (honesty): the 20 ms contact debounce, the pre/post support
+// windows, opposite-foot support fraction, and stance slip -- this is a
+// cheap monotone shadow for culling, not the judge.
+static DW_HD void dw_gate_proxy_tick(DwState* s) {
+  float bodies[DW_B][13], sole[2];
+  dw_body_states(s->q, s->v, bodies);
+  dw_sole_heights(bodies, sole);
+  for (int f = 0; f < 2; f++) {
+    const bool c = s->cache[f].count > 0;
+    const bool prev = s->gp_contact[f] != 0;
+    const float fx = bodies[DW_PAIR_BODY_A[f]][0];
+    if (prev && !c) {                          // liftoff: new swing
+      s->gp_liftoff_x[f] = fx;
+      s->gp_air_ticks[f] = 0;
+      s->gp_clear_run[f] = 0;
+      s->gp_clear_ok[f] = 0;
+    }
+    if (!c) {                                  // airborne tick
+      s->gp_air_ticks[f]++;
+      if (sole[f] >= DW_GATE_CLEARANCE_M) {
+        s->gp_clear_run[f]++;
+        if ((double)s->gp_clear_run[f] * (double)DW_DT
+            >= DW_GATE_CLEARANCE_MIN_S)
+          s->gp_clear_ok[f] = 1;
+      } else {
+        s->gp_clear_run[f] = 0;
+      }
+    }
+    if (!prev && c && s->gp_air_ticks[f] > 0) {  // touchdown of a swing
+      const double air_s = (double)s->gp_air_ticks[f] * (double)DW_DT;
+      const bool dur_ok = air_s >= DW_GATE_SWING_MIN_S
+                       && air_s <= DW_GATE_SWING_MAX_S;
+      const bool place_ok =
+          fx - s->gp_liftoff_x[f] >= DW_GATE_PLACEMENT_MIN_M;
+      if (dur_ok && s->gp_clear_ok[f] && place_ok) {
+        s->gp_qual[f]++;
+        if (s->gp_last_qual_foot == f) s->gp_alt_viol++;
+        s->gp_last_qual_foot = f;
+      }
+      s->gp_air_ticks[f] = 0;
+    }
+    s->gp_contact[f] = c ? 1 : 0;
   }
 }
 
@@ -1878,7 +1976,10 @@ static DW_HD void dw_step_policy_env(DwState* s, const float* action,
   int st = dw_step_env(s, w->eff, n_ticks, params, w, diag,
                        params->fast_termination != 0);
   DW_LANE0 {
-    if (st != DWC1_OK) s->done = 1;
+    if (st != DWC1_OK) {
+      s->done = 1;
+      if (live) s->gp_term_reason = DWC1_TERM_FAULT;    // metrics only
+    }
     dw_body_states(s->q, s->v, w->bodies13);
     float sole[2];
     dw_sole_heights(w->bodies13, sole);
@@ -1887,7 +1988,31 @@ static DW_HD void dw_step_policy_env(DwState* s, const float* action,
     float r = dw_policy_reward(s, w->a64, w->app64, sole, foot_x);
     if (live) s->t += 1;
     bool fell = dw_policy_fell(s);   // height / up-axis tilt / nonfinite
-    if (live && (fell || s->t >= DWP_HORIZON)) s->done = 1;
+    // OPT-IN judge-aligned death rules (dwc1_set_gate_termination, both
+    // knobs default 0 = OFF, keeping every existing gate and the duck
+    // fingerprint bit-identical). Driven by the gate_proxy_* counters:
+    //   - first-step deadline: no gate-qualified swing completed within
+    //     the configured number of ACCEPTED episode ticks (the judge's
+    //     first-qualified-touchdown clause as a pruning rule -- shufflers
+    //     die at the deadline instead of simulating to the horizon);
+    //   - alternation cap: cumulative same-foot consecutive qualified
+    //     touchdowns reached the configured maximum.
+    const bool gate_deadline =
+        params->gate_first_deadline_ticks != 0
+        && s->gp_qual[0] + s->gp_qual[1] == 0
+        && s->count >= (uint64_t)params->gate_first_deadline_ticks;
+    const bool gate_alt =
+        params->gate_max_alt_violations != 0
+        && s->gp_alt_viol >= params->gate_max_alt_violations;
+    if (live && (fell || gate_deadline || gate_alt
+                 || s->t >= DWP_HORIZON)) {
+      s->done = 1;
+      // reason precedence mirrors the check order (metrics only)
+      s->gp_term_reason = fell ? DWC1_TERM_FELL
+                        : gate_deadline ? DWC1_TERM_GATE_DEADLINE
+                        : gate_alt ? DWC1_TERM_ALTERNATION
+                        : DWC1_TERM_HORIZON;
+    }
     *reward_out = live ? r : 0.0f;
     for (int j = 0; j < DW_J; j++) {
       s->prev_state_action[j] = (float)w->a64[j];      // all-env reward memory
@@ -1910,9 +2035,18 @@ static DW_HD void dw_policy_reset_env(DwState* s, const DwState* initial,
                                       const double* command,
                                       const double* phase0) {
   double keep_command = s->command, keep_phase0 = s->phase0;
+  // snapshot the finished episode's gate-proxy counters (metrics only)
+  // before the state is overwritten, so a once-per-update readback sees
+  // whole-episode counts regardless of when each env was reset.
+  uint32_t eq0 = s->gp_qual[0], eq1 = s->gp_qual[1], ev = s->gp_alt_viol;
+  uint32_t er = s->gp_term_reason;
   *s = *initial;
   s->command = command ? *command : keep_command;
   s->phase0 = phase0 ? *phase0 : keep_phase0;
+  s->gp_ep_qual[0] = eq0;
+  s->gp_ep_qual[1] = eq1;
+  s->gp_ep_alt_viol = ev;
+  s->gp_ep_term_reason = er;
 }
 
 #endif  // DUCK_CUDA_KERNEL_H

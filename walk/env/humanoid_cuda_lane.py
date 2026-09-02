@@ -37,7 +37,8 @@ import numpy as np
 
 from . import cuda_lane
 from .cuda_lane import (  # reuse the model-size-independent dwc1 ctypes ABI
-    DIAG_DTYPE, Diagnostic, Info, Manifold, load_library, _fp, _manifold_json,
+    DIAG_DTYPE, GATE_PROXY_DTYPE, Diagnostic, GateProxy, Info, Manifold,
+    load_library, _fp, _manifold_json,
 )
 from .cuda_lane import CudaLaneState
 
@@ -207,6 +208,27 @@ class CudaHumanoidLane:
             raise RuntimeError(f"dwc1_step_policy status={rc}")
         diagnostics = np.frombuffer(diag, dtype=DIAG_DTYPE).copy()
         return obs, reward, done.astype(bool), diagnostics
+
+    def gate_proxy(self) -> np.ndarray:
+        """Judge-shadow gait counters per env (GATE_PROXY_DTYPE structured
+        array): current-episode qualified swings L/R + alternation
+        violations, plus the last COMPLETED episode's snapshot. Metrics
+        only -- see the honesty note in duck_cuda.h."""
+        out = (GateProxy * self.E)()
+        rc = self._lib.dwc1_gate_proxy_get(self._h, out)
+        if rc:
+            raise RuntimeError(f"dwc1_gate_proxy_get status={rc}")
+        return np.frombuffer(out, dtype=GATE_PROXY_DTYPE).copy()
+
+    def set_gate_termination(self, first_deadline_ticks: int = 0,
+                             max_alternation_violations: int = 0) -> None:
+        """OPT-IN judge-aligned death rules (see CudaDuckLane; both 0 = off,
+        the default). Termination reasons surface via gate_proxy()."""
+        rc = self._lib.dwc1_set_gate_termination(
+            self._h, int(first_deadline_ticks),
+            int(max_alternation_violations))
+        if rc:
+            raise RuntimeError(f"dwc1_set_gate_termination status={rc}")
 
     def observe(self) -> np.ndarray:
         """Current 52-dim observations (no stepping); reset()-style read."""

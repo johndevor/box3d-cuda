@@ -186,6 +186,45 @@ int dwc1_observe(const dwc1_scene*, float* obs /* [E,DW_ENV_OBS] */);
 // command values exactly.
 int dwc1_set_command(dwc1_scene*, const double* commands /* [E] */);
 
+// gate_proxy_* judge-shadow gait counters (METRICS ONLY; additive export,
+// ABI version unchanged). Per-env continuous approximation of the frozen
+// walking judge's core footfall clauses -- qualified swings (duration in
+// the judge's window, whole-sole contiguous clearance, forward placement
+// at touchdown), per foot, plus consecutive-same-foot (alternation
+// violation) count -- computed in-kernel per accepted tick from state the
+// kernel already has, thresholds from the generated DW_GATE_* header
+// block. qualified_*/alternation_violations cover the CURRENT episode so
+// far; episode_* fields are the snapshot of the last COMPLETED episode
+// (taken at policy reset). HONESTY: raw tick resolution, no 20 ms contact
+// debounce, no support/slip clauses -- a cheap culling/monitoring shadow,
+// never a substitute for the frozen CPU judge. Counters never feed reward
+// or termination; certified paths are bit-identical (fingerprint-proven).
+// Why an env last became done (gate-proxy readback; metrics only).
+enum { DWC1_TERM_NONE = 0, DWC1_TERM_FELL = 1, DWC1_TERM_GATE_DEADLINE = 2,
+       DWC1_TERM_ALTERNATION = 3, DWC1_TERM_HORIZON = 4, DWC1_TERM_FAULT = 5 };
+typedef struct dwc1_gate_proxy {
+  uint32_t qualified_left, qualified_right, alternation_violations;
+  uint32_t episode_qualified_left, episode_qualified_right;
+  uint32_t episode_alternation_violations;
+  uint32_t termination_reason;          // DWC1_TERM_* (current/last done)
+  uint32_t episode_termination_reason;  // last COMPLETED episode's reason
+} dwc1_gate_proxy;
+int dwc1_gate_proxy_get(const dwc1_scene*, dwc1_gate_proxy* out /* [E] */);
+
+// OPT-IN judge-aligned termination rules driven by the gate_proxy_*
+// counters (additive export; BOTH knobs default 0 = OFF, so all existing
+// gates and the duck fingerprint hold bit-identically). Runtime per-scene
+// values -- a training curriculum can tighten them per leg without
+// recompiling; they compose with dwc1_set_fast_termination (a
+// gate-terminated env freezes the same way). first_deadline_ticks: live
+// envs terminate at the policy boundary once this many accepted episode
+// ticks pass without ANY gate-qualified swing (the judge's first-step
+// clause as a pruning rule). max_alternation_violations: terminate when
+// the cumulative same-foot consecutive qualified-touchdown count reaches
+// this value. Reasons surface as dwc1_gate_proxy.termination_reason.
+int dwc1_set_gate_termination(dwc1_scene*, uint32_t first_deadline_ticks,
+                              uint32_t max_alternation_violations);
+
 // Training-lane throughput switch (default OFF; additive export, ABI
 // version unchanged). When enabled, dwc1_step_policy (a) skips physics
 // entirely for envs already done at block entry (frozen state, reward 0,

@@ -831,6 +831,24 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                     "faults": 0,
                     "faults_total": faults_total + getattr(env, "fault_count", 0),
                 }
+                # gate_proxy_*: in-kernel judge-shadow gait counters (means
+                # over each env's LAST COMPLETED episode; robot-generic --
+                # any lane exposing gate_proxy()). Metrics only; see the
+                # honesty note in duck_cuda.h: tick-resolution clause
+                # shadow, never a substitute for the frozen judge.
+                lane = getattr(env, "_lane", None)
+                if lane is not None and hasattr(lane, "gate_proxy"):
+                    try:
+                        gp = lane.gate_proxy()
+                        line["gate_proxy_ep_qualified_l"] = round(
+                            float(gp["episode_qualified_left"].mean()), 3)
+                        line["gate_proxy_ep_qualified_r"] = round(
+                            float(gp["episode_qualified_right"].mean()), 3)
+                        line["gate_proxy_ep_alt_violations"] = round(
+                            float(gp["episode_alternation_violations"].mean()),
+                            3)
+                    except Exception:
+                        pass                 # metrics must never kill training
                 mf.write(json.dumps(line) + "\n")
                 mf.flush()
                 metrics.append(line)

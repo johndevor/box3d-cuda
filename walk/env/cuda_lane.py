@@ -216,6 +216,25 @@ class EnvRandom(C.Structure):
                [("latency_steps", C.c_uint32), ("reserved", C.c_uint32)]
 
 
+class GateProxy(C.Structure):
+    """dwc1_gate_proxy: judge-shadow gait counters (metrics only; see the
+    honesty note in duck_cuda.h -- tick-resolution approximation of the
+    frozen judge's footfall clauses, never a substitute for it)."""
+    _fields_ = [(n, C.c_uint32) for n in [
+        "qualified_left", "qualified_right", "alternation_violations",
+        "episode_qualified_left", "episode_qualified_right",
+        "episode_alternation_violations",
+        "termination_reason", "episode_termination_reason"]]
+
+
+GATE_PROXY_DTYPE = np.dtype(
+    [(name, "u4") for name, _ in GateProxy._fields_])
+
+# dwc1 DWC1_TERM_* codes (why an env last became done; metrics only)
+TERM_REASONS = ("none", "fell", "gate_deadline", "alternation", "horizon",
+                "fault")
+
+
 class DeviceInfo(C.Structure):
     _fields_ = [(n, C.c_uint32) for n in [
         "lanes_per_env", "threads_per_block", "min_blocks_per_sm", "sm_count",
@@ -275,6 +294,9 @@ def load_library(path: Path):
         "dwc1_set_state": [C.c_void_p, C.c_uint32, FP, FP, FP,
                            C.POINTER(Manifold), C.c_uint64],
         "dwc1_query": [C.c_void_p, C.POINTER(Manifold)],
+        "dwc1_gate_proxy_get": [C.c_void_p, C.POINTER(GateProxy)],
+        "dwc1_set_fast_termination": [C.c_void_p, C.c_uint32],
+        "dwc1_set_gate_termination": [C.c_void_p, C.c_uint32, C.c_uint32],
     }
     for name, args in specs.items():
         fn = getattr(lib, name)
@@ -410,6 +432,31 @@ class CudaDuckLane:
             raise RuntimeError(f"dwc1_device_info_get status={rc}")
         return {name: int(getattr(info, name))
                 for name, _ in DeviceInfo._fields_ if name != "reserved"}
+
+    def gate_proxy(self) -> np.ndarray:
+        """Judge-shadow gait counters per env (GATE_PROXY_DTYPE structured
+        array): current-episode qualified swings L/R + alternation
+        violations, plus the last COMPLETED episode's snapshot. Metrics
+        only -- see the honesty note in duck_cuda.h."""
+        out = (GateProxy * self.E)()
+        rc = self._lib.dwc1_gate_proxy_get(self._h, out)
+        if rc:
+            raise RuntimeError(f"dwc1_gate_proxy_get status={rc}")
+        return np.frombuffer(out, dtype=GATE_PROXY_DTYPE).copy()
+
+    def set_gate_termination(self, first_deadline_ticks: int = 0,
+                             max_alternation_violations: int = 0) -> None:
+        """OPT-IN judge-aligned death rules (both 0 = off, the default):
+        terminate a live env once `first_deadline_ticks` accepted episode
+        ticks pass without any gate-qualified swing, or once its
+        alternation-violation count reaches the maximum. Runtime knobs
+        (curriculum-tightenable, no recompile); termination reasons
+        surface via gate_proxy() as TERM_REASONS indices."""
+        rc = self._lib.dwc1_set_gate_termination(
+            self._h, int(first_deadline_ticks),
+            int(max_alternation_violations))
+        if rc:
+            raise RuntimeError(f"dwc1_set_gate_termination status={rc}")
 
     def observe(self) -> np.ndarray:
         """Current 58-dim observations (no stepping); reset()-style read."""

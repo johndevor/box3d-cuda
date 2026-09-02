@@ -116,6 +116,19 @@ DW_MODEL_CONST double DW_HOME_TARGETS_F64[DW_J] = {0.002,0.052999999999999999,-0
 // up = R[2][1] = 2(qy*qz+qx*qw), humanoid_native_lane.tilt).
 #define DW_ENV_UP_AXIS 2
 DW_MODEL_CONST double DW_ENV_COMMANDS_MPS[3] = {0.1,0.15,0.2};
+// gate_proxy_* thresholds: the FROZEN judge's footfall clauses
+// (walk/eval/gait.py), generation-time imported so judge and
+// kernel shadow counters cannot silently diverge (drift-pinned).
+// HONESTY: the in-kernel counters approximate the judge's
+// swing-duration / whole-sole-clearance / placement clauses at
+// raw tick resolution WITHOUT the 20 ms contact-debounce sensor
+// model or the support/slip clauses -- a cheap culling/monitoring
+// shadow, never a substitute for the frozen CPU judge.
+#define DW_GATE_SWING_MIN_S 0.06
+#define DW_GATE_SWING_MAX_S 1.2
+#define DW_GATE_CLEARANCE_M 0.00999999978f
+#define DW_GATE_CLEARANCE_MIN_S 0.02
+#define DW_GATE_PLACEMENT_MIN_M 0.0299999993f
 // reward.py v12 self-imitation: phase-indexed reference joint cycle
 // (walk/env/reference_gait.json), same generation-time pinning.
 #define DW_REF_BINS 64

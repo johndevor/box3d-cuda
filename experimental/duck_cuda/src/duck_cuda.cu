@@ -158,6 +158,8 @@ int dwc1_create(uint32_t environments, const float* joint_offsets,
     s->params.tolerance = DW_SOLVE_TOLERANCE;
     s->params.max_iterations = DW_MAX_ITERATIONS;
     s->params.fast_termination = 0;
+    s->params.gate_first_deadline_ticks = 0;
+    s->params.gate_max_alt_violations = 0;
     s->initial.resize(environments);
     s->host.resize(environments);
     for (uint32_t e = 0; e < environments; e++)
@@ -427,6 +429,32 @@ int dwc1_set_command(dwc1_scene* s, const double* commands) {
 int dwc1_set_fast_termination(dwc1_scene* s, uint32_t enable) {
   if (!s) return DWC1_INVALID;
   s->params.fast_termination = enable ? 1u : 0u;
+  return DWC1_OK;
+}
+
+int dwc1_set_gate_termination(dwc1_scene* s, uint32_t first_deadline_ticks,
+                              uint32_t max_alternation_violations) {
+  if (!s) return DWC1_INVALID;
+  s->params.gate_first_deadline_ticks = first_deadline_ticks;
+  s->params.gate_max_alt_violations = max_alternation_violations;
+  return DWC1_OK;
+}
+
+int dwc1_gate_proxy_get(const dwc1_scene* s, dwc1_gate_proxy* out) {
+  if (!s || !out) return DWC1_INVALID;
+  int rc = pull_states(s);
+  if (rc != DWC1_OK) return rc;
+  for (uint32_t e = 0; e < s->E; e++) {
+    const DwState* st = &s->host[e];
+    out[e].qualified_left = st->gp_qual[0];
+    out[e].qualified_right = st->gp_qual[1];
+    out[e].alternation_violations = st->gp_alt_viol;
+    out[e].episode_qualified_left = st->gp_ep_qual[0];
+    out[e].episode_qualified_right = st->gp_ep_qual[1];
+    out[e].episode_alternation_violations = st->gp_ep_alt_viol;
+    out[e].termination_reason = st->gp_term_reason;
+    out[e].episode_termination_reason = st->gp_ep_term_reason;
+  }
   return DWC1_OK;
 }
 

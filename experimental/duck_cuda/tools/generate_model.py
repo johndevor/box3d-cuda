@@ -56,6 +56,7 @@ def emit(native, fixture, cm) -> str:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     from walk.env import flat  # noqa: PLC0415  (gait-clock contract source)
+    from walk.eval import gait as judge  # noqa: PLC0415 (frozen judge)
     from walk.env import reward as reward_mod  # noqa: PLC0415 (imitation ref)
 
     ref = np.asarray(reward_mod.REF_GAIT, dtype=np.float64)
@@ -217,6 +218,19 @@ def emit(native, fixture, cm) -> str:
         "#define DW_ENV_UP_AXIS 2",
         "DW_MODEL_CONST double DW_ENV_COMMANDS_MPS[3] = {"
         + ",".join(f"{float(c)!r}" for c in flat.COMMANDS_MPS) + "};",
+        "// gate_proxy_* thresholds: the FROZEN judge's footfall clauses",
+        "// (walk/eval/gait.py), generation-time imported so judge and",
+        "// kernel shadow counters cannot silently diverge (drift-pinned).",
+        "// HONESTY: the in-kernel counters approximate the judge's",
+        "// swing-duration / whole-sole-clearance / placement clauses at",
+        "// raw tick resolution WITHOUT the 20 ms contact-debounce sensor",
+        "// model or the support/slip clauses -- a cheap culling/monitoring",
+        "// shadow, never a substitute for the frozen CPU judge.",
+        f"#define DW_GATE_SWING_MIN_S {float(judge.SWING_MIN_S)!r}",
+        f"#define DW_GATE_SWING_MAX_S {float(judge.SWING_MAX_S)!r}",
+        f"#define DW_GATE_CLEARANCE_M {f32(judge.CLEARANCE_M)}",
+        f"#define DW_GATE_CLEARANCE_MIN_S {float(judge.CLEARANCE_MIN_S)!r}",
+        f"#define DW_GATE_PLACEMENT_MIN_M {f32(judge.PLACEMENT_MIN_M)}",
         "// reward.py v12 self-imitation: phase-indexed reference joint cycle",
         "// (walk/env/reference_gait.json), same generation-time pinning.",
         f"#define DW_REF_BINS {int(reward_mod.REF_BINS)}",
