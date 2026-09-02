@@ -244,6 +244,59 @@ cycle) is +0.24/step mean and does NOT flip v2's property:
 Judge-passing clean gait: +3.05/step (was +2.81). This lands as v2.1 for
 the GPU leg after the running v2 leg.
 
+## 11. BC pre-training (bc_init.pt): GPU legs start "already stepping"
+
+`walk/train/bc_pretrain.py` (robot-parameterized via
+`gpu_train.robot_classes`; the duck path is untouched — no duck dataset
+provider exists and asking for one is an explicit error) regresses a
+fresh ff Actor (52→256→256→12) onto `humanoid/bc_dataset.py`: the
+reference gait rolled CLOSED-LOOP over real fp32-serial-lane observations
+(the exact physics + obs distribution of the GPU legs; ~500× faster than
+the f64 oracle on contact-heavy stepping).
+
+Demonstrator labels, computed from the obs alone (no privileged state):
+lead-2 reference lookup (compensates the PD+slew lag; raw next-phase
+labels produced a non-stepping clone — measured) + an ankle balance
+assist −(2.0·obs[36] + 0.1·obs[41]) on both ankles (gains swept for max
+alternating lifts). Knee-plateau actions saturate at 1.0 by design
+(action box = ±0.5 vs reference knee 0.6); dataset and deployment stay
+consistent because the clipped actions themselves drive the recording
+env, and the imitation-reward shortfall from the unreachable 0.1 rad is
+< 2% of the bonus.
+
+Dataset (default config): 8 seeds × 3 commands × 4 envs × ≤60 steps =
+3584 pairs (envs die early — see below), contact channels live, ±0.02 rad
+joint-offset noise. BC: MSE(tanh(mu), labels clamped ±0.98), Adam 1e-3,
+300 epochs ≈ 7 s CPU, loss 0.0588 → 0.000197. Saved with log_std = −1.0:
+at ppo.py's −0.5 the exploration noise (±0.3 rad targets ≈ half the
+action box) knocks the fresh gait over; at −2.0 PPO is polish-cold; −1.0
+perturbs targets by ≈ the env slew step (one-step recoverable).
+
+Closed-loop replay of the committed bc_init.pt (deterministic, pinned by
+humanoid/tests/test_bc_pretrain.py): 3 commands × 3 seeds → 18 lifts,
+6 alternations, best sequence LRLR (cmd 1.0), every episode ≥ 0.72 s.
+HARD CEILING, morphology not training: all 12 joint axes are sagittal —
+zero roll authority — and single support is laterally statically unstable
+by ~1 cm (stance-foot inner edge vs CoM), so every non-recovery policy
+tips sideways within ~1 s. The BC init gives PPO stepping + alternation
++ the ankle reflex from step one; lateral survival strategies (stepping
+cadence as a stabilizer) are PPO's job.
+
+Orchestrator command line (deterministic; both artifacts drift-locked /
+handoff-tested by humanoid/tests/test_bc_pretrain.py):
+    .venv/bin/python -B -m walk.train.bc_pretrain --robot humanoid \
+        --out humanoid/bc_init.pt --checkpoint-out humanoid/bc_init_ckpt.pt \
+        --epochs 300 --seeds 11,22,33,44,55,66,77,88
+Flagship leg = v2.1 reward + 16384 envs, started from the cloned gait via
+the turnkey resume path (verified: resumes at update 0, first PPO update
+clean):
+    python -B -m walk.train.gpu_train --robot humanoid --lane-env \
+        --resume humanoid/bc_init_ckpt.pt --envs 16384 --device cuda \
+        --library <libduck_cuda.so built with -Ihumanoid/include> ...
+(bc_init.pt stays the actor-only artifact for evaluators/acceptance;
+bc_init_ckpt.pt is the same actor plus fresh critic/optimizer/generators
+in gpu_train's checkpoint schema.)
+
 ## 7. Smoke results (measured)
 
 `test_humanoid_train_smoke.py`: PPO through the unmodified
