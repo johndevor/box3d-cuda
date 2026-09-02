@@ -78,19 +78,25 @@ def main() -> int:
                          "improvement in best probe episodes")
     a = ap.parse_args()
 
-    best_ever, flat_legs = -1, 0
+    best_ever, flat_legs, failed_legs = -1, 0, 0
     for leg in range(1, a.legs + 1):
         print(f"=== chain leg {leg}/{a.legs} ===", flush=True)
         proc = subprocess.run(
             [sys.executable, "-B", str(ROOT / "gpu/run_daytona.py"),
-             "--spec", a.spec],
+             "run", "--spec", a.spec],
             cwd=ROOT, capture_output=True, text=True)
         sys.stdout.write(proc.stdout[-2000:])
         if proc.returncode != 0:
             sys.stderr.write(proc.stderr[-2000:])
+            failed_legs += 1
             print(f"leg {leg} failed (rc={proc.returncode}); "
                   "not counting toward plateau", flush=True)
+            if failed_legs >= 3:
+                print("3 consecutive leg failures — launcher or provider "
+                      "problem, aborting chain")
+                return 4
             continue
+        failed_legs = 0
         run_dir = latest_run_dir(proc.stdout)
         if run_dir is None:
             print("no run dir in launcher output; stopping"); return 1
