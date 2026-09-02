@@ -50,9 +50,19 @@ def leg_score(run_dir: Path) -> tuple[float, int, bool]:
     if metrics:
         rows = [json.loads(l) for l in
                 metrics[-1].read_text().splitlines() if l.strip()]
-        tail = [r["ep_len_mean"] for r in rows[-10:] if "ep_len_mean" in r]
-        if tail:
-            best = round(sum(tail) / len(tail), 1)
+        # Preferred fitness: judge-aligned qualified swings (ungameable);
+        # fall back to ep_len only when gate metrics are absent.
+        qual = [(r.get("gate_proxy_ep_qualified_l") or 0)
+                + (r.get("gate_proxy_ep_qualified_r") or 0)
+                for r in rows[-10:]
+                if r.get("gate_proxy_ep_qualified_l") is not None]
+        if qual:
+            best = round(sum(qual) / len(qual), 3)
+        else:
+            tail = [r["ep_len_mean"] for r in rows[-10:]
+                    if r.get("ep_len_mean") is not None]
+            if tail:
+                best = round(sum(tail) / len(tail), 1)
     return best, 0, False
 
 
