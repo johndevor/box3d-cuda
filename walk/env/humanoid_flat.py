@@ -81,7 +81,13 @@ PHASE_HZ_PER_MPS = float(_os.environ.get("HUMANOID_PHASE_HZ_PER_MPS", "3.33"))
 COMMANDS_MPS = (0.50, 0.75, 1.00)   # ~5x duck (leg-length ratio)
 HORIZON_STEPS = 400                 # 8 s at 0.02 s -- duck-proven horizon
 MIN_HEIGHT_FRACTION = 0.7           # of home root height (1.15 m -> 0.805)
-MAX_TILT_RAD = math.radians(45.0)
+# v2 (was 45 deg, the duck recipe): the leg-1 lunge survived 8 s at a
+# 32.5-34.7 deg lean -- past the FROZEN judge's 30 deg tilt criterion but
+# under the old termination. Leaning past the judge's limit must not be a
+# survivable strategy; 28 deg sits just inside 30 with margin for the
+# f32-lane vs judge measurement gap. Human walking pitch is <= ~15 deg, so
+# no legitimate gait is clipped. (Duck env keeps its own 45.)
+MAX_TILT_RAD = math.radians(28.0)
 MAX_PERTURBATION_RAD = 0.02         # duck spec bound for reset perturbation
 QDOT_OBS_SCALE = 0.05               # duck pinned-candidate scale
 

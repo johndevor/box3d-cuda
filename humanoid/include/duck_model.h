@@ -93,13 +93,13 @@ DW_MODEL_CONST double DW_HOME_TARGETS_F64[DW_J] = {0,0,0,0,0,0,0,0,0,0,0,0};
 // shape, NO imitation term -- empty hook, W_IMIT 0): generated so
 // any python-side change fails the drift test until regenerated.
 #define DW_RW_W_TRACK 1.0
-#define DW_RW_TRACK_SIGMA_SQ 0.25
+#define DW_RW_TRACK_SIGMA_SQ 0.09
 #define DW_RW_TRACK_EMA_S 0.2
 #define DW_RW_W_ALIVE 0.5
 #define DW_RW_W_LATERAL 0.5
 #define DW_RW_W_ACTION_RATE 0.01
 #define DW_RW_W_TORQUE 2e-07
-#define DW_RW_W_AIR_TIME 1.5
+#define DW_RW_W_AIR_TIME 3.0
 #define DW_RW_AIR_TIME_MIN 0.1
 #define DW_RW_AIR_TIME_MAX 0.5
 #define DW_RW_PLACEMENT_MIN_M 0.15
@@ -110,11 +110,11 @@ DW_MODEL_CONST double DW_HOME_TARGETS_F64[DW_J] = {0,0,0,0,0,0,0,0,0,0,0,0};
 #define DW_RW_STANCE_MIN_S 0.12
 #define DW_RW_W_CLEARANCE 0.1
 #define DW_RW_CLEARANCE_M 0.03
-#define DW_RW_W_DOUBLE_SUPPORT 0.5
+#define DW_RW_W_DOUBLE_SUPPORT 1.5
 #define DW_RW_DOUBLE_SUPPORT_GRACE 0.25
 #define DW_RW_W_ALTERNATE 0.5
 #define DW_RW_W_SAME_FOOT 2.0
-#define DW_RW_W_PHASE 0.5
+#define DW_RW_W_PHASE 1.0
 #define DW_RW_TICKS_FULL 10u
 #define DW_REF_BINS 64
 #define DW_IMIT_W 0.0
@@ -136,10 +136,10 @@ DW_MODEL_CONST double DW_HOME_TARGETS_F64[DW_J] = {0,0,0,0,0,0,0,0,0,0,0,0};
 #define DW_ENV_QDOT_OBS_SCALE 0.05
 #define DW_ENV_HORIZON_STEPS 400u
 #define DW_ENV_MIN_HEIGHT_FRACTION 0.7
-#define DW_ENV_MAX_TILT_RAD 0.7853981633974483
+#define DW_ENV_MAX_TILT_RAD 0.4886921905584123
 // termination up-scalar = cos(MAX_TILT), pinned in f64 (no libm
 // cos() in the kernel).
-#define DW_ENV_COS_MAX_TILT 0.7071067811865476
+#define DW_ENV_COS_MAX_TILT 0.882947592858927
 // tilt tests BODY +Y against world +Z (authored y-up-local root:
 // up = R[2][1] = 2*(qy*qz + qx*qw), humanoid_native_lane.tilt).
 #define DW_ENV_UP_AXIS 1

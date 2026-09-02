@@ -134,6 +134,71 @@ humanoid build. On top of that:
 CPU-lane training also works via `walk/train/run.py` unmodified (OBS/ACT
 read off the env class). GPU (Daytona) bring-up is the orchestrator's leg.
 
+## 8. Frozen walking judge (walk/eval/humanoid_gait.py + humanoid_acceptance.py)
+
+`walk/eval/humanoid_gait.py` is the FROZEN strict evaluator — a
+clause-for-clause port of the duck judge (walk/eval/gait.py) with
+morphology-scaled thresholds; the full threshold table with per-line
+justifications lives in its module docstring (anchors: x5 leg ratio, x4.3
+sole length, matched 0.6 s slowest-command cycle by clock construction;
+the 20 ms contact-debounce AMENDMENT is carried verbatim). Tilt is
+recomputed from `base_quat_xyzw` with the humanoid up axis; the shared
+capture (walk/eval/capture.py, untouched) records quats, so its duck-frame
+tilt column is simply ignored.
+
+`walk/eval/humanoid_acceptance.py` mirrors the duck multi-seed harness:
+same 4 seeds (4242/7/1913/90210) x commands 0.50/0.75/1.00 m/s, episodes
+on FlatFloorHumanoidEnv over the CPU-serial fp32 lane (`--lane native`
+swaps in the f64 oracle), `unpack_actor_file` for 52->12 actors.
+
+Synthetic gates (humanoid/tests/test_humanoid_gait_eval.py): a
+hand-authored clean gait PASSES all criteria; a flat shuffle fails ONLY
+the clearance clause; a one-leg hop fails per-foot balance + alternation;
+stand-still fails footfall counts + translation + step deadlines; 6 ms
+contact dropouts are debounced away; terminated/short traces are rejected.
+
+Leg-1 actor verdict (runs/gpu/20260901-200306-humanoid-train-ff,
+4 seeds x 3 commands = 0/12, remarkably uniform): **zero swings examined
+in every episode** — the feet never leave the ground; the policy survives
+8 s by leaning ~32.5-34.7 deg (over the judge's 30 deg, under the env's
+45 deg termination) and sliding ~0.43 m regardless of command (ratio
+0.054-0.108 of commanded translation). This is exactly the duck's
+documented pre-gait-shaping "lunge with feet never leaving the ground"
+attractor (walk/env/reward.py docstring): the reward's next need is
+making stepping pay vs the standing subsidy — addressed by reward v2 (§9).
+
+## 9. Reward v2 — breaking the lunge-and-slide attractor
+
+Weight-only rebalance (the term SHAPE stays the duck-v12 structure the
+robot-generic kernel implements, so env↔kernel bit-parity via the DW_RW_*
+header pins is preserved; a NEW term would need its kernel twin first):
+
+| constant | v1 | v2 | rationale |
+|---|---|---|---|
+| TRACK_SIGMA_SQ | 0.25 | **0.09** | σ 0.5→0.3: v1 paid the measured 0.054 m/s slide-creep up to 0.45 track at cmd 0.5 (standing subsidy); at σ 0.3 the creep earns ≤ 0.11 while a stepper within 0.3 m/s of command still earns ≥ 0.37 |
+| W_AIR_TIME | 1.5 | **3.0** | qualified steps are rarer on the biped (six gates at 5× scale); keeps the per-second step-bonus ceiling comparable to the duck's |
+| W_DOUBLE_SUPPORT | 0.5 | **1.5** | the only term active in a permanent commanded stand must outweigh its income (alive 0.5 + creep track ≤ 0.45) |
+| W_PHASE | 0.5 | **1.0** | doubles the in-phase stepping differential (±2/step); the duck's binding anti-limp force at the humanoid's larger standing subsidy |
+| env MAX_TILT | 45° | **28°** | leg-1 survived 8 s at a 32.5–34.7° lean — past the FROZEN judge's 30°; termination now sits just inside the judge with 2° measurement margin (walking pitch ≤ ~15°, no legitimate gait clipped); header DW_ENV_MAX_TILT_RAD/COS_MAX_TILT regenerated |
+
+Measured stand-vs-step gap (authored trajectories through the real
+reward(), pinned forever by humanoid/tests/test_humanoid_reward_v2.py):
+perfect stand+lean per step −0.85 / −0.95 / −0.95 at cmd 0.5/0.75/1.0
+(v1: +0.28..+0.45 — the attractor's income); crude half-speed in-phase
+stepper +2.04 / +1.75 / +1.61 (gap ≥ 2.6/step); the judge-passing clean
+gait scores +2.81/step vs the stand's −0.85 at cmd 0.5, tying the reward's
+preference to the frozen judge's verdict. Standing a whole episode now
+loses to falling at t=0.
+
+Known residual loophole (documented in humanoid_reward.py, not yet
+observed): a permanent ONE-legged stand nets ~+0.6/step (no double-support
+penalty; the signed phase term nets 0). If it emerges, the counter is a
+no-swing term (continuous stance OR air beyond ~2 slowest cycles at
+|cmd|>0) — a shape change that must land in the kernel first.
+
+Fresh GPU legs must start from FRESH inits: the leg-1/leg-chain policies
+were optimized for the v1 landscape (lunge) and would fight v2.
+
 ## 7. Smoke results (measured)
 
 `test_humanoid_train_smoke.py`: PPO through the unmodified

@@ -1,6 +1,37 @@
-"""Reward v1 for velocity-commanded flat-floor H0 humanoid walking.
+"""Reward v2 for velocity-commanded flat-floor H0 humanoid walking.
 
-A port of walk/env/reward.py's duck v12 SHAPE (rolling-EMA velocity
+V2 (anti-attractor rebalance, weights ONLY -- the term SHAPE is frozen to
+the duck-v12 structure the robot-generic kernel implements, so env and
+in-kernel training stay bit-comparable through the DW_RW_* header pins):
+the frozen judge's leg-1 verdict showed the reward's optimum was a
+lunge-and-slide -- 8 s survival with ZERO swings, ~33 deg lean, ~0.43 m of
+sliding (humanoid/PHASE2.md section 8), i.e. v1's standing subsidy
+(alive + wide-sigma tracking creep = up to ~+0.95/step) beat its only
+standing penalty (double-support -0.5). V2 makes commanded standing
+STRICTLY LOSING and doubles the stepping differential:
+
+  back-of-envelope per policy step at |cmd| > 0 (see
+  humanoid/tests/test_humanoid_reward_v2.py, which pins these on authored
+  trajectories):
+    perfect stand+lean (v1):  +0.28 .. +0.45  <- the observed attractor
+    perfect stand+lean (v2):  -0.89 .. -1.00  (strictly worse than falling
+                                               at t=0, which scores ~0)
+    crude in-phase stepper (v2): >= +1.5      (gap > 2.4/step)
+
+The four changed weights (rationale one-liners at each constant):
+TRACK_SIGMA_SQ 0.25 -> 0.09, W_AIR_TIME 1.5 -> 3.0,
+W_DOUBLE_SUPPORT 0.5 -> 1.5, W_PHASE 0.5 -> 1.0. Everything else is v1.
+
+Known residual loophole (documented, not yet observed): a PERMANENT
+one-legged stand pays no double-support penalty and nets ~+0.6/step; the
+signed phase term nets it 0 rather than negative (same as the duck). If a
+one-foot-lean attractor emerges, the counter is a no-swing term (penalize
+any foot with continuous stance OR air beyond ~2 slowest cycles at
+|cmd|>0) -- that is a SHAPE change requiring the kernel twin first; do not
+add it python-side alone or env/kernel rewards silently diverge.
+
+Base structure (v1, unchanged): a port of walk/env/reward.py's duck v12
+SHAPE (rolling-EMA velocity
 tracking, alive, lateral/yaw, action-rate, torque, evaluator-style
 qualified steps with placement/opposite-support/stance gates, chatter,
 flicker, clearance, phase-locked stance, double-support, alternation /
@@ -41,8 +72,11 @@ IMIT_SIGMA_SQ = 0.04             # placeholder kept for header pinning
 
 # ---- weights (one-line rationale each; duck v12 value in [brackets]) -------
 W_TRACK = 1.0            # [1.0] primary objective, dimensionless bonus.
-TRACK_SIGMA_SQ = 0.25    # [0.01] sigma 0.5 m/s keeps the duck's sigma/command
-                         # ratio (~0.67) at humanoid commands 0.5-1.0 m/s.
+TRACK_SIGMA_SQ = 0.09    # [0.01] v2 (was 0.25): sigma 0.3 m/s. v1's 0.5
+                         # sigma paid the lunge-and-slide 0.054 m/s creep up
+                         # to 0.45 track at cmd 0.5 (the standing subsidy);
+                         # at 0.3 the creep earns <= 0.11 while a stepper
+                         # within 0.3 m/s of command still earns >= 0.37.
 TRACK_EMA_S = 0.2        # [0.4] ~half a gait period: humanoid clock is
                          # 2.5 Hz at 0.75 m/s (period 0.4 s) vs duck 0.8 s.
 W_ALIVE = 0.5            # [0.5] survival bonus, dimensionless.
@@ -52,7 +86,11 @@ W_ACTION_RATE = 0.01     # [0.01] actions are dimensionless in both robots.
 W_TORQUE = 2e-7          # [2e-4] equal penalty at full saturation: duck
                          # sum(cap^2)=146 vs humanoid 172600 (tiers
                          # 180/140/70) -> 2e-4 * 146 / 172600 ~= 1.7e-7.
-W_AIR_TIME = 1.5         # [1.5] per qualified touchdown, dimensionless.
+W_AIR_TIME = 3.0         # [1.5] v2 (was 1.5): qualified steps are rarer on
+                         # the biped (six gates at 5x scale); doubling keeps
+                         # the per-second step-bonus ceiling comparable to
+                         # the duck's and makes attempting steps beat the
+                         # (now negative) standing baseline in expectation.
 AIR_TIME_MIN = 0.10      # [0.08] swing at 2.5 steps/s is ~0.16-0.30 s;
 AIR_TIME_MAX = 0.50      # [0.40] window scaled with the slower cadence.
 PLACEMENT_MIN_M = 0.15   # [0.030] leg-ratio (~5x) scaled minimum step.
@@ -66,12 +104,20 @@ STANCE_MIN_S = 0.12      # [0.06] humanoid stance is ~60% of a 0.4 s cycle
                          # (~0.24 s); floor at half of that, like the duck.
 W_CLEARANCE = 0.1        # [0.1] per swing foot clearing CLEARANCE_M.
 CLEARANCE_M = 0.030      # [0.010] human-scale swing-foot clearance ~3-5 cm.
-W_DOUBLE_SUPPORT = 0.5   # [0.5] penalty past the grace while commanded.
+W_DOUBLE_SUPPORT = 1.5   # [0.5] v2 (was 0.5): the ONLY term active during a
+                         # permanent commanded stand must outweigh the
+                         # stand's income (alive 0.5 + track creep <= 0.45);
+                         # at 1.5 a perfect stand+lean nets -0.89..-1.0 per
+                         # step -- strictly worse than falling immediately.
 DOUBLE_SUPPORT_GRACE = 0.25  # [0.25] ~ double-support share of a cycle;
                          # right order for 0.4-0.8 s humanoid cycles, keep.
 W_ALTERNATE = 0.5        # [0.5] anti-limp structure, dimensionless.
 W_SAME_FOOT = 2.0        # [2.0] duck-proven repeat-foot pricing.
-W_PHASE = 0.5            # [0.5] phase-locked stance, dimensionless.
+W_PHASE = 1.0            # [0.5] v2 (was 0.5): doubles the in-phase stepping
+                         # differential (+-2/step at full match/mismatch);
+                         # the duck's binding anti-limp force, scaled to the
+                         # humanoid's larger standing subsidy. A permanent
+                         # double-stand still nets exactly 0 here (signed).
 
 
 def reward(prev_state: dict, state: dict, action: np.ndarray,

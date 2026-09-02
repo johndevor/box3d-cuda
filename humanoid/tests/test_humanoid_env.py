@@ -219,7 +219,12 @@ class TerminationTests(unittest.TestCase):
         env = FlatFloorHumanoidEnv(environments=1, seed=9)
         try:
             self.assertAlmostEqual(env._min_height, 0.7 * 1.15, places=9)
-            self.assertEqual(hf.MAX_TILT_RAD, math.radians(45.0))
+            # v2: termination just inside the FROZEN judge's 30 deg, so a
+            # judge-failing lean is never a survivable strategy
+            self.assertEqual(hf.MAX_TILT_RAD, math.radians(28.0))
+            from walk.eval import humanoid_gait  # noqa: PLC0415
+            self.assertLess(math.degrees(hf.MAX_TILT_RAD),
+                            humanoid_gait.TILT_MAX_DEG)
             # done stays terminal until reset (no auto-reset), duck contract
             env._done[:] = True
             obs, r, done, info = env.step(np.zeros((1, 12)))
