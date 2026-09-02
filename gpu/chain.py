@@ -103,8 +103,12 @@ def leg_score(run_dir: Path) -> tuple[float, int, bool]:
         confirmed |= ACCEPTED.search(text) is not None
         confirmed |= CANDIDATE.search(text) is not None
     confirmed |= accepted_dir(run_dir) is not None
-    if probes:
+    if probes and best > 0:
         return best, probes, confirmed
+    # Probes seen but no cell has passed yet (early lineage): the plateau
+    # rule must track training PROGRESS (gate-proxy qualified swings), not a
+    # flat zero -- 2026-09-02 a fresh TALL lineage was stopped at 0.0 while
+    # its qualified swings were climbing 0.4 -> 2.2.
     metrics = sorted(run_dir.glob("artifacts/**/metrics.jsonl"))
     if metrics:
         rows = [json.loads(l) for l in
