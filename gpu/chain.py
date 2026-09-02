@@ -171,7 +171,12 @@ def judge_command(robot: str, variant: str | None, actor: Path,
     """argv of the robot's CPU acceptance harness for `actor`."""
     if robot not in HARNESS_MODULE:
         raise ValueError(f"no CPU harness for robot {robot!r}")
-    cmd = [sys.executable, "-B", "-m", HARNESS_MODULE[robot],
+    # The chain may run under the launcher's host runtime (no numpy/torch);
+    # the judge must run under the project venv (2026-09-02: every STOCKY
+    # candidate came back "judge failed: No module named numpy").
+    venv_py = ROOT / ".venv/bin/python"
+    py = str(venv_py) if venv_py.is_file() else sys.executable
+    cmd = [py, "-B", "-m", HARNESS_MODULE[robot],
            "--actor", str(actor), "--out", str(out_dir)]
     if robot == "humanoid" and variant not in (None, "", "h1"):
         cmd += ["--variant", variant]
