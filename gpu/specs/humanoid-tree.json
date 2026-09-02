@@ -23,7 +23,7 @@
     },
     {
       "name": "train",
-      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --robot humanoid --envs 16384 --horizon 64 --updates 99999 --seed 917 --device cuda --library experimental/duck_cuda/build-humanoid/libhumanoid_cuda_fast.so --lane-env --curriculum humanoid-walk --policy ff --resume humanoid/bc_init_ckpt.pt --out gpu-train-out --lr 3e-4 --max-wall-s 600 2>&1 | tee gpu-train.log",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --robot humanoid --envs 16384 --horizon 64 --updates 99999 --seed 917 --device cuda --library experimental/duck_cuda/build-humanoid/libhumanoid_cuda_fast.so --lane-env --curriculum humanoid-walk --rsi-fraction 0.5 --policy ff --resume humanoid/bc_init_ckpt.pt --out gpu-train-out --lr 3e-4 --max-wall-s 600 2>&1 | tee gpu-train.log",
       "timeout_s": 900,
       "artifacts": [
         "gpu-train.log",
