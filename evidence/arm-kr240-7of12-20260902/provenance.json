@@ -1,0 +1,20 @@
+{
+ "spec": "arm-reach-kr240-continue",
+ "leg": 2,
+ "run_dir": "/Users/john/Code/duck-grid-walk/runs/gpu/20260902-184242-arm-reach-kr240-continue",
+ "source_actor": "/Users/john/Code/duck-grid-walk/runs/gpu/20260902-184242-arm-reach-kr240-continue/artifacts/train/gpu-train-out/actor_final.pt",
+ "cells_passed": 7,
+ "cells_total": 12,
+ "failed_cells": [
+  "seed4242-tier1",
+  "seed4242-tier2",
+  "seed7-tier1",
+  "seed7-tier2",
+  "seed90210-tier2"
+ ],
+ "accepted": false,
+ "judge_wall_s": 3.4,
+ "actor": "/Users/john/Code/duck-grid-walk/runs/gpu/20260902-184242-arm-reach-kr240-continue/artifacts/train/gpu-train-out/actor_final.pt",
+ "acceptance_json": "/Users/john/Code/duck-grid-walk/runs/gpu/20260902-184242-arm-reach-kr240-continue/judge/actor_final/acceptance.json",
+ "recorded_at": "2026-09-02T19:04:06"
+}

@@ -1,0 +1,774 @@
+{
+ "schema": "duckgridwalk.arm-multiseed-acceptance/1",
+ "variant": "kr240",
+ "policy": "runs/best-arm-reach-kr240-continue.pt",
+ "lane": "serial",
+ "seeds": [
+  4242,
+  7,
+  1913,
+  90210
+ ],
+ "tiers": [
+  0,
+  1,
+  2
+ ],
+ "episodes": {
+  "seed4242-tier0": {
+   "passed": true,
+   "failed_criteria": [],
+   "acquisition_times_s": [
+    0.62,
+    1.1400000000000001,
+    1.84,
+    2.48,
+    3.14
+   ],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "all_5_targets_acquired_in_order": {
+     "pass": true,
+     "detail": {
+      "acquired": [
+       true,
+       true,
+       true,
+       true,
+       true
+      ],
+      "times_s": [
+       0.62,
+       1.1400000000000001,
+       1.84,
+       2.48,
+       3.14
+      ],
+      "min_dist_m": [
+       0.013719112785530686,
+       0.008424405654036373,
+       0.007905575542202004,
+       0.004202204924565702,
+       0.00905054849188253
+      ]
+     }
+    },
+    "joint_limits_respected": {
+     "pass": true,
+     "detail": {
+      "max_excess_rad": 0.0
+     }
+    },
+    "joint_speed_within_urdf_limits": {
+     "pass": true,
+     "detail": {
+      "max_speed_ratio": 0.9236744136928121,
+      "per_joint": [
+       0.678840879526776,
+       0.7979225087401692,
+       0.9236744136928121,
+       0.36198516734568725,
+       0.4548590416146301,
+       0.16176319474089113
+      ]
+     }
+    },
+    "no_self_collision_or_floor_proxy_violation": {
+     "pass": true,
+     "detail": {
+      "violating_ticks": 0,
+      "min_tip_z_m": 1.3221686153015624,
+      "min_wrist_z_m": 1.356787455956824,
+      "min_elbow_z_m": 2.0163263776447153
+     }
+    }
+   }
+  },
+  "seed4242-tier1": {
+   "passed": false,
+   "failed_criteria": [
+    "joint_speed_within_urdf_limits"
+   ],
+   "acquisition_times_s": [
+    0.64,
+    1.52,
+    2.2800000000000002,
+    3.16,
+    3.86
+   ],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "all_5_targets_acquired_in_order": {
+     "pass": true,
+     "detail": {
+      "acquired": [
+       true,
+       true,
+       true,
+       true,
+       true
+      ],
+      "times_s": [
+       0.64,
+       1.52,
+       2.2800000000000002,
+       3.16,
+       3.86
+      ],
+      "min_dist_m": [
+       0.012934950342026906,
+       0.009410480372598054,
+       0.0095164762226945,
+       0.006673988920247292,
+       0.005039795880234945
+      ]
+     }
+    },
+    "joint_limits_respected": {
+     "pass": true,
+     "detail": {
+      "max_excess_rad": 0.0
+     }
+    },
+    "joint_speed_within_urdf_limits": {
+     "pass": false,
+     "detail": {
+      "max_speed_ratio": 1.0338047752732813,
+      "per_joint": [
+       1.0338047752732813,
+       0.8155769437756586,
+       0.8145942961436311,
+       0.4852805971045848,
+       0.47655759700487577,
+       0.17847481209381538
+      ]
+     }
+    },
+    "no_self_collision_or_floor_proxy_violation": {
+     "pass": true,
+     "detail": {
+      "violating_ticks": 0,
+      "min_tip_z_m": 0.8809228396369374,
+      "min_wrist_z_m": 1.0084104603939643,
+      "min_elbow_z_m": 1.7918605490381956
+     }
+    }
+   }
+  },
+  "seed4242-tier2": {
+   "passed": false,
+   "failed_criteria": [
+    "all_5_targets_acquired_in_order",
+    "joint_speed_within_urdf_limits"
+   ],
+   "acquisition_times_s": [
+    0.78,
+    1.96,
+    3.0,
+    null,
+    null
+   ],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "all_5_targets_acquired_in_order": {
+     "pass": false,
+     "detail": {
+      "acquired": [
+       true,
+       true,
+       true,
+       false,
+       false
+      ],
+      "times_s": [
+       0.78,
+       1.96,
+       3.0,
+       null,
+       null
+      ],
+      "min_dist_m": [
+       0.005997673225724139,
+       0.01705390129031402,
+       0.013768536511825968,
+       0.019856569130969545,
+       null
+      ]
+     }
+    },
+    "joint_limits_respected": {
+     "pass": true,
+     "detail": {
+      "max_excess_rad": 0.0
+     }
+    },
+    "joint_speed_within_urdf_limits": {
+     "pass": false,
+     "detail": {
+      "max_speed_ratio": 2.438673993765045,
+      "per_joint": [
+       2.438673993765045,
+       0.9663324695960837,
+       0.9686848204067603,
+       0.46448886033304293,
+       0.4196895280877257,
+       0.2676456072133859
+      ]
+     }
+    },
+    "no_self_collision_or_floor_proxy_violation": {
+     "pass": true,
+     "detail": {
+      "violating_ticks": 0,
+      "min_tip_z_m": 0.5682435996423169,
+      "min_wrist_z_m": 0.5210501632586391,
+      "min_elbow_z_m": 0.3456913467792295
+     }
+    }
+   }
+  },
+  "seed7-tier0": {
+   "passed": true,
+   "failed_criteria": [],
+   "acquisition_times_s": [
+    0.62,
+    1.22,
+    1.98,
+    2.74,
+    3.4
+   ],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "all_5_targets_acquired_in_order": {
+     "pass": true,
+     "detail": {
+      "acquired": [
+       true,
+       true,
+       true,
+       true,
+       true
+      ],
+      "times_s": [
+       0.62,
+       1.22,
+       1.98,
+       2.74,
+       3.4
+      ],
+      "min_dist_m": [
+       0.007006844960415643,
+       0.008194115575408199,
+       0.00790244245395376,
+       0.013378418562820791,
+       0.008080941603165451
+      ]
+     }
+    },
+    "joint_limits_respected": {
+     "pass": true,
+     "detail": {
+      "max_excess_rad": 0.0
+     }
+    },
+    "joint_speed_within_urdf_limits": {
+     "pass": true,
+     "detail": {
+      "max_speed_ratio": 0.9261181191268867,
+      "per_joint": [
+       0.6775353186134724,
+       0.7636871406250626,
+       0.9261181191268867,
+       0.32525795785793193,
+       0.5026947688364906,
+       0.16661233099474018
+      ]
+     }
+    },
+    "no_self_collision_or_floor_proxy_violation": {
+     "pass": true,
+     "detail": {
+      "violating_ticks": 0,
+      "min_tip_z_m": 1.4880043137994419,
+      "min_wrist_z_m": 1.511044518608399,
+      "min_elbow_z_m": 1.9407403001104993
+     }
+    }
+   }
+  },
+  "seed7-tier1": {
+   "passed": false,
+   "failed_criteria": [
+    "single_episode_no_reset_or_failure"
+   ],
+   "acquisition_times_s": [],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": false,
+     "detail": "terminated before the horizon"
+    }
+   }
+  },
+  "seed7-tier2": {
+   "passed": false,
+   "failed_criteria": [
+    "single_episode_no_reset_or_failure"
+   ],
+   "acquisition_times_s": [],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": false,
+     "detail": "terminated before the horizon"
+    }
+   }
+  },
+  "seed1913-tier0": {
+   "passed": true,
+   "failed_criteria": [],
+   "acquisition_times_s": [
+    0.62,
+    1.3800000000000001,
+    2.04,
+    2.56,
+    3.22
+   ],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "all_5_targets_acquired_in_order": {
+     "pass": true,
+     "detail": {
+      "acquired": [
+       true,
+       true,
+       true,
+       true,
+       true
+      ],
+      "times_s": [
+       0.62,
+       1.3800000000000001,
+       2.04,
+       2.56,
+       3.22
+      ],
+      "min_dist_m": [
+       0.007002476579412856,
+       0.002084886452055425,
+       0.01166863212490414,
+       0.009355607649370795,
+       0.00820843695643162
+      ]
+     }
+    },
+    "joint_limits_respected": {
+     "pass": true,
+     "detail": {
+      "max_excess_rad": 0.0
+     }
+    },
+    "joint_speed_within_urdf_limits": {
+     "pass": true,
+     "detail": {
+      "max_speed_ratio": 0.8928979183586176,
+      "per_joint": [
+       0.6574194153703478,
+       0.8214434931809109,
+       0.8928979183586176,
+       0.3235057332531418,
+       0.574159823921202,
+       0.2033170905363014
+      ]
+     }
+    },
+    "no_self_collision_or_floor_proxy_violation": {
+     "pass": true,
+     "detail": {
+      "violating_ticks": 0,
+      "min_tip_z_m": 1.2658250461861646,
+      "min_wrist_z_m": 1.3046748402123065,
+      "min_elbow_z_m": 1.972107453017775
+     }
+    }
+   }
+  },
+  "seed1913-tier1": {
+   "passed": true,
+   "failed_criteria": [],
+   "acquisition_times_s": [
+    0.7000000000000001,
+    1.74,
+    2.7,
+    3.42,
+    4.18
+   ],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "all_5_targets_acquired_in_order": {
+     "pass": true,
+     "detail": {
+      "acquired": [
+       true,
+       true,
+       true,
+       true,
+       true
+      ],
+      "times_s": [
+       0.7000000000000001,
+       1.74,
+       2.7,
+       3.42,
+       4.18
+      ],
+      "min_dist_m": [
+       0.013620604032266581,
+       0.01291315211738902,
+       0.0067219618919120375,
+       0.008836024232149933,
+       0.00975500390724432
+      ]
+     }
+    },
+    "joint_limits_respected": {
+     "pass": true,
+     "detail": {
+      "max_excess_rad": 0.0
+     }
+    },
+    "joint_speed_within_urdf_limits": {
+     "pass": true,
+     "detail": {
+      "max_speed_ratio": 0.9664034689984388,
+      "per_joint": [
+       0.9664034689984388,
+       0.8447254937355781,
+       0.9613201678708699,
+       0.45142720953582954,
+       0.5455991000578712,
+       0.20205128397933295
+      ]
+     }
+    },
+    "no_self_collision_or_floor_proxy_violation": {
+     "pass": true,
+     "detail": {
+      "violating_ticks": 0,
+      "min_tip_z_m": 0.8482723728011734,
+      "min_wrist_z_m": 0.9762037598562501,
+      "min_elbow_z_m": 1.8855767804320285
+     }
+    }
+   }
+  },
+  "seed1913-tier2": {
+   "passed": true,
+   "failed_criteria": [],
+   "acquisition_times_s": [
+    0.62,
+    1.48,
+    2.92,
+    3.62,
+    4.9
+   ],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "all_5_targets_acquired_in_order": {
+     "pass": true,
+     "detail": {
+      "acquired": [
+       true,
+       true,
+       true,
+       true,
+       true
+      ],
+      "times_s": [
+       0.62,
+       1.48,
+       2.92,
+       3.62,
+       4.9
+      ],
+      "min_dist_m": [
+       0.010683656518173606,
+       0.015751703129829493,
+       0.010645592514558546,
+       0.008455808619838745,
+       0.01858750917645967
+      ]
+     }
+    },
+    "joint_limits_respected": {
+     "pass": true,
+     "detail": {
+      "max_excess_rad": 0.0
+     }
+    },
+    "joint_speed_within_urdf_limits": {
+     "pass": true,
+     "detail": {
+      "max_speed_ratio": 0.9422192678915341,
+      "per_joint": [
+       0.8464315854562419,
+       0.8046123863342659,
+       0.9422192678915341,
+       0.45984047507495335,
+       0.43348457601500623,
+       0.23607259131201427
+      ]
+     }
+    },
+    "no_self_collision_or_floor_proxy_violation": {
+     "pass": true,
+     "detail": {
+      "violating_ticks": 0,
+      "min_tip_z_m": 0.6412274422715576,
+      "min_wrist_z_m": 0.8676268127992036,
+      "min_elbow_z_m": 2.064071403505905
+     }
+    }
+   }
+  },
+  "seed90210-tier0": {
+   "passed": true,
+   "failed_criteria": [],
+   "acquisition_times_s": [
+    0.62,
+    1.26,
+    1.74,
+    2.44,
+    3.14
+   ],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "all_5_targets_acquired_in_order": {
+     "pass": true,
+     "detail": {
+      "acquired": [
+       true,
+       true,
+       true,
+       true,
+       true
+      ],
+      "times_s": [
+       0.62,
+       1.26,
+       1.74,
+       2.44,
+       3.14
+      ],
+      "min_dist_m": [
+       0.008061132935621777,
+       0.003061351942773625,
+       0.008142109324457608,
+       0.013698574984971656,
+       0.0092713238079858
+      ]
+     }
+    },
+    "joint_limits_respected": {
+     "pass": true,
+     "detail": {
+      "max_excess_rad": 0.0
+     }
+    },
+    "joint_speed_within_urdf_limits": {
+     "pass": true,
+     "detail": {
+      "max_speed_ratio": 0.8910409262589581,
+      "per_joint": [
+       0.7358380165079536,
+       0.6715697881088589,
+       0.8910409262589581,
+       0.31122073515983784,
+       0.4784393403733941,
+       0.1553632572929774
+      ]
+     }
+    },
+    "no_self_collision_or_floor_proxy_violation": {
+     "pass": true,
+     "detail": {
+      "violating_ticks": 0,
+      "min_tip_z_m": 1.2896340792213108,
+      "min_wrist_z_m": 1.3684686767528966,
+      "min_elbow_z_m": 2.122145600950727
+     }
+    }
+   }
+  },
+  "seed90210-tier1": {
+   "passed": true,
+   "failed_criteria": [],
+   "acquisition_times_s": [
+    0.8,
+    1.82,
+    2.7600000000000002,
+    3.96,
+    4.82
+   ],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "all_5_targets_acquired_in_order": {
+     "pass": true,
+     "detail": {
+      "acquired": [
+       true,
+       true,
+       true,
+       true,
+       true
+      ],
+      "times_s": [
+       0.8,
+       1.82,
+       2.7600000000000002,
+       3.96,
+       4.82
+      ],
+      "min_dist_m": [
+       0.009357189620330431,
+       0.01719792591835933,
+       0.008027202350621748,
+       0.013666905229355071,
+       0.008501373364238837
+      ]
+     }
+    },
+    "joint_limits_respected": {
+     "pass": true,
+     "detail": {
+      "max_excess_rad": 0.0
+     }
+    },
+    "joint_speed_within_urdf_limits": {
+     "pass": true,
+     "detail": {
+      "max_speed_ratio": 0.914891714914913,
+      "per_joint": [
+       0.8372018772218779,
+       0.914891714914913,
+       0.9016100308085172,
+       0.5192507407198759,
+       0.4941195467633761,
+       0.1878441413411294
+      ]
+     }
+    },
+    "no_self_collision_or_floor_proxy_violation": {
+     "pass": true,
+     "detail": {
+      "violating_ticks": 0,
+      "min_tip_z_m": 0.8633278489842011,
+      "min_wrist_z_m": 0.9455603297476497,
+      "min_elbow_z_m": 1.919668157654918
+     }
+    }
+   }
+  },
+  "seed90210-tier2": {
+   "passed": false,
+   "failed_criteria": [
+    "all_5_targets_acquired_in_order",
+    "joint_speed_within_urdf_limits"
+   ],
+   "acquisition_times_s": [
+    0.88,
+    1.9000000000000001,
+    2.92,
+    4.1,
+    null
+   ],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "all_5_targets_acquired_in_order": {
+     "pass": false,
+     "detail": {
+      "acquired": [
+       true,
+       true,
+       true,
+       true,
+       false
+      ],
+      "times_s": [
+       0.88,
+       1.9000000000000001,
+       2.92,
+       4.1,
+       null
+      ],
+      "min_dist_m": [
+       0.009656626256519711,
+       0.006929078731471137,
+       0.009815771170619941,
+       0.01899806215955639,
+       0.03499269251217762
+      ]
+     }
+    },
+    "joint_limits_respected": {
+     "pass": true,
+     "detail": {
+      "max_excess_rad": 0.0
+     }
+    },
+    "joint_speed_within_urdf_limits": {
+     "pass": false,
+     "detail": {
+      "max_speed_ratio": 2.4186775091307533,
+      "per_joint": [
+       0.9894896426818668,
+       2.4186775091307533,
+       0.9581125739697294,
+       0.4302958115057144,
+       0.6673340767826833,
+       0.16972270321377084
+      ]
+     }
+    },
+    "no_self_collision_or_floor_proxy_violation": {
+     "pass": true,
+     "detail": {
+      "violating_ticks": 0,
+      "min_tip_z_m": 0.5993380633194396,
+      "min_wrist_z_m": 0.5937428218692538,
+      "min_elbow_z_m": 1.485338906286451
+     }
+    }
+   }
+  }
+ },
+ "accepted": false
+}
