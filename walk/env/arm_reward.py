@@ -1,4 +1,4 @@
-"""Reward v5 for the fixed-base arm reach task (walk/env/arm_reach.py).
+"""Reward v6 for the fixed-base arm reach task (walk/env/arm_reach.py).
 
 HISTORY (each version's failure is a measured fact, not a guess):
   v1  gaussian at sigma = 0.10 * reach + linear far-field + acquisition
@@ -41,10 +41,22 @@ HISTORY (each version's failure is a measured fact, not a guess):
       scaled by 1 - mean u^2) was tried and REVERTED: 6.9M steps, 0
       acquisitions and violating ticks rising 2400 -> 2600.
 
-v5 (shipped): constant gradient in LOG distance from 16 cm down to 1 cm,
-and a commanded-speed term heavy enough on the tip-blind wrist (a6 is a
-pure tool roll -- nothing but this term ever quiets its exploration noise,
-the source of the 1.8x speed peaks). Per policy step (0.02 s), d = |tip -
+  v5  gaussian ladder + per-joint commanded-speed weights; DELTA action
+      contract adopted alongside it. GPU leg runs/gpu/20260902-160543
+      (62.6M steps): 8/12 judged episodes acquire all 5 targets in 4-6 s,
+      1/12 PASS -- the rest fail ONLY the speed clause. Replay diagnosis:
+      11.6 % of control steps carry a tick over 1.0x, 84 % of them on a2
+      (shoulder) as mid-approach ramps to 1.3-1.8x, and 17 % of the
+      violating steps were TICK-ONLY (boundary ratio <= 1.0) so the v5
+      boundary term charged them exactly 0. The incentive being paid for
+      is the on-target-vs-transit reward gap: ~6-7/step on target vs
+      ~1.5/step in transit, so shaving one step off a transfer is worth
+      ~4-5, more than a 1.3x boundary excess (1.0) costs.
+
+v6 (shipped): v5 plus a TICK-LEVEL speed term that charges every
+speed-violating tick of the step (the kernel's per-tick judge-clause
+counter), sized against that measured incentive. Per policy step (0.02 s),
+d = |tip -
 target|, R = reach (variant), rho = the judge's acquisition radius
 (ACQ_RADIUS_M[variant], 2 cm / 1.5 cm), h = consecutive in-radius policy
 boundaries INCLUDING this one (the env's hold counter after its update; 0
@@ -107,6 +119,22 @@ the URDF limit (|u_j| <= 1; 0 for done envs):
                                                     smooths the PD's target
                                                     steps
   - W_TORQUE * mean_j (tau_j / cap_j)^2             PD torque estimate
+  - W_SPEED_TICKS * (speed-violating ticks this step / TICKS_PER_STEP)
+        TICK-LEVEL speed clause (v6): the fraction of this step's accepted
+        ticks on which ANY joint exceeded 1.0x its URDF limit -- exactly
+        the frozen judge's clause 4 at tick resolution (the kernel's
+        rt_speed_ticks counter; the python env reads the same counter from
+        the lane, so parity is bit-exact). SIZING against the measured
+        hurry incentive: on target the dense reward is ~7.0/step, in
+        transit at 30 cm ~1.4/step, so arriving one step earlier is worth
+        the GAP ~5.6; with W_SPEED_TICKS = 15 a single violating tick
+        costs 1.5, four ticks (0.08 s) cost 6.0 > 5.6, a whole violating
+        step costs 15 -- overspeeding for more than a third of a step can
+        never be bought by the step it saves, and one blip already costs
+        more than the whole boundary term did at 1.3x (1.0). Sanity vs
+        the v3 suicide lesson: a fresh DELTA policy violates on 1-3 % of
+        ticks (45-114 per 4000-tick episode), i.e. ~0.15-0.45/step, far
+        below W_ALIVE + far-field.
   - W_SPEED * sum_j max(0, |qd_j| / vlim_j - SPEED_FRAC)^2
         boundary quadratic excess above SPEED_FRAC = 1.0 x the URDF limit
         (the judge's clause 4 boundary). SIZING: the maximum dense reward
@@ -141,23 +169,25 @@ W_ACTION_RATE_J = (0.05, 0.05, 0.05, 0.2, 0.2, 0.2)
 W_TORQUE = 0.05
 W_SPEED = 11.0
 SPEED_FRAC = 1.0
+W_SPEED_TICKS = 15.0
 W_PROXY = 10.0
-VERSION = 5
+VERSION = 6
 
 CONSTANT_NAMES = ("W_ALIVE", "W_DIST", "DIST_SIGMA_FRAC", "W_SCALE", "W_LIN",
                   "W_HOLD", "W_ACQUIRE", "W_TORQUE", "W_SPEED", "SPEED_FRAC",
-                  "W_PROXY")
+                  "W_SPEED_TICKS", "W_PROXY")
 TABLE_NAMES = ("DIST_SCALE_RADII", "W_COMMAND_SPEED_J", "W_ACTION_RATE_J")
 
 
 def reward(cur: dict, action: np.ndarray, prev_action: np.ndarray,
            reach: float, effort_cap: np.ndarray, velocity_limit: np.ndarray,
-           acq_radius: float, hold_steps: int) -> np.ndarray:
+           acq_radius: float, hold_steps: int, ticks_per_step: int) -> np.ndarray:
     """[E] f64 reward. cur: {'tip_dist' [E], 'hold' [E] int (consecutive
     in-radius boundaries incl. this one, 0 outside), 'acquired' [E] bool,
     'command_speed' [E,J] (slew-clamped target increment / max increment,
-    0 for done envs), 'torque' [E,J], 'qd' [E,J], 'proxy_violation' [E]
-    bool}."""
+    0 for done envs), 'speed_ticks' [E] int (accepted ticks of this step
+    with any joint over 1.0x its URDF limit), 'torque' [E,J], 'qd' [E,J],
+    'proxy_violation' [E] bool}."""
     d = np.asarray(cur["tip_dist"], float)
     sigma = DIST_SIGMA_FRAC * float(reach)
     r = W_DIST * np.exp(-(d / sigma) ** 2) - W_LIN * d / float(reach)
@@ -176,5 +206,7 @@ def reward(cur: dict, action: np.ndarray, prev_action: np.ndarray,
     over = np.maximum(0.0, np.abs(np.asarray(cur["qd"], float))
                       / np.asarray(velocity_limit, float) - SPEED_FRAC)
     r = r - W_SPEED * (over * over).sum(1)
+    r = r - W_SPEED_TICKS * (np.asarray(cur["speed_ticks"], np.int64)
+                             / float(ticks_per_step))
     r = r - W_PROXY * np.asarray(cur["proxy_violation"], bool)
     return r

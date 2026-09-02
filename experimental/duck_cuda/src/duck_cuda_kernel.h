@@ -2309,7 +2309,7 @@ static DW_HD bool dw_policy_fell(const DwState* s) {
   return dw_reach_proxy(tip, wrist, elbow);
 }
 
-// arm_reward.reward() v5, numpy operation for operation (sequential sums
+// arm_reward.reward() v6, numpy operation for operation (sequential sums
 // over the J joints and the distance-scale ladder in table order, as
 // numpy's small-n reductions are): d = |tip - target|, `hold` the
 // consecutive in-radius boundary count AFTER this step's update (0
@@ -2318,13 +2318,13 @@ static DW_HD bool dw_policy_fell(const DwState* s) {
 // `app` the APPLIED f64 targets (the torque estimate), kp carries the
 // per-env DR scale like the locomotion reward. Terms and sizing:
 // arm_reward.py docstring.
-static_assert(DW_RW_VERSION == 5, "kernel ports arm_reward v5");
+static_assert(DW_RW_VERSION == 6, "kernel ports arm_reward v6");
 static_assert(DW_RW_N_W_COMMAND_SPEED_J == DW_J && DW_RW_N_W_ACTION_RATE_J == DW_J,
               "per-joint reward tables");
 static DW_HD double dw_reach_reward(const DwState* s, double d, uint32_t hold,
                                     bool acquired, const double* a,
                                     const double* cmd, const double* app,
-                                    bool proxy) {
+                                    uint32_t speed_ticks, bool proxy) {
   const double sigma = DW_RW_DIST_SIGMA_FRAC * DW_ENV_REACH_M;
   const double x = d / sigma;
   double r = DW_RW_W_DIST * exp(-(x * x)) - DW_RW_W_LIN * d / DW_ENV_REACH_M;
@@ -2365,6 +2365,10 @@ static DW_HD double dw_reach_reward(const DwState* s, double d, uint32_t hold,
     sp += over * over;
   }
   r = r - DW_RW_W_SPEED * sp;
+  // tick-level speed clause (v6): this step's speed-violating accepted
+  // ticks (the gate-proxy counter delta) over the ticks per step
+  r = r - DW_RW_W_SPEED_TICKS * ((double)speed_ticks
+                                 / (double)DW_ENV_TICKS_PER_STEP);
   r = r - DW_RW_W_PROXY * (proxy ? 1.0 : 0.0);
   return r;
 }
@@ -2431,6 +2435,7 @@ static DW_HD void dw_step_policy_env(DwState* s, const float* action,
     }
   }
   DW_SYNC();
+  const uint32_t speed_ticks_before = s->rt_speed_ticks;   // reward v6
   int st = dw_step_env(s, w->eff, n_ticks, params, w, diag,
                        params->fast_termination != 0);
   DW_LANE0 {
@@ -2438,6 +2443,7 @@ static DW_HD void dw_step_policy_env(DwState* s, const float* action,
       s->done = 1;
       if (live) s->gp_term_reason = DWC1_TERM_FAULT;    // metrics only
     }
+    const uint32_t speed_ticks = s->rt_speed_ticks - speed_ticks_before;
     dw_body_states(s->q, s->v, w->bodies13);
     double tip[3], wrist[3], elbow[3];
     dw_reach_geometry(w->bodies13, tip, wrist, elbow);
@@ -2452,7 +2458,7 @@ static DW_HD void dw_step_policy_env(DwState* s, const float* action,
     const bool acquired = live && s->rt_hold >= DW_ENV_ACQ_HOLD_STEPS;
     const bool proxy = dw_reach_proxy(tip, wrist, elbow);
     const double r = dw_reach_reward(s, d, s->rt_hold, acquired, w->a64,
-                                     w->cmd64, w->app64, proxy);
+                                     w->cmd64, w->app64, speed_ticks, proxy);
     bool starved = false;
     if (acquired) {                     // advance to the queued target
       s->rt_index += 1;

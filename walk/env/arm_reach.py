@@ -336,7 +336,16 @@ class ArmReachEnv(DuckEnvBatch):
         self._applied = self._clip_limits(self._targets)
 
         iterations = np.zeros(self.E, np.int32)
-        if on_tick is None and hasattr(self._lane, "tick_block"):
+        # speed-violating ticks this step (reward v6, the judge's clause 4
+        # at tick resolution): the kernel lane counts them per accepted
+        # tick (dwc1_reach_get speed_violation_ticks; the delta over the
+        # step is BIT-EXACT with the device policy path); a physics-only
+        # lane (the f64 oracle) is ticked one at a time and counted here
+        # with the judge's own predicate.
+        kernel_counts = hasattr(self._lane, "reach_state")
+        speed_ticks = np.zeros(self.E, np.int64)
+        if on_tick is None and kernel_counts and hasattr(self._lane, "tick_block"):
+            before = self._lane.reach_state()["speed_violation_ticks"].astype(np.int64)
             rc, diagnostics = self._lane.tick_block(self._applied,
                                                     TICKS_PER_STEP)
             bad = [d for d in diagnostics if d["native_status"] != 0]
@@ -344,6 +353,8 @@ class ArmReachEnv(DuckEnvBatch):
                 self._raise_fault(rc, diagnostics, bad, 0, a)
             iterations = np.asarray([d["iterations"] for d in diagnostics],
                                     np.int32)
+            speed_ticks = (self._lane.reach_state()["speed_violation_ticks"]
+                           .astype(np.int64) - before)
         else:
             for tick in range(TICKS_PER_STEP):
                 rc, diagnostics = self._lane.tick(self._applied)
@@ -352,8 +363,11 @@ class ArmReachEnv(DuckEnvBatch):
                     self._raise_fault(rc, diagnostics, bad, tick, a)
                 iterations = np.maximum(
                     iterations, [d["iterations"] for d in diagnostics])
+                st = self._lane.read()
+                ratio = np.abs(st.v[:, 6:]) / self.velocity_limits
+                speed_ticks += (ratio.max(1) > judge.SPEED_TOL_FRAC + 1e-9)
                 if on_tick is not None:
-                    on_tick(self._lane.read(), self)
+                    on_tick(st, self)
         state = self._lane.read()
         finite = state.finite()
         tip, wrist, elbow = self._geometry(state)
@@ -365,10 +379,11 @@ class ArmReachEnv(DuckEnvBatch):
         torque = self._torque(state)
         r = reward_mod.reward(
             {"tip_dist": dist, "hold": self._hold, "acquired": acquired,
-             "command_speed": command_speed, "torque": torque,
-             "qd": state.v[:, 6:], "proxy_violation": proxy},
+             "command_speed": command_speed, "speed_ticks": speed_ticks,
+             "torque": torque, "qd": state.v[:, 6:], "proxy_violation": proxy},
             a, self._prev_action, self.reach, self._lane.effort_cap,
-            self.velocity_limits, self.acq_radius, ACQ_HOLD_STEPS)
+            self.velocity_limits, self.acq_radius, ACQ_HOLD_STEPS,
+            TICKS_PER_STEP)
         # advance acquired envs to their next target (fresh episode rng draw)
         for e in np.flatnonzero(acquired):
             self._acquired_total[e] += 1

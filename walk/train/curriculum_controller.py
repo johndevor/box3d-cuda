@@ -59,6 +59,12 @@ class Stage:
     advance_metric: str | None = None    # key derived from the metrics row
     advance_threshold: float = 0.0       # median(metric over window) >= this
     advance_window: int = 8              # K updates (also the minimum dwell)
+    # optional SECOND predicate (OR): median(advance_metric2) <= threshold2
+    # when advance_below2 else >= -- e.g. "the stage's own median violating
+    # ticks are already inside the judge's tolerance" (arm ladder)
+    advance_metric2: str | None = None
+    advance_threshold2: float = 0.0
+    advance_below2: bool = False
     # -- de-escalation -------------------------------------------------------
     collapse_ep_len: float = 25.0        # median ep_len floor (policy steps)
     collapse_k: int = 5                  # consecutive updates below the floor
@@ -69,17 +75,31 @@ class Stage:
 #   qualified_total = gate_proxy_ep_qualified_l + gate_proxy_ep_qualified_r
 #   alt_violations  = gate_proxy_ep_alt_violations
 #   ep_len          = ep_len_mean (None -> +inf: no episode ENDED, nobody died)
+#   acq_per_live_s  = qualified_total / (ep_len_mean * CONTROL_DT): episode-
+#                     LENGTH-NORMALISED evidence. A stage whose enforcement
+#                     knob shortens episodes (a violating-tick cap kills at
+#                     3-4 s) also caps the raw per-episode count, so a raw
+#                     qualified_total threshold can be structurally
+#                     unreachable inside that stage (the arm's
+#                     deadline_cap_40 sat at median 0.41 acq/episode over
+#                     ~3.4 s live = 0.12 acq/s while needing 2.0/episode).
+#                     None when no episode has ended (no evidence).
+CONTROL_DT_S = 0.02
+
+
 def _derive(line: dict) -> dict:
     ql = line.get("gate_proxy_ep_qualified_l")
     qr = line.get("gate_proxy_ep_qualified_r")
     ep = line.get("ep_len_mean")
+    total = None if ql is None or qr is None else float(ql) + float(qr)
     return {
-        "qualified_total": (None if ql is None or qr is None
-                            else float(ql) + float(qr)),
+        "qualified_total": total,
         "alt_violations": (None if line.get("gate_proxy_ep_alt_violations")
                            is None
                            else float(line["gate_proxy_ep_alt_violations"])),
         "ep_len": float("inf") if ep is None else float(ep),
+        "acq_per_live_s": (None if total is None or not ep
+                           else total / (float(ep) * CONTROL_DT_S)),
     }
 
 
@@ -157,70 +177,89 @@ HUMANOID_WALK_STAGES = (
 # alt_violations = violating ticks per episode. Judge anchors
 # (walk/eval/arm_reach_judge.py, FROZEN): 5 targets in 8 s = 4000 ticks,
 # every tick inside the limits/speeds/proxy, i.e. ZERO violating ticks.
-# Thresholds are set from MEASURED CPU runs of reward v5 (runs/arm-local-
-# v5-long, 128 envs x 1200 s = 25.8M steps): the TRAINING-TIME (stochastic)
-# gate_proxy median of acquisitions/episode is 0.02-0.12 while the
-# deterministic actor already acquires 1-5 targets per judged episode, so
-# the first gate must fire on "acquisitions exist" at that scale, not at
-# 1/episode; and the violating-tick baseline of a still-noisy policy is
-# ~2300 of 4000 ticks (intra-step wrist speed peaks), so the first cap must
-# sit ABOVE it (an unreachable cap kills the whole population at step ~70,
-# the controller de-escalates, and the run ping-pongs without learning).
+# SELF-GATING on episode-length-normalised evidence. Every cap/deadline
+# stage advances on `acq_per_live_s` = acquisitions per live SECOND, so a
+# stage whose knob shortens episodes cannot suppress its own advance
+# metric (the raw acq/episode rule never advanced past deadline_cap_40 in
+# runs/gpu/20260902-160543-arm-reach-kr240: median 0.41/episode over 3.4 s
+# = 0.12 acq/s, needing 2.0). Ramp toward the judge: a passing episode is
+# 5 acquisitions in <= 8 s = 0.625 acq/s. Thresholds re-derived from the
+# measured stage medians of that GPU run and the local 128-env delta run
+# (acq/s medians: free 0.000, cap_2000 0.015-0.029, cap_800 0.025-0.070,
+# cap_200 0.079-0.113, deadline_cap_40 0.116-0.121 with trailing-8 medians
+# reaching 0.15-0.20). The cap stages ALSO advance when their own median
+# violating ticks/episode is already inside the judge's tolerance (<= 5:
+# a single 100 ms excursion), the evidence the cap knob exists to create.
+# Offline replay of the GPU run's metrics through this rule advances
+# deadline_cap_40 at update 94 (arm/tests/test_arm_curriculum.py).
 ARM_REACH_STAGES = (
     Stage(
         name="free",
-        advance_metric="qualified_total", advance_threshold=0.05,
+        advance_metric="acq_per_live_s", advance_threshold=0.006,
         collapse_ep_len=100.0,
         note="No enforcement. Advance when acquisitions EXIST at all "
-             "(median >= 0.05 target/episode over 8 updates): the "
-             "acquisition counter IS the judge's clause-2 rule (14 "
-             "consecutive in-radius boundaries), so any nonzero median "
-             "means the hold behavior appeared under exploration noise."),
+             "(median >= 0.006 acq/s = 0.05 per 8 s episode over 8 "
+             "updates): the acquisition counter IS the judge's clause-2 "
+             "rule (14 consecutive in-radius boundaries), so any nonzero "
+             "median means the hold behavior appeared under exploration."),
     Stage(
         name="violations_cap_2000",
         max_alternation_violations=2000,  # 50 % of the 4000 ticks
-        advance_metric="qualified_total", advance_threshold=0.25,
+        advance_metric="acq_per_live_s", advance_threshold=0.03,
+        advance_metric2="alt_violations", advance_threshold2=5.0,
+        advance_below2=True,
         collapse_ep_len=100.0,
         note="First enforcement, just under the measured noisy-policy "
-             "baseline (~2300 violating ticks/episode): episodes that "
-             "spend more than half their ticks outside the judge's "
-             "limit/speed/proxy clauses terminate. Advance at median "
-             ">= 0.25 acquisitions."),
+             "baseline of the ABS lineage (~2300 violating ticks/episode): "
+             "episodes that spend more than half their ticks outside the "
+             "judge's limit/speed/proxy clauses terminate. Advance at "
+             "median >= 0.03 acq/s (0.25 per 8 s) or violating ticks <= 5."),
     Stage(
         name="violations_cap_800",
         max_alternation_violations=800,   # 20 %
-        advance_metric="qualified_total", advance_threshold=0.5,
+        advance_metric="acq_per_live_s", advance_threshold=0.06,
+        advance_metric2="alt_violations", advance_threshold2=5.0,
+        advance_below2=True,
         collapse_ep_len=100.0,
         note="Halve the tolerated violating ticks again. Advance at median "
-             ">= 0.5 acquisitions."),
+             ">= 0.06 acq/s (0.5 per 8 s) or violating ticks <= 5."),
     Stage(
         name="violations_cap_200",
         max_alternation_violations=200,   # 5 %
-        advance_metric="qualified_total", advance_threshold=1.0,
+        advance_metric="acq_per_live_s", advance_threshold=0.10,
+        advance_metric2="alt_violations", advance_threshold2=5.0,
+        advance_below2=True,
         collapse_ep_len=100.0,
         note="5 % violating ticks (0.4 s of overspeed per episode). "
-             "Advance at median >= 1 acquisition/episode."),
+             "Advance at median >= 0.10 acq/s (0.8 per 8 s; the GPU run's "
+             "stage median was 0.113) or violating ticks <= 5."),
     Stage(
         name="deadline_cap_40",
         first_deadline_ticks=1500,        # 3 s to the FIRST acquisition
         max_alternation_violations=40,    # 1 %
-        advance_metric="qualified_total", advance_threshold=2.0,
+        advance_metric="acq_per_live_s", advance_threshold=0.15,
+        advance_metric2="alt_violations", advance_threshold2=5.0,
+        advance_below2=True,
         collapse_ep_len=100.0,
         note="Tighten to 1 % violating ticks (a single 80 ms overspeed) "
              "and prune never-acquirers: the judge needs 5 acquisitions in "
              "8 s (1.6 s each on average; the IK baseline's first lands at "
-             "~1.1 s, the v5 actor's at 1.1-4.6 s), so 3 s without a first "
-             "acquisition is a lost episode. Advance at median >= 2."),
+             "~1.1 s, the delta actor's at 0.6-1.2 s), so 3 s without a "
+             "first acquisition is a lost episode. Advance at median >= "
+             "0.15 acq/s (the GPU run's trailing-8 median crossed it at "
+             "u94; its raw 0.41/episode never reached the old 2.0) or "
+             "violating ticks <= 5 (the local delta run's stage median "
+             "was 4.1)."),
     Stage(
         name="judge_tight",
         first_deadline_ticks=1000,        # 2 s
         max_alternation_violations=1,     # ZERO violating ticks tolerated
-        advance_metric="qualified_total", advance_threshold=4.0,
+        advance_metric="acq_per_live_s", advance_threshold=0.5,
         collapse_ep_len=100.0,
         note="Judge-tight: the first violating tick of any clause "
              "terminates (the judge fails the episode on one), first "
-             "acquisition within 2 s. Advance at median >= 4 acquisitions "
-             "-- one short of the judge's 5."),
+             "acquisition within 2 s. Advance at median >= 0.5 acq/s "
+             "(4 per 8 s -- one short of the judge's 5 in 8 s = 0.625)."),
     Stage(
         name="full",
         first_deadline_ticks=1000,
@@ -319,22 +358,34 @@ class CurriculumController:
             return None                   # terminal: never past 'full'
         if len(self._window) < stage.advance_window:
             return None
-        recent = [w[stage.advance_metric]
-                  for w in self._window[-stage.advance_window:]]
-        if any(v is None for v in recent):
-            return None                   # lane exposes no gate_proxy yet
-        med = statistics.median(recent)
-        if med >= stage.advance_threshold:
+        reason = self._predicate(stage.advance_metric, stage.advance_threshold,
+                                 False, stage.advance_window)
+        if reason is None and stage.advance_metric2 is not None:
+            reason = self._predicate(stage.advance_metric2,
+                                     stage.advance_threshold2,
+                                     stage.advance_below2, stage.advance_window)
+        if reason is not None:
             previous = stage.name
             self.index += 1
             self._reset_window()
             return {"event": "stage", "direction": "advance",
                     "name": self.stage.name, "from": previous,
-                    "update": update,
-                    "reason": f"median {stage.advance_metric} = {med:.3f} "
-                              f">= {stage.advance_threshold} over "
-                              f"{stage.advance_window} updates"}
+                    "update": update, "reason": reason}
         return None
+
+    def _predicate(self, metric: str, threshold: float, below: bool,
+                   window: int) -> str | None:
+        """Trailing-window median test; None when it does not hold (or the
+        lane exposes no such metric yet)."""
+        recent = [w[metric] for w in self._window[-window:]]
+        if any(v is None for v in recent):
+            return None
+        med = statistics.median(recent)
+        ok = med <= threshold if below else med >= threshold
+        if not ok:
+            return None
+        return (f"median {metric} = {med:.3f} {'<=' if below else '>='} "
+                f"{threshold} over {window} updates")
 
     def _reset_window(self) -> None:
         self._window.clear()

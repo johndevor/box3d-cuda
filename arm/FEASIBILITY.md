@@ -249,3 +249,20 @@ is guarded off in `CudaArmLane.step_policy`.
 # gates
 for t in arm/tests/test_arm_*.py; do .venv/bin/python -B $t; done
 ```
+
+## 9. Known property: fp32 trajectory divergence across serial builds
+
+The serial dwc1 build is compiled with clang++ on the macOS harness and
+with g++ on the Linux GPU sandbox from identical sources (`-ffp-contract=off`
+on both). Within a build every trajectory is bit-reproducible; ACROSS the
+two builds the libm transcendental (`sinf`/`cosf`/`expf`/`hypotf`) ULP
+differences seed fp32 divergence that the 8 s closed-loop episode
+amplifies chaotically, so the SAME actor replayed on the same judge cell
+can terminate on one build and run the full 8 s on the other (observed on
+runs/gpu/20260902-160543-arm-reach-kr240: the sandbox judge reported 4
+proxy terminations, the macOS replay 3, on different cells -- same
+mechanism, a shoulder speed runaway into the floor proxy, identical
+aggregate statistics). The archived local macOS harness
+(`walk.eval.arm_acceptance --lane serial`) is the authority we report; the
+on-sandbox judge run is advisory. The device-vs-python parity gates are
+unaffected (same build on both sides, bit-exact).
