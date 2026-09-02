@@ -13,22 +13,29 @@ Each leg: run gpu/run_daytona.py with the spec, copy the returned
 actor/checkpoint into runs/warmstart.pt (the spec uploads it), then score
 the leg.
 
-ACCEPTANCE STOP. A leg is accepted when the trainer's in-run probe
-(walk/train/gpu_train.py --accept-every) passed: its log carries
-"... confirmed=True" / a "<ROBOT> ACCEPTED at update N" line (WALKING
-ACCEPTED, HUMANOID WALKING ACCEPTED, ARM REACH ACCEPTED) and the run dir
-holds artifacts/**/accepted/{acceptance.json, actor_accepted.pt} (the specs
-list them as artifacts). Any of those -> print ACCEPTED and stop (rc 0).
+ACCEPTANCE = CPU-CONFIRMED. The trainer's in-run probe (walk/train/
+gpu_train.py --accept-every) runs on the fp32 CUDA lane, which is NOT the
+frozen judge's lane: the first real use (stocky leg 20260902-155451) wrote
+an on-device 12/12 that the CPU harness scored 10/12. So an
+artifacts/**/accepted/ directory (actor_accepted.pt + candidate_<u>.pt,
+the specs list them) is a set of CANDIDATES, never a verdict: every
+accepted/*.pt is re-judged locally with the robot's CPU acceptance harness
+(walk/eval/{acceptance,humanoid_acceptance,arm_acceptance}.py; --robot/
+--variant inferred from the spec's train command), both numbers are
+printed per candidate, and the chain stops -- "ACCEPTED — chain complete
+(CPU-confirmed ...)" -- only when a candidate scores 12/12 on the CPU
+harness. Unconfirmed candidates are logged as false positives, kept in
+the best-by-judge bookkeeping (they may still be the best actor) and the
+leg counts normally toward the plateau. Legacy duck legs (the duck's own
+probe + 11 s confirmation, RESULTS.md) keep their log-line acceptance.
 
-LOCAL JUDGE. After every leg the leg's actor_final.pt is judged LOCALLY
-with the robot's CPU acceptance harness (walk/eval/{acceptance,
-humanoid_acceptance,arm_acceptance}.py -- the frozen judges' authority;
---robot/--variant are inferred from the spec's train command), the cells
-passed are recorded in the leg line, and the best actor BY JUDGE CELLS is
-kept at runs/best-<spec-name>.pt (+ .json provenance), so a chain's "best"
-is the real judge, not the in-kernel proxy or the probe on the device
-lane. The plateau rule scores a leg by its judge cells when the judge ran
-(else the best probe cells, else the gate-proxy fallback).
+LOCAL JUDGE, ALWAYS. After every leg the leg's actor_final.pt is judged
+with the CPU harness too, the cells are recorded in the leg line, and the
+best actor BY CPU CELLS over final actors and candidates is kept at
+runs/best-<spec-name>.pt (+ .json provenance), so a chain's "best" is the
+real judge, not the in-kernel proxy or the device-lane probe. The plateau
+rule scores a leg by its best CPU cells (else the best probe cells, else
+the gate-proxy fallback).
 """
 from __future__ import annotations
 
@@ -50,9 +57,14 @@ PROBE = re.compile(
     r"\[accept u(\d+)\] stage1=(True|False) \((\d+)/(\d+) episodes\)"
     r" confirmed=(True|False)")
 # "WALKING ACCEPTED at update 6245 after 27957.7 s (...)" and the humanoid /
-# arm twins (gpu_train.ACCEPTED_LINE).
+# arm twins (gpu_train.ACCEPTED_LINE): the trainer's own verdict (cpu lane or
+# the legacy duck path). "... ACCEPTED-CANDIDATE at update N ..." is the cuda
+# lane's nomination (matched separately; never a stop by itself).
 ACCEPTED = re.compile(
     r"^(WALKING|HUMANOID WALKING|ARM REACH) ACCEPTED at update (\d+)",
+    re.MULTILINE)
+CANDIDATE = re.compile(
+    r"^(WALKING|HUMANOID WALKING|ARM REACH) ACCEPTED-CANDIDATE at update (\d+)",
     re.MULTILINE)
 # the CPU harness module per robot (module, extra argv builder)
 HARNESS_MODULE = {"duck": "walk.eval.acceptance",
@@ -70,13 +82,16 @@ def accepted_dir(run_dir: Path) -> Path | None:
 
 
 def leg_score(run_dir: Path) -> tuple[float, int, bool]:
-    """(score, probes seen, accepted?) for one leg.
+    """(score, probes seen, device-confirmed?) for one leg.
 
     With accept probes the score is the best passed-cell count over the
     leg's probes (duck: episodes, humanoid/arm: the 12 harness cells);
-    accepted = a probe confirmed, an ACCEPTED line was printed, or the
-    accepted/ artifacts came back. Without probes fall back to the mean
-    gate-proxy qualified swings (then ep_len) over the last 10 updates of
+    device-confirmed = a probe line says confirmed=True, an ACCEPTED /
+    ACCEPTED-CANDIDATE line was printed, or accepted/ artifacts came back.
+    That is the TRAINER's lane speaking -- main() only stops on it for the
+    legacy duck; humanoid/arm candidates go through the CPU harness
+    (judge_candidates). Without probes fall back to the mean gate-proxy
+    qualified swings (then ep_len) over the last 10 updates of
     metrics.jsonl -- the plateau rule then tracks the proxy instead."""
     best, probes, confirmed = -1.0, 0, False
     for log in (run_dir / "logs").glob("*.log"):
@@ -86,6 +101,7 @@ def leg_score(run_dir: Path) -> tuple[float, int, bool]:
             best = max(best, float(m.group(3)))
             confirmed |= m.group(5) == "True"
         confirmed |= ACCEPTED.search(text) is not None
+        confirmed |= CANDIDATE.search(text) is not None
     confirmed |= accepted_dir(run_dir) is not None
     if probes:
         return best, probes, confirmed
@@ -229,6 +245,134 @@ def update_best(spec_name: str, judged: dict, actor: Path, run_dir: Path,
     return True
 
 
+def candidate_actors(acc: Path) -> list[Path]:
+    """Every actor the trainer nominated: actor_accepted.pt (first
+    candidate) + candidate_<update>.pt (later ones), oldest first."""
+    return sorted(p for p in acc.glob("*.pt") if p.is_file())
+
+
+def device_record(candidate: Path) -> dict | None:
+    """The trainer's on-device record next to a candidate (acceptance.json
+    for actor_accepted.pt, candidate_<u>.json otherwise)."""
+    side = (candidate.parent / "acceptance.json"
+            if candidate.name == "actor_accepted.pt"
+            else candidate.with_suffix(".json"))
+    if not side.is_file():
+        return None
+    try:
+        return json.loads(side.read_text())
+    except ValueError:
+        return None
+
+
+def judge_candidates(acc: Path, robot: str, variant: str | None,
+                     judge_dir: Path, timeout_s: float = 1800.0,
+                     judge=judge_actor) -> list[dict]:
+    """CPU-harness verdict for every candidate in accepted/: one dict per
+    candidate {actor, device_cells, cpu_cells, cells_total, cpu_confirmed,
+    judged (the judge_actor summary or None)}, printed as it goes."""
+    out = []
+    for cand in candidate_actors(acc):
+        rec = device_record(cand) or {}
+        dev_cells = rec.get("cells_passed")
+        judged = judge(robot, variant, cand, judge_dir / cand.stem, timeout_s)
+        cpu_cells = judged["cells_passed"] if judged else None
+        total = (judged or rec).get("cells_total")
+        confirmed = bool(judged and judged["accepted"]
+                         and judged["cells_passed"] == judged["cells_total"])
+        mark = ("CPU-CONFIRMED" if confirmed
+                else "FALSE POSITIVE" if judged else "judge failed")
+        print(f"candidate {cand.name} (update {rec.get('update', '?')}): "
+              f"on-device {dev_cells}/{total} vs CPU harness "
+              f"{cpu_cells}/{total} -> {mark}"
+              + (f" failed={judged['failed_cells']}"
+                 if judged and judged["failed_cells"] else ""), flush=True)
+        out.append({"actor": cand, "device_cells": dev_cells,
+                    "cpu_cells": cpu_cells, "cells_total": total,
+                    "cpu_confirmed": confirmed, "judged": judged})
+    return out
+
+
+def process_leg(run_dir: Path, robot: str, variant: str | None,
+                spec_name: str, leg: int, judge_enabled: bool = True,
+                timeout_s: float = 1800.0, runs_dir: Path = ROOT / "runs",
+                judge=judge_actor) -> dict:
+    """Everything the chain decides from one finished leg: the log score,
+    the ALWAYS-run CPU judge of actor_final.pt, the CPU re-judge of every
+    accepted/ candidate, best-by-CPU-cells bookkeeping, and the stop
+    decision. Returns {score, stop, confirmed_actor, judged_final,
+    candidates, probes, best, device_confirmed}."""
+    best, probes, device_confirmed = leg_score(run_dir)
+    acc = accepted_dir(run_dir)
+    judged_final, candidates, confirmed_actor = None, [], None
+    scores = []
+
+    final_actor = find_file(run_dir, "actor_final.pt")
+    if judge_enabled and robot in HARNESS_MODULE:
+        if final_actor is not None:
+            judged_final = judge(robot, variant, final_actor,
+                                 run_dir / "judge" / "actor_final", timeout_s)
+            if judged_final is not None:
+                scores.append(judged_final["cells_passed"])
+                if update_best(spec_name, judged_final, final_actor, run_dir,
+                               leg, runs_dir):
+                    print(f"best-by-judge {best_paths(spec_name, runs_dir)[0]}"
+                          f" <- leg {leg} actor_final.pt "
+                          f"({judged_final['cells_passed']}/"
+                          f"{judged_final['cells_total']} cells)", flush=True)
+        if acc is not None and robot != "duck":
+            candidates = judge_candidates(acc, robot, variant,
+                                          run_dir / "judge", timeout_s, judge)
+            for c in candidates:
+                if c["judged"] is None:
+                    continue
+                scores.append(c["cpu_cells"])
+                if update_best(spec_name, c["judged"], c["actor"], run_dir,
+                               leg, runs_dir):
+                    print(f"best-by-judge {best_paths(spec_name, runs_dir)[0]}"
+                          f" <- leg {leg} {c['actor'].name} "
+                          f"({c['cpu_cells']}/{c['cells_total']} cells)",
+                          flush=True)
+            confirmed = [c for c in candidates if c["cpu_confirmed"]]
+            if confirmed:
+                confirmed_actor = confirmed[-1]["actor"]
+            elif candidates:
+                print(f"leg {leg}: {len(candidates)} on-device candidate(s), "
+                      "none CPU-confirmed (false positive of the cuda lane); "
+                      "chain continues", flush=True)
+
+    if judged_final is None:
+        judge_note = "judge=off" if not judge_enabled else "judge=failed"
+    else:
+        judge_note = (f"judge={judged_final['cells_passed']}/"
+                      f"{judged_final['cells_total']}"
+                      + (f" failed={judged_final['failed_cells']}"
+                         if judged_final["failed_cells"] else "")
+                      + f" ({judged_final['judge_wall_s']}s)")
+    if candidates:
+        judge_note += (" candidates=" + ",".join(
+            f"{c['actor'].name}:{c['device_cells']}->{c['cpu_cells']}"
+            for c in candidates))
+    score = max(scores) if scores else best
+    # legacy duck: its own probe + 11 s confirmation is the accepted lineage
+    stop = confirmed_actor is not None or (robot == "duck" and device_confirmed)
+    print(f"leg {leg}: best={best} probes={probes} "
+          f"device_confirmed={device_confirmed} {judge_note} score={score}",
+          flush=True)
+    if stop:
+        if confirmed_actor is not None:
+            print(f"ACCEPTED — chain complete (CPU-confirmed 12/12: "
+                  f"{confirmed_actor})", flush=True)
+        else:
+            where = f" ({acc})" if acc else ""
+            print(f"ACCEPTED — chain complete (duck lineage probe "
+                  f"confirmed{where})", flush=True)
+    return {"score": score, "stop": stop, "confirmed_actor": confirmed_actor,
+            "judged_final": judged_final, "candidates": candidates,
+            "probes": probes, "best": best,
+            "device_confirmed": device_confirmed}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--spec", required=True)
@@ -243,8 +387,10 @@ def main() -> int:
                     help="passed through to run_daytona.py (concurrent chains)")
     ap.add_argument("--no-judge", action="store_true",
                     help="skip the local CPU-harness judge of each leg's "
-                         "actor_final.pt (default: judge, record cells, keep "
-                         "runs/best-<spec>.pt by judge cells)")
+                         "actor_final.pt AND of accepted/ candidates (then "
+                         "no humanoid/arm leg can ever stop the chain as "
+                         "accepted; default: judge, record cells, keep "
+                         "runs/best-<spec>.pt by CPU cells)")
     ap.add_argument("--judge-timeout", type=float, default=1800.0)
     a = ap.parse_args()
 
@@ -279,32 +425,12 @@ def main() -> int:
         if run_dir is None:
             print("no run dir in launcher output; stopping"); return 1
 
-        best, probes, confirmed = leg_score(run_dir)
-        acc = accepted_dir(run_dir)
-
-        # local judge of the leg's final actor (the frozen judge's authority)
-        judged = None
-        final_actor = find_file(run_dir, "actor_final.pt")
-        if not a.no_judge and final_actor is not None \
-                and robot in HARNESS_MODULE:
-            judged = judge_actor(robot, variant, final_actor,
-                                 run_dir / "judge", a.judge_timeout)
-            if judged is not None and update_best(spec_name, judged,
-                                                  final_actor, run_dir, leg):
-                print(f"best-by-judge {best_paths(spec_name)[0].relative_to(ROOT)}"
-                      f" <- leg {leg} ({judged['cells_passed']}/"
-                      f"{judged['cells_total']} cells)", flush=True)
-        judge_note = ("judge=off" if judged is None else
-                      f"judge={judged['cells_passed']}/{judged['cells_total']}"
-                      + (f" failed={judged['failed_cells']}"
-                         if judged["failed_cells"] else "")
-                      + f" ({judged['judge_wall_s']}s)")
-        score = judged["cells_passed"] if judged is not None else best
-        print(f"leg {leg}: best={best} probes={probes} confirmed={confirmed} "
-              f"{judge_note} score={score}", flush=True)
-        if confirmed:
-            where = f" ({acc.relative_to(ROOT)})" if acc else ""
-            print(f"ACCEPTED — chain complete{where}"); return 0
+        result = process_leg(run_dir, robot, variant, spec_name, leg,
+                             judge_enabled=not a.no_judge,
+                             timeout_s=a.judge_timeout)
+        if result["stop"]:
+            return 0
+        score = result["score"]
 
         actor = find_actor(run_dir)
         if actor is not None:

@@ -250,5 +250,113 @@ class AcceptStopsTraining(unittest.TestCase):
             self.assertEqual(ck["config"]["variant"], "h1_stocky")
 
 
+class CudaCandidateProtocol(unittest.TestCase):
+    """Non-authority (cuda) lane: two CONSECUTIVE 12/12 probes nominate a
+    candidate; training continues; candidates are bounded. Simulated by
+    forcing _probe_lane_is_authority False on the cpu serial lane and
+    scripting the probe verdicts."""
+
+    @staticmethod
+    def _probe(passed: bool):
+        cells = {f"seed{s}-cmd{c:.2f}": {"passed": passed, "qualified": 12,
+                                          "left": 6, "right": 6,
+                                          "failed_criteria": [] if passed
+                                          else ["footfalls_alternate"],
+                                          "criteria": {}, "swings_examined": 12}
+                 for s in ha.SEEDS for c in ha.COMMANDS}
+        n = 12 if passed else 0
+        return {"stage1_passed": passed, "confirmed": passed,
+                "episodes": cells, "confirmation": {},
+                "cells_passed": n, "cells_total": 12,
+                "failed_cells": [] if passed else sorted(cells),
+                "protocol": {"seeds": list(ha.SEEDS), "commands": list(ha.COMMANDS),
+                             "variant": "h1_stocky", "seconds": 8.0},
+                "probe_wall_s": 0.1}
+
+    def _run(self, verdicts, updates, max_candidates=None):
+        it = iter(verdicts)
+        fake = lambda cfg, actor, device: self._probe(next(it))  # noqa: E731
+        patches = [mock.patch.object(gt, "run_robot_probe", fake),
+                   mock.patch.object(gt, "_probe_lane_is_authority",
+                                     lambda cfg, device: False)]
+        if max_candidates is not None:
+            patches.append(mock.patch.object(gt, "MAX_CANDIDATES", max_candidates))
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "run"
+            cfg = gt.GpuTrainConfig(
+                robot="humanoid", variant="h1_stocky", envs=2, lane_env=True,
+                horizon=8, updates=updates, seed=3, device="cpu", out=str(out),
+                preflight_steps=0, checkpoint_every=1000, torch_threads=1,
+                quiet=False, accept_every=1)
+            buf = io.StringIO()
+            with contextlib.ExitStack() as st:
+                for pt in patches:
+                    st.enter_context(pt)
+                with contextlib.redirect_stdout(buf):
+                    metrics = gt.train(cfg)
+            acc = out / "accepted"
+            files = sorted(p.name for p in acc.glob("*")) if acc.exists() else []
+            jsons = {p.name: json.loads(p.read_text())
+                     for p in acc.glob("*.json")} if acc.exists() else {}
+            return metrics, buf.getvalue(), files, jsons
+
+    def test_two_consecutive_passes_nominate_and_training_continues(self):
+        # pass, pass(candidate), fail, pass, pass(candidate), pass(candidate)
+        metrics, text, files, jsons = self._run(
+            [True, True, False, True, True, True], updates=6)
+        train = [m for m in metrics if m["kind"] == "train"]
+        accepts = [m for m in metrics if m["kind"] == "accept"]
+        self.assertEqual(len(train), 6)                    # never self-stopped
+        self.assertEqual([m["consecutive_passes"] for m in accepts],
+                         [1, 2, 0, 1, 2, 3])
+        self.assertTrue(all(m["lane_is_authority"] is False for m in accepts))
+        self.assertIn("[accept u1] on-device 12/12 #1: need 2 consecutive", text)
+        self.assertIn("HUMANOID WALKING ACCEPTED-CANDIDATE at update 2", text)
+        self.assertIn("HUMANOID WALKING ACCEPTED-CANDIDATE at update 5", text)
+        self.assertIn("HUMANOID WALKING ACCEPTED-CANDIDATE at update 6", text)
+        self.assertNotIn("HUMANOID WALKING ACCEPTED at update", text)
+        self.assertIn("candidates=3", text)
+        self.assertEqual(files, ["acceptance.json", "actor_accepted.pt",
+                                 "candidate_000002.json", "candidate_000002.pt",
+                                 "candidate_000005.json", "candidate_000005.pt",
+                                 "candidate_000006.json", "candidate_000006.pt"])
+        self.assertEqual(jsons["acceptance.json"]["update"], 2)  # first candidate
+        self.assertFalse(jsons["acceptance.json"]["lane_is_authority"])
+        self.assertEqual(jsons["acceptance.json"]["consecutive_passes"], 2)
+        self.assertEqual(jsons["candidate_000006.json"]["consecutive_passes"], 3)
+        self.assertIsNone(jsons["candidate_000006.json"]["cpu_confirmed"])
+        self.assertEqual([m.get("candidate", "").split("/")[-1] for m in accepts
+                          if m.get("candidate")],
+                         ["candidate_000002.pt", "candidate_000005.pt",
+                          "candidate_000006.pt"])
+
+    def test_candidates_are_bounded_to_newest(self):
+        metrics, text, files, jsons = self._run([True] * 5, updates=5,
+                                                max_candidates=2)
+        # candidates at u2..u5; only the newest 2 kept
+        self.assertEqual([f for f in files if f.startswith("candidate_")],
+                         ["candidate_000004.json", "candidate_000004.pt",
+                          "candidate_000005.json", "candidate_000005.pt"])
+        self.assertIn("actor_accepted.pt", files)          # first candidate kept
+
+    def test_single_pass_on_authority_lane_still_self_stops(self):
+        fake = lambda cfg, actor, device: self._probe(True)  # noqa: E731
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(gt, "run_robot_probe", fake):
+            cfg = gt.GpuTrainConfig(
+                robot="humanoid", variant="h1_stocky", envs=2, lane_env=True,
+                horizon=8, updates=5, seed=3, device="cpu",
+                out=str(Path(tmp) / "run"), preflight_steps=0,
+                checkpoint_every=1000, torch_threads=1, quiet=True,
+                accept_every=1)
+            metrics = gt.train(cfg)
+            accepts = [m for m in metrics if m["kind"] == "accept"]
+            self.assertEqual(len([m for m in metrics if m["kind"] == "train"]), 1)
+            self.assertTrue(accepts[0]["lane_is_authority"])
+            self.assertTrue(accepts[0]["accepted"])
+            self.assertTrue(gt._probe_lane_is_authority(cfg, torch.device("cpu")))
+            self.assertFalse(gt._probe_lane_is_authority(cfg, torch.device("cuda")))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

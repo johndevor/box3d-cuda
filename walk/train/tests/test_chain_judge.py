@@ -6,7 +6,9 @@ Run: .venv/bin/python -B -m unittest walk.train.tests.test_chain_judge
 """
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import sys
 import tempfile
@@ -24,6 +26,9 @@ HUMANOID_LOG = """[u 120] sps=   146987 rew=+3.0096 pi=+0.0005 v=624.5926 kl=0.0
 [u 128] sps=   143240 rew=+2.9935 pi=+0.0021 v=624.7112 kl=0.0102 faults=0
 [accept u128] stage1=True (12/12 episodes) confirmed=True probe_wall=3.1s
 HUMANOID WALKING ACCEPTED at update 128 after 1234.5 s (31.0 s probing)
+"""
+CANDIDATE_LOG = """[accept u936] stage1=True (12/12 episodes) confirmed=True probe_wall=8.5s
+HUMANOID WALKING ACCEPTED-CANDIDATE at update 936 after 7368.9 s (16.9 s probing): 2 consecutive on-device 12/12 -> candidate_000936.pt; CPU harness decides, training continues
 """
 DUCK_LOG = """[accept u6245] stage1=True (12/12 episodes) confirmed=True probe_wall=40.1s
 WALKING ACCEPTED at update 6245 after 27957.7 s (401.2 s probing)
@@ -46,9 +51,36 @@ def _run_dir(tmp: Path, log: str, accepted: bool = False,
             "".join(json.dumps(r) + "\n" for r in metrics_rows))
     if accepted:
         (out / "accepted").mkdir()
-        (out / "accepted" / "acceptance.json").write_text('{"accepted": true}')
-        (out / "accepted" / "actor_accepted.pt").write_bytes(b"acc")
+        (out / "accepted" / "acceptance.json").write_text(json.dumps(
+            {"accepted": True, "update": 936, "cells_passed": 12,
+             "cells_total": 12}))
+        (out / "accepted" / "actor_accepted.pt").write_bytes(b"acc-936")
+        (out / "accepted" / "candidate_000936.pt").write_bytes(b"acc-936")
+        (out / "accepted" / "candidate_000936.json").write_text(json.dumps(
+            {"candidate": True, "update": 936, "cells_passed": 12,
+             "cells_total": 12}))
+        (out / "accepted" / "candidate_000944.pt").write_bytes(b"acc-944")
+        (out / "accepted" / "candidate_000944.json").write_text(json.dumps(
+            {"candidate": True, "update": 944, "cells_passed": 12,
+             "cells_total": 12}))
     return run
+
+
+def _fake_judge(cells_by_actor: dict, total: int = 12):
+    """judge_actor stand-in: cells by actor file name; None = judge failed."""
+    calls = []
+
+    def judge(robot, variant, actor, out_dir, timeout_s=0.0):
+        calls.append(Path(actor).name)
+        cells = cells_by_actor.get(Path(actor).name, 0)
+        if cells is None:
+            return None
+        return {"cells_passed": cells, "cells_total": total,
+                "failed_cells": [f"cell{i}" for i in range(total - cells)],
+                "accepted": cells == total, "judge_wall_s": 6.0,
+                "actor": str(actor), "acceptance_json": str(out_dir)}
+    judge.calls = calls
+    return judge
 
 
 class LegScoreTests(unittest.TestCase):
@@ -68,13 +100,20 @@ class LegScoreTests(unittest.TestCase):
             best, probes, confirmed = chain.leg_score(_run_dir(Path(td), ARM_LOG))
             self.assertEqual((best, probes, confirmed), (9.0, 1, False))
 
-    def test_accepted_artifacts_alone_stop_the_chain(self):
+    def test_accepted_artifacts_are_device_confirmed_only(self):
         with tempfile.TemporaryDirectory() as td:
             run = _run_dir(Path(td), "", accepted=True)
             self.assertIsNotNone(chain.accepted_dir(run))
             best, probes, confirmed = chain.leg_score(run)
             self.assertEqual(probes, 0)
-            self.assertTrue(confirmed)
+            self.assertTrue(confirmed)          # the trainer's lane speaking
+
+    def test_candidate_line_is_device_confirmed_not_accepted(self):
+        with tempfile.TemporaryDirectory() as td:
+            run = _run_dir(Path(td), CANDIDATE_LOG)
+            self.assertIsNone(chain.ACCEPTED.search(CANDIDATE_LOG))
+            self.assertIsNotNone(chain.CANDIDATE.search(CANDIDATE_LOG))
+            self.assertEqual(chain.leg_score(run), (12.0, 1, True))
 
     def test_proxy_fallback_without_probes(self):
         rows = [{"kind": "train", "update": i, "gate_proxy_ep_qualified_l": 2.0,
@@ -103,10 +142,12 @@ class RobotInferenceTests(unittest.TestCase):
             self.assertEqual(chain.infer_robot(cmd), want, rel)
 
     def test_specs_probe_and_collect_accepted_artifacts(self):
-        expect_n = {"humanoid-tree-stocky-continue": 8,
-                    "humanoid-tree-tall-continue": 8,
-                    "humanoid-tree-continue": 8, "humanoid-generalist": 8,
-                    "arm-reach-kr240": 16, "arm-reach-lite": 16}
+        # humanoid: 8.5 s measured per on-device probe at ~7.4 s/update ->
+        # N=16 keeps ~5 probes (~43 s) under 10 % of a 600 s leg; arm: N=24
+        expect_n = {"humanoid-tree-stocky-continue": 16,
+                    "humanoid-tree-tall-continue": 16,
+                    "humanoid-tree-continue": 16, "humanoid-generalist": 16,
+                    "arm-reach-kr240": 24, "arm-reach-lite": 24}
         for name, n in expect_n.items():
             spec = json.loads((ROOT / f"gpu/specs/{name}.json").read_text())
             train = next(j for j in spec["jobs"] if j["name"] == "train")
@@ -188,6 +229,119 @@ class JudgeAndBestTests(unittest.TestCase):
             # a worse later leg never overwrites
             self.assertFalse(chain.update_best("spec", j(9), a1, Path("/r4"), 4, runs))
             self.assertEqual(best_pt.read_bytes(), bytes([2]))
+
+
+class CandidateConfirmFlow(unittest.TestCase):
+    """accepted/ is a candidate set: the CPU harness decides the stop."""
+
+    def _leg(self, td, log, accepted, cells, robot="humanoid",
+             variant="h1_stocky", judge_enabled=True):
+        run = _run_dir(Path(td), log, accepted=accepted)
+        judge = _fake_judge(cells)
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            res = chain.process_leg(run, robot, variant, "spec", 1,
+                                    judge_enabled=judge_enabled,
+                                    runs_dir=Path(td) / "runs", judge=judge)
+        return run, res, judge, buf.getvalue()
+
+    def test_false_positive_does_not_stop_but_is_kept_as_best(self):
+        cells = {"actor_final.pt": 9, "actor_accepted.pt": 10,
+                 "candidate_000936.pt": 10, "candidate_000944.pt": 11}
+        with tempfile.TemporaryDirectory() as td:
+            run, res, judge, text = self._leg(td, CANDIDATE_LOG, True, cells)
+            self.assertFalse(res["stop"])
+            self.assertIsNone(res["confirmed_actor"])
+            self.assertTrue(res["device_confirmed"])
+            # ALL candidates + the final actor were CPU-judged
+            self.assertEqual(sorted(judge.calls), sorted(cells))
+            self.assertEqual(len(res["candidates"]), 3)
+            self.assertEqual([c["device_cells"] for c in res["candidates"]],
+                             [12, 12, 12])
+            self.assertEqual([c["cpu_cells"] for c in res["candidates"]],
+                             [10, 10, 11])
+            self.assertIn("on-device 12/12 vs CPU harness 10/12 -> FALSE POSITIVE",
+                          text)
+            self.assertIn("none CPU-confirmed", text)
+            self.assertNotIn("chain complete", text)
+            # plateau score = best CPU cells over final + candidates
+            self.assertEqual(res["score"], 11)
+            self.assertIn("judge=9/12", text)
+            self.assertIn("candidates=actor_accepted.pt:12->10", text)
+            best_pt, best_json = chain.best_paths("spec", Path(td) / "runs")
+            self.assertEqual(best_pt.read_bytes(), b"acc-944")
+            rec = json.loads(best_json.read_text())
+            self.assertEqual(rec["cells_passed"], 11)
+            self.assertTrue(rec["source_actor"].endswith("candidate_000944.pt"))
+
+    def test_cpu_confirmed_candidate_stops_the_chain(self):
+        cells = {"actor_final.pt": 11, "actor_accepted.pt": 10,
+                 "candidate_000936.pt": 10, "candidate_000944.pt": 12}
+        with tempfile.TemporaryDirectory() as td:
+            run, res, judge, text = self._leg(td, CANDIDATE_LOG, True, cells)
+            self.assertTrue(res["stop"])
+            self.assertEqual(res["confirmed_actor"].name, "candidate_000944.pt")
+            self.assertIn("ACCEPTED — chain complete (CPU-confirmed 12/12", text)
+            self.assertIn("candidate_000944.pt (update 944): on-device 12/12 vs "
+                          "CPU harness 12/12 -> CPU-CONFIRMED", text)
+            best_pt, _ = chain.best_paths("spec", Path(td) / "runs")
+            self.assertEqual(best_pt.read_bytes(), b"acc-944")
+
+    def test_accepted_line_alone_never_stops_humanoid(self):
+        """Even a bare 'HUMANOID WALKING ACCEPTED' line + accepted/ dir
+        (a cpu-device trainer, or an older trainer) is CPU-re-judged."""
+        cells = {"actor_final.pt": 10, "actor_accepted.pt": 10,
+                 "candidate_000936.pt": 10, "candidate_000944.pt": 10}
+        with tempfile.TemporaryDirectory() as td:
+            run, res, judge, text = self._leg(td, HUMANOID_LOG, True, cells)
+            self.assertFalse(res["stop"])
+            self.assertTrue(res["device_confirmed"])
+
+    def test_per_leg_judge_always_runs_without_candidates(self):
+        with tempfile.TemporaryDirectory() as td:
+            run, res, judge, text = self._leg(td, ARM_LOG, False,
+                                              {"actor_final.pt": 9},
+                                              robot="arm", variant="lite")
+            self.assertEqual(judge.calls, ["actor_final.pt"])
+            self.assertEqual(res["candidates"], [])
+            self.assertIn("judge=9/12", text)
+            self.assertNotIn("judge=off", text)
+            self.assertEqual(res["score"], 9)
+            self.assertFalse(res["stop"])
+
+    def test_judge_failure_falls_back_to_probe_score(self):
+        with tempfile.TemporaryDirectory() as td:
+            run, res, judge, text = self._leg(td, ARM_LOG, False,
+                                              {"actor_final.pt": None},
+                                              robot="arm", variant="lite")
+            self.assertIn("judge=failed", text)
+            self.assertEqual(res["score"], 9.0)     # the log's best probe
+
+    def test_no_judge_never_stops_humanoid(self):
+        with tempfile.TemporaryDirectory() as td:
+            run, res, judge, text = self._leg(td, CANDIDATE_LOG, True, {},
+                                              judge_enabled=False)
+            self.assertEqual(judge.calls, [])
+            self.assertFalse(res["stop"])
+            self.assertIn("judge=off", text)
+            self.assertEqual(res["score"], 12.0)
+
+    def test_duck_lineage_keeps_log_line_acceptance(self):
+        with tempfile.TemporaryDirectory() as td:
+            run, res, judge, text = self._leg(td, DUCK_LOG, False,
+                                              {"actor_final.pt": 10},
+                                              robot="duck", variant=None)
+            self.assertTrue(res["stop"])
+            self.assertIn("duck lineage probe confirmed", text)
+
+    def test_candidate_actors_and_device_record(self):
+        with tempfile.TemporaryDirectory() as td:
+            run = _run_dir(Path(td), "", accepted=True)
+            acc = chain.accepted_dir(run)
+            names = [p.name for p in chain.candidate_actors(acc)]
+            self.assertEqual(names, ["actor_accepted.pt", "candidate_000936.pt",
+                                     "candidate_000944.pt"])
+            self.assertEqual(chain.device_record(acc / "actor_accepted.pt")["update"], 936)
+            self.assertEqual(chain.device_record(acc / "candidate_000944.pt")["update"], 944)
 
 
 if __name__ == "__main__":

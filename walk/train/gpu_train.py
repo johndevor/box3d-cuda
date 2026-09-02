@@ -82,10 +82,23 @@ current deterministic policy is judged by the robot's STRICT frozen judge.
     marginal cell). On the CUDA lane the physics is the fp32 device build --
     parity with the serial judge lane holds at the certificate level, not
     bitwise -- and the CPU harness stays the acceptance authority (gpu/
-    chain.py re-judges every leg's actor locally). All 12 cells pass ->
-    <out>/accepted/{actor_accepted.pt, acceptance.json} is written and the
-    trainer prints HUMANOID WALKING ACCEPTED / ARM REACH ACCEPTED and exits 0.
-    No 11 s confirmation stage (none exists in those harnesses).
+    chain.py re-judges every leg's actor locally). No 11 s confirmation
+    stage (none exists in those harnesses).
+    AUTHORITY RULE (_probe_lane_is_authority). On a cpu device the probe
+    lane IS the harness lane (serial build; bit-identical, proven), so one
+    12/12 probe writes <out>/accepted/{actor_accepted.pt, acceptance.json},
+    prints HUMANOID WALKING ACCEPTED / ARM REACH ACCEPTED and exits 0. On a
+    cuda device the fp32 device physics is NOT the authority: the first real
+    use (stocky leg 20260902-155451) self-stopped at an on-device 12/12 that
+    the CPU harness scored 10/12 (two 1.0 m/s alternation cells flipped).
+    There the probe requires CONSECUTIVE_PASSES_CUDA (2) consecutive 12/12
+    probes to declare an ACCEPTED-CANDIDATE, saves it (the first as
+    accepted/{actor_accepted.pt, acceptance.json}, every candidate as
+    accepted/candidate_<update>.{pt,json}, the last MAX_CANDIDATES kept),
+    prints "<ROBOT> ACCEPTED-CANDIDATE at update N" and KEEPS TRAINING to
+    --max-wall-s so the leg returns several candidates; gpu/chain.py
+    re-judges every accepted/*.pt with the CPU harness and only a
+    CPU-confirmed 12/12 stops a chain.
 Every probe logs a "kind": "accept" metrics row with per-cell records and
 its wall cost; probe time never counts toward the reported training wall.
 """
@@ -655,6 +668,53 @@ def run_acceptance_probe(cfg: GpuTrainConfig, actor, device: torch.device) -> di
 ACCEPTED_LINE = {"duck": "WALKING ACCEPTED",
                  "humanoid": "HUMANOID WALKING ACCEPTED",
                  "arm": "ARM REACH ACCEPTED"}
+CONSECUTIVE_PASSES_CUDA = 2   # 12/12 probes in a row before a cuda candidate
+MAX_CANDIDATES = 5            # accepted/candidate_<update>.pt kept (newest)
+
+
+def _probe_lane_is_authority(cfg: GpuTrainConfig, device: torch.device) -> bool:
+    """True when the probe's lane is the CPU harness's lane (a cpu device
+    loads the serial build; traces are bit-identical to the harness), so a
+    single 12/12 probe IS the verdict. On cuda the fp32 device physics only
+    nominates candidates (module docstring, AUTHORITY RULE)."""
+    return device.type == "cpu"
+
+
+def write_candidate(out: Path, cfg: GpuTrainConfig, actor, update: int,
+                    env_steps: int, train_wall_s: float, probe_wall_s: float,
+                    probe: dict, consecutive: int) -> Path:
+    """accepted/candidate_<update>.{pt,json} for an on-device 12/12 streak;
+    prunes to the newest MAX_CANDIDATES candidates."""
+    acc = out / "accepted"
+    acc.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {"arch": cfg.policy,
+         "state_dict": {k: v.detach().cpu()
+                        for k, v in actor.state_dict().items()}},
+        acc / f"candidate_{update:06d}.pt")
+    (acc / f"candidate_{update:06d}.json").write_text(json.dumps({
+        "schema": "duckgridwalk.training_acceptance_candidate/1",
+        "candidate": True, "cpu_confirmed": None,
+        "robot": cfg.robot,
+        "variant": probe.get("protocol", {}).get("variant"),
+        "update": int(update), "env_steps": int(env_steps),
+        "consecutive_passes": int(consecutive),
+        "train_wall_s": round(float(train_wall_s), 3),
+        "probe_wall_s": round(float(probe_wall_s), 3),
+        "probe_wall_last_s": round(float(probe["probe_wall_s"]), 3),
+        "policy": cfg.policy, "protocol": probe.get("protocol", {}),
+        "lane": "cuda training lane class (fp32 device build): NOT the "
+                "authority; the CPU harness decides",
+        "library": cfg.library,
+        "cells_passed": probe.get("cells_passed"),
+        "cells_total": probe.get("cells_total"),
+        "episodes": probe["episodes"],
+    }, indent=1, default=str) + "\n")
+    kept = sorted(acc.glob("candidate_*.pt"))
+    for old_pt in kept[:-MAX_CANDIDATES]:
+        old_pt.unlink(missing_ok=True)
+        old_pt.with_suffix(".json").unlink(missing_ok=True)
+    return acc / f"candidate_{update:06d}.pt"
 
 
 def _make_robot_probe_env(cfg: GpuTrainConfig, n_envs: int, seed: int):
@@ -776,6 +836,8 @@ def write_acceptance(out: Path, cfg: GpuTrainConfig, actor, update: int,
             "policy": cfg.policy,
             "protocol": probe.get("protocol", {}),
             "lane": "training lane class, fresh instance, DR/gates/RSI off",
+            "lane_is_authority": bool(probe.get("lane_is_authority", True)),
+            "consecutive_passes": int(probe.get("consecutive_passes", 1)),
             "library": cfg.library,
             "cells_passed": probe.get("cells_passed"),
             "cells_total": probe.get("cells_total"),
@@ -1010,6 +1072,9 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
     probe_wall_proc = 0.0            # probe seconds spent in THIS process
     last_probe_update = -1
     accepted = False
+    consecutive_passes = 0           # cuda candidate streak (non-duck)
+    candidates = 0                   # on-device candidates written this run
+    authority = cfg.robot == "duck" or _probe_lane_is_authority(cfg, device)
 
     def train_wall() -> float:
         """Cumulative training wall seconds, probes excluded."""
@@ -1026,12 +1091,17 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                 """Acceptance probe at update u; returns True on CONFIRMED
                 pass (training must stop). Time is booked as probe wall."""
                 nonlocal probe_wall_proc, last_probe_update, accepted
+                nonlocal consecutive_passes, candidates
                 if cfg.robot == "duck":
                     probe = run_acceptance_probe(cfg, actor, device)
                 else:
                     probe = run_robot_probe(cfg, actor, device)
                 probe_wall_proc += probe["probe_wall_s"]
                 last_probe_update = u
+                consecutive_passes = (consecutive_passes + 1
+                                      if probe["confirmed"] else 0)
+                probe["consecutive_passes"] = consecutive_passes
+                probe["lane_is_authority"] = authority
                 line = {
                     "kind": "accept", "update": u, "env_steps": env_steps,
                     "stage1_passed": probe["stage1_passed"],
@@ -1047,7 +1117,9 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                                  "variant": probe["protocol"].get("variant"),
                                  "cells_passed": probe["cells_passed"],
                                  "cells_total": probe["cells_total"],
-                                 "failed_cells": probe["failed_cells"]})
+                                 "failed_cells": probe["failed_cells"],
+                                 "consecutive_passes": consecutive_passes,
+                                 "lane_is_authority": authority})
                 mf.write(json.dumps(line, default=str) + "\n")
                 mf.flush()
                 metrics.append(line)
@@ -1064,6 +1136,29 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                           f"confirmed={probe['confirmed']} "
                           f"probe_wall={probe['probe_wall_s']:.1f}s" + tail)
                 if not probe["confirmed"]:
+                    return False
+                if not authority:
+                    # cuda lane (humanoid/arm): nominate, never decide.
+                    if consecutive_passes < CONSECUTIVE_PASSES_CUDA:
+                        if not cfg.quiet:
+                            print(f"[accept u{u}] on-device 12/12 #"
+                                  f"{consecutive_passes}: need "
+                                  f"{CONSECUTIVE_PASSES_CUDA} consecutive "
+                                  "before a candidate")
+                        return False
+                    candidates += 1
+                    if not (out / "accepted" / "actor_accepted.pt").is_file():
+                        write_acceptance(out, cfg, actor, u, env_steps,
+                                         train_wall(), probe_wall(), probe)
+                    path = write_candidate(out, cfg, actor, u, env_steps,
+                                           train_wall(), probe_wall(), probe,
+                                           consecutive_passes)
+                    line["candidate"] = str(path)
+                    print(f"{ACCEPTED_LINE[cfg.robot]}-CANDIDATE at update {u} "
+                          f"after {train_wall():.1f} s ({probe_wall():.1f} s "
+                          f"probing): {consecutive_passes} consecutive on-device "
+                          f"12/12 -> {path.name}; CPU harness decides, "
+                          "training continues")
                     return False
                 accepted = True
                 write_acceptance(out, cfg, actor, u, env_steps,
@@ -1248,7 +1343,8 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
     if not cfg.quiet:
         print(f"[gpu_train] done: updates={last_update} env_steps={env_steps} "
               f"faults={faults_total} wall={time.perf_counter() - t_start:.1f}s "
-              f"stopped_by_wall={stopped_by_wall} accepted={accepted}")
+              f"stopped_by_wall={stopped_by_wall} accepted={accepted}"
+              + (f" candidates={candidates}" if candidates else ""))
     return metrics
 
 
