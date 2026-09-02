@@ -100,6 +100,12 @@ class Morphology:
     kp: tuple = tuple(H11_KP[g] for g in _GROUPS)   # per _GROUPS order
     kv: tuple = tuple(H11_KV[g] for g in _GROUPS)
     rationale: str = ""               # WHY the gains/caps were authored so
+    # Per-variant REWARD CONSTANT overrides (walk/env/humanoid_reward.py
+    # names -> values), emitted into the member's header as DW_RW_<NAME>
+    # (the kernel's device reward reads those macros) and applied by the
+    # python env through reward(..., overrides) -- env<->kernel parity is
+    # gated per variant. Empty for the base (byte-identical header).
+    reward_overrides: tuple = ()      # (("CLEARANCE_M", 0.045), ...)
 
     def kp_of(self, joint: str) -> float:
         return self.kp[_GROUPS.index(_group(joint))]
@@ -115,13 +121,33 @@ def _gains(kp_roll, kp_knee, kp_hip_ankle, kv_roll, kv_knee, kv_hip_ankle):
 
 H1 = Morphology()
 
+# FAMILY LAWS (measured 2026-09-02 on the TALL 6/12 GPU actor vs the accepted
+# H1.1 actor, cmd 1.0, 4 seeds, humanoid/PHASE2.md s18):
+#  * GAIT CLOCK: NOT Froude-scaled. At +12 % leg the TALL policy locks onto
+#    the base clock exactly like H1.1 (step period 0.299 s == clock half-
+#    cycle for both; touchdown phase error +0.070 +- 0.017 cyc vs H1.1
+#    +0.074 +- 0.014), zero double-steps. A per-variant clock IS available
+#    with zero kernel edits (DW_PHASE_HZ_PER_MPS is generated and read by
+#    the kernel) but the data says leave it; members share the clock.
+#  * SWING CLEARANCE MARGIN: the reward's clearance bar (CLEARANCE_M 0.030)
+#    equals the frozen judge's bar, so a policy has no gradient toward
+#    margin above it. TALL's PPO optimum settled at 41 mm median / 31 mm
+#    p10 whole-sole clearance (H1.1: 62 / 58), 15 % of swings failing the
+#    judge's 30 mm x 30 ms clause -> qualified-sequence dropouts -> the
+#    "alternation" failures and the curriculum's alternation terminations
+#    (which then unlearn stepping at speed). Variants get CLEARANCE_M
+#    raised to 1.5x the judge bar (0.045) so the optimum sits above it;
+#    base H1.1 keeps 0.030 (accepted, byte-identical).
+CLEARANCE_MARGIN_FACTOR = 1.5
+VARIANT_REWARD_OVERRIDES = (("CLEARANCE_M", round(0.030 * CLEARANCE_MARGIN_FACTOR, 6)),)
+
 # H1-TALL: legs +12 %, torso +5 %, link masses scale with length (density
 # preserved: 68.0 -> 71.52 kg). Gains: see the checklist rationale.
 _TALL_KP, _TALL_KV = _gains(620.0, 1070.0, 350.0, 74.0, 40.0, 23.0)
 H1_TALL = Morphology(
     name="h1_tall", profile="duckgridwalk.humanoid.h1_tall-v1",
     thigh_scale=1.12, shank_scale=1.12, torso_scale=1.05,
-    kp=_TALL_KP, kv=_TALL_KV,
+    kp=_TALL_KP, kv=_TALL_KV, reward_overrides=VARIANT_REWARD_OVERRIDES,
     rationale=(
         "Longer legs raise every leg joint's apparent inertia I_eff = "
         "1/(M^-1)_jj (hip roll 1.743 -> 2.150, hip 0.210 -> 0.242, knee "
@@ -280,6 +306,7 @@ def build(spec: Morphology) -> types.SimpleNamespace:
     ns.HIP_ROLL_EFFORT = joints[h1.JOINT_NAMES.index("left_hip_roll")][6]
     ns.KP_TABLE = kp_table
     ns.KV_TABLE = kv_table
+    ns.REWARD_OVERRIDES = dict(spec.reward_overrides)
     ns.TOTAL_DYNAMIC_MASS = sum(b[3] for b in bodies[1:])
     geo = leg_geometry(ns)
     ns.LEG_LENGTH_M = geo["leg_length_m"]

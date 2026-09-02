@@ -163,9 +163,15 @@ W_PHASE = 1.0            # [0.5] v2 (was 0.5): doubles the in-phase stepping
 
 def reward(prev_state: dict, state: dict, action: np.ndarray,
            command: np.ndarray, tracker: GaitTracker,
-           dt: float = CONTROL_DT, ref_gait: np.ndarray | None = None
-           ) -> np.ndarray:
+           dt: float = CONTROL_DT, ref_gait: np.ndarray | None = None,
+           overrides: dict | None = None) -> np.ndarray:
     """Per-env float32 reward; updates `tracker` in place.
+
+    `overrides` ({constant name: value}, default None = the module's
+    constants): per-variant reward-CONSTANT overrides authored in
+    humanoid/h1_family.py (Morphology.reward_overrides) and pinned into the
+    variant's header as DW_RW_<NAME>, so env and kernel agree. Supported:
+    CLEARANCE_M (term 7's swing-foot clearance bar).
 
     `ref_gait` ([REF_BINS, J], default the module's H1 REF_GAIT) is the
     self-imitation table: family variants pass their own (same bins).
@@ -243,7 +249,9 @@ def reward(prev_state: dict, state: dict, action: np.ndarray,
     tracker.air_time = np.where(contact, 0.0, tracker.air_time + dt)
 
     # 7. foot-clearance bonus
-    r += W_CLEARANCE * ((~contact) & (sole >= CLEARANCE_M)).sum(1)
+    clearance_m = (CLEARANCE_M if not overrides
+                   else float(overrides.get("CLEARANCE_M", CLEARANCE_M)))
+    r += W_CLEARANCE * ((~contact) & (sole >= clearance_m)).sum(1)
 
     # 8a. self-imitation: joint pose near the synthetic reference cycle at
     # own phase (exactly reward.py lines 193-199; kernel twin is the

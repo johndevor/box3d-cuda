@@ -151,6 +151,9 @@ class FlatFloorHumanoidEnv(DuckEnvBatch):
         self._ref_gait = (None if self.variant == "h1" else
                           reward_mod.load_reference(
                               h1_family.reference_gait_path(self.variant)))
+        self._reward_overrides = (None if self.variant == "h1" else
+                                  dict(getattr(h1_family.load_lowering(
+                                      self.variant), "REWARD_OVERRIDES", {})) or None)
         # Domain randomization: flat.py's exact recipe (walk/env/cuda_lane.py
         # normative contract). Scales apply INSIDE the lane physics; this env
         # only draws them, keeps the latency ring and scales its torque
@@ -361,7 +364,8 @@ class FlatFloorHumanoidEnv(DuckEnvBatch):
         cur["contact_ticks"] = contact_ticks.copy()
         r = reward_mod.reward(self._prev, cur, a, self._command,
                               self._tracker, dt=CONTROL_DT,
-                              ref_gait=self._ref_gait)
+                              ref_gait=self._ref_gait,
+                              overrides=self._reward_overrides)
         self._prev = cur
 
         self._t[live] += 1

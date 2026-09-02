@@ -101,6 +101,11 @@ def emit(h0, ref_gait=None) -> str:
                            else ref_gait, dtype=np.float64)
     assert ref_table.shape == (int(reward_mod.REF_BINS), J), "REF_GAIT shape drift"
     variant = getattr(h0, "VARIANT", "h1")
+    # per-variant reward-constant overrides (h1_family Morphology.
+    # reward_overrides); empty for the base -> exactly the module values
+    rw_over = dict(getattr(h0, "REWARD_OVERRIDES", {}) or {})
+    unknown = [k for k in rw_over if not hasattr(reward_mod, k)]
+    assert not unknown, f"REWARD_OVERRIDES names unknown to humanoid_reward: {unknown}"
     title = ("// H1 humanoid (B16/J14/P2: H0 + hip roll, humanoid/h1_lowering.py)"
              if variant == "h1" else
              f"// {variant} humanoid (B16/J14/P2 family member of H1, "
@@ -235,7 +240,7 @@ def emit(h0, ref_gait=None) -> str:
         "// HUMANOID reward v1 pins (walk/env/humanoid_reward.py, duck v12",
         "// shape, NO imitation term -- empty hook, W_IMIT 0): generated so",
         "// any python-side change fails the drift test until regenerated.",
-        *[f"#define DW_RW_{name} {float(getattr(reward_mod, name))!r}"
+        *[f"#define DW_RW_{name} {float(rw_over.get(name, getattr(reward_mod, name)))!r}"
           for name in [
               "W_TRACK", "TRACK_SIGMA_SQ", "TRACK_EMA_S", "W_ALIVE",
               "W_LATERAL", "W_ACTION_RATE", "W_TORQUE", "W_AIR_TIME",

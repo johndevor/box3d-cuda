@@ -313,5 +313,62 @@ class AnalyticDynamics(unittest.TestCase):
             self.assertLess(float((np.array(lw.KV_TABLE) * dt / ieff).max()), 2.0, v)
 
 
+class RewardOverrides(unittest.TestCase):
+    """Per-variant reward-constant overrides (h1_family FAMILY LAWS): the
+    swing-clearance margin for TALL, pinned into its header as
+    DW_RW_CLEARANCE_M, applied by the python reward, absent for the base."""
+
+    def test_tall_clearance_margin_pinned_in_header(self):
+        import re
+        tall = fam.load_lowering("h1_tall")
+        self.assertEqual(tall.REWARD_OVERRIDES, {"CLEARANCE_M": 0.045})
+        self.assertEqual(getattr(h1, "REWARD_OVERRIDES", {}), {})
+        self.assertEqual(fam.build(fam.H1).REWARD_OVERRIDES, {})
+
+        def macro(path):
+            m = re.search(r"#define DW_RW_CLEARANCE_M ([^ \n]+)", path.read_text())
+            return float(m.group(1))
+        self.assertEqual(macro(fam.header_path("h1_tall")), 0.045)
+        self.assertEqual(macro(fam.header_path("h1")), 0.03)
+        self.assertEqual(macro(fam.header_path("h1_stocky")), 0.03)
+        self.assertEqual(fam.CLEARANCE_MARGIN_FACTOR, 1.5)
+
+    def test_reward_override_changes_only_the_clearance_bar(self):
+        from walk.env import humanoid_reward as hr
+        E = 1
+        tracker_a, tracker_b = hr.GaitTracker(E), hr.GaitTracker(E)
+        z = np.zeros((E, 3))
+        prev = {"root_lin_vel": z, "root_ang_vel": z, "foot_contact": np.array([[True, True]]),
+                "sole_height": np.zeros((E, 2)), "action": np.zeros((E, 14)),
+                "torque": np.zeros((E, 14)), "foot_x": np.zeros((E, 2)),
+                "joint_q": np.zeros((E, 14)), "phase": np.zeros(E)}
+        cur = dict(prev, foot_contact=np.array([[True, False]]),
+                   sole_height=np.array([[0.0, 0.038]]))   # 38 mm: above 30, below 45
+        a = hr.reward(prev, cur, np.zeros((E, 14)), np.array([0.5]), tracker_a)
+        b = hr.reward(prev, cur, np.zeros((E, 14)), np.array([0.5]), tracker_b,
+                      overrides={"CLEARANCE_M": 0.045})
+        self.assertAlmostEqual(float(a[0] - b[0]), hr.W_CLEARANCE, places=6)
+        c = hr.reward(prev, cur, np.zeros((E, 14)), np.array([0.5]), hr.GaitTracker(E),
+                      overrides=None)
+        self.assertEqual(float(c[0]), float(a[0]))
+
+    def test_variant_env_applies_override(self):
+        from walk.env import humanoid_flat as hf
+        from walk.env.humanoid_cuda_lane import CudaHumanoidLane
+        env = hf.FlatFloorHumanoidEnv(
+            environments=1, seed=3, variant="h1_tall",
+            lane_factory=lambda E, off: CudaHumanoidLane(E, joint_offsets=off,
+                                                         variant="h1_tall"))
+        try:
+            self.assertEqual(env._reward_overrides, {"CLEARANCE_M": 0.045})
+        finally:
+            env.close()
+        env = hf.FlatFloorHumanoidEnv(environments=1, seed=3)
+        try:
+            self.assertIsNone(env._reward_overrides)
+        finally:
+            env.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

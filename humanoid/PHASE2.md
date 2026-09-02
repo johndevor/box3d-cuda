@@ -608,3 +608,56 @@ header/json/ckpt until committed). No kernel change needed: B16/J14/P2,
 8 foot vertices and the per-joint DW_KP/KV/EFFORT tables cover the family.
 The frozen judge is untouched (its 1 m-scale thresholds remain valid at
 ±12 % / −6 % leg length; stride 0.60 m ≫ 0.15 m placement floor).
+
+## 18. TALL 6/12 at cmd 1.0: clock hypothesis REFUTED; mechanism = swing-clearance margin
+
+Data (replays of evidence/humanoid-tall-20260902/actor-tall-6of12.pt on the
+TALL fp32 lane vs evidence/humanoid-accepted-20260902/actor-humanoid-
+accepted.pt on H1.1, cmd 1.0, seeds 4242/7/1913/90210, 8 s, judge
+clauses + phase-at-footfall):
+
+| cmd 1.0                                | H1.1 accepted | TALL 6/12 |
+|----------------------------------------|---------------|-----------|
+| step period (clock half-cycle 0.299 s) | 0.300 s       | 0.299 s   |
+| touchdown phase error (cycles)         | +0.074 ± 0.014| +0.070 ± 0.017 |
+| double-steps / same-foot swings        | 0             | 0         |
+| real swings qualified                  | 98/107 (97 %) | 85/107 (82 %) |
+| disqualified for 30 mm × 30 ms clearance | 3           | 18        |
+| whole-sole clearance at peak, median / p10 | 62 / 58 mm | 41 / 31 mm |
+| foot-CENTER lift at peak, median       | 109 mm        | 72 mm     |
+| swing knee max (action box 0.5)        | 0.44 rad      | 0.45 rad  |
+| stance hip at swing peak (min / max)   | −0.16 / +0.06 | +0.05 / +0.25 |
+| stance knee max                        | 0.02 rad      | 0.11 rad  |
+| pelvis dz at swing peak                | +7.9 mm       | +1.2 mm   |
+| placement median                       | 498 mm        | 448 mm    |
+| hip-pitch effort saturation in swing   | 2.0 %         | 3.5 %     |
+
+Verdict: the Froude/clock hypothesis is refuted — TALL locks onto the base
+clock exactly as H1.1 does (cadence ratio 1.00, identical phase error, no
+double-steps). The `footfalls_alternate` failures are DROPOUTS: every
+L-R-L-R sequence is intact in time, but a swing that misses the judge's
+whole-sole 30 mm × 30 ms clause vanishes from the QUALIFIED list, so the
+judge sees "L, L". TALL's swings sit at 41 mm median / 31 mm p10 against
+the 30 mm bar (15 % fail the hold; at cmd 0.50 8 % — the two 0.50 seeds).
+Effort is not binding (saturation 3.5 % vs 2.0 %; STOCKY saturates 12–18 %
+and clears 69 mm). Both policies run the swing knee at the 0.5 rad action
+box; the difference is posture: H1.1 vaults over an extended stance leg
+(stance hip −0.16, straight knee, pelvis +8 mm), TALL leans over a flexed
+stance leg (hip +0.05..+0.25, knee 0.11, pelvis at home height) and its
+foot-center lift is 37 mm lower. The reward's clearance bar (CLEARANCE_M
+0.030) EQUALS the judge's, so the optimum has no gradient toward margin;
+the curriculum's alternation terminations then punish the dropouts as
+"limping" and unlearn stepping at speed (the leg-over-leg degradation).
+
+Authored fix (h1_family FAMILY LAWS; TALL only, base byte-identical):
+Morphology.reward_overrides -> lowering.REWARD_OVERRIDES -> generated
+DW_RW_CLEARANCE_M (the kernel's device reward already reads that macro;
+zero kernel edits) and reward(..., overrides) in the python env (parity
+gated per variant). TALL: CLEARANCE_M 0.030 -> 0.045 (1.5x the judge bar;
+H1.1's own accepted margin is ~2x). Reference/BC seed unchanged (labels do
+not depend on reward). STOCKY (11/12, 69 mm clearance, 0 % clearance
+dropouts) is left untouched mid-run. Clock: a per-variant
+DW_PHASE_HZ_PER_MPS is available through the same generator path with no
+kernel edit, but the data says the family shares the clock at ±12 % leg.
+Needs a fresh TALL GPU leg (spec humanoid-tree-tall.json picks up the
+regenerated header) to confirm the optimum moves above the bar.
