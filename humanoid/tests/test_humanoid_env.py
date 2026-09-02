@@ -247,7 +247,8 @@ class TerminationTests(unittest.TestCase):
     def test_env_var_clock_override_is_read_at_import(self):
         # documented mechanism only: values are module-level like flat.py's
         self.assertEqual(hf.PHASE_HZ_BASE, 0.0)
-        self.assertEqual(hf.PHASE_HZ_PER_MPS, 3.33)
+        self.assertEqual(hf.PHASE_HZ_PER_MPS, 1.67)  # v3: bandwidth-pinned,
+        # do not move without an executed-validation run (PHASE2 s14)
 
 
 if __name__ == "__main__":

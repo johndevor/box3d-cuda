@@ -422,3 +422,115 @@ Next GPU leg:
     python -B -m walk.train.gpu_train --robot humanoid --lane-env \
         --curriculum humanoid-walk --resume humanoid/bc_init_ckpt.pt \
         --envs 16384 --device cuda --library <libduck_cuda.so with -Ihumanoid/include> ...
+
+## 14. Swing diagnostics: no real swing exists — the transfer never completes
+
+Instrumentation: humanoid/diagnose_swings.py (288 episodes: demonstrator /
+BC clone / tree-leg actor x 3 commands x 4 seeds x 8 envs on the fp32
+serial lane; every liftoff->touchdown recorded raw AND with the judge's
+20 ms debounce; three-way check vs gate_proxy and the frozen judge).
+
+Findings (all three policies identical in kind):
+- 1065–1853 raw "swings"/policy, EVERY one a single-tick (2 ms) contact
+  flicker: duration median 0.002 s (bar 0.1), peak clearance ≤ 0.03 mm
+  (bar 30 mm), placement ~±0.3 mm (bar 150 mm); first-fail = duration for
+  100%. After the 20 ms debounce the swing count is exactly ZERO.
+- Three-way consistency is PERFECT: analyzer-raw qualified 0 ==
+  gate_proxy 0 == analyzer-debounced 0; zero per-episode mismatches.
+  The proxy is not the problem; there is no marginal-swing gap.
+- CORRECTION of earlier reporting: the BC-leg "lifts/alternations" gates
+  sampled foot_contact at 20 ms policy boundaries and were counting these
+  single-tick solver flickers, not real swings. The survival-time gains
+  were real; the stepping claims were not.
+- Mechanics (probe, demonstrator at cmd 0.5): contact_ticks 10/10 on BOTH
+  feet at every policy step — permanent double support. Roll channel:
+  commanded ±0.25 rad, achieved ~±0.15 with ~quarter-cycle lag —
+  textbook over-bandwidth drive: the roll plant's natural frequency is
+  sqrt(kp/I_eff) = sqrt(90/1.74) ≈ 1.15 Hz (ζ ≈ 0.32), while the clock
+  demands the weight shift at the cycle rate = 1.67/2.5/3.33 Hz at
+  cmd 0.5/0.75/1.0 — at or above bandwidth at every command. The CoM
+  never gets over a foot in time; statics compound it (holding single
+  support at zero lean needs ~204 N·m about the stance hip-roll vs the
+  180 N·m authored cap, so transfer MUST complete during double support —
+  and the v2 reference has zero double-support time by construction:
+  alternating single support with swings starting exactly at transfer).
+
+RECOMMENDATION (single highest-leverage fix; propose-only per the task):
+reference/clock v3 — author an EXECUTION-FEASIBLE weight-shift gait:
+  (i) slow the gait clock: PHASE_HZ_PER_MPS 3.33 -> 1.67 (stride
+      1/PER_MPS 0.30 -> 0.60 m; step 0.30 m, still 2x the judge's 0.15 m
+      placement bar; weight-shift frequency drops to 0.83–1.67 Hz,
+      at-or-below the roll plant's 1.15 Hz bandwidth for cmd <= 0.75);
+  (ii) restructure the table with an explicit double-support transfer
+      phase (~25–30% of cycle) in which the roll completes the shift
+      BEFORE the swing window opens (swing ~35% of cycle: 0.28–0.42 s,
+      inside the judge's [0.1, 1.2] s);
+  (iii) new validation gate BEFORE anything trains on it: the
+      demonstrator's EXECUTED closed-loop rollout must produce >= 1
+      debounced qualified swing per episode (the FK gates provably do not
+      catch execution-infeasibility — this leg's lesson).
+Why not the alternatives: amplifying amplitudes cannot work (roll targets
+already saturate the action box and the plant attenuates above bandwidth);
+near-miss reward shaping and 50%-bar pre-stages both assume a population
+NEAR the bars — it is at literally zero swings with the mechanics blocked,
+so there is no gradient path for them to pay. The frozen judge is
+untouched by (i)+(ii): the clock constant is the env's explicitly
+sweepable knob and placement margin GROWS. Fallback if executed
+validation still fails at 0.83 Hz: per-joint kp (roll ~400 N·m/rad) — an
+H1.1 authoring decision + a kernel DW_KP_TABLE edit, precedented exactly
+by the effort-cap table.
+
+## 15. v3 implemented — executed validation FAILS: STOP, H1.1 kp-table required
+
+Implemented exactly as approved: clock PHASE_HZ_PER_MPS 3.33 → 1.67
+(bandwidth-pinned comment in humanoid_flat.py; do-not-move without an
+executed-validation run), reference table v3 (30% double-support transfer,
+swings 0.21–0.42 s, roll trapezoid completing the shift BEFORE liftoff,
+plus two execution fixes found while validating: swing-hip lift bump
+HIP_LIFT 0.3 — the executed lean drops the pelvis by L·(1−cosθ) and a
+box-capped knee cannot out-shorten it — and the whole table clipped into
+the ±0.5 ACTION BOX so imitation targets are reachable), header
+regenerated, BC chain regenerated, lift-counting gates replaced by the
+debounced analyzer everywhere (the flicker lesson institutionalized), and
+the MANDATORY ExecutedValidation gate added.
+
+FK numbers (roll-zeroed sagittal, pinned): planted-sole |z| ≤ 22.3 mm
+(pinned-pelvis stance-extreme bob at ALPHA 0.228), swing clearance ≥ 44 mm
+over the knee-plateau window (peak 123 mm), stance sweep 0.388 m =
+2L·sin(ALPHA), stride 0.599 m (4× the judge's placement bar).
+
+EXECUTED validation: FAILS — and the mechanism is now fully measured:
+- The body above the hip-roll joint is a LATERAL INVERTED PENDULUM with
+  destabilizing stiffness g·Σmᵢhᵢ ≈ 388 N·m/rad (56 kg minus the
+  below-pivot hanging leg), vs joint kp = 90 N·m/rad. Any lean beyond
+  ~kp·headroom is a runaway: measured, every hold target from 0.18 (the
+  static balance point) to 0.40 ramps the achieved roll monotonically
+  past 0.38 rad into the 28° termination, with the PD pulling back the
+  whole time.
+- Saturation bound (policy-independent): the action box caps restoring
+  torque at kp·(0.5−θ) ≤ 45 N·m of headroom, which stabilizes leans only
+  below 388·θ = 45 → θ ≈ 0.116 rad; unloading a foot REQUIRES the CoM
+  over the stance hip ≈ 0.175 rad. Required lean > maximum stabilizable
+  lean: quasi-static single support is impossible on this plant for ANY
+  controller acting through PD position targets — not a reference-design,
+  clock, BC or reward problem.
+- Confirmed downstream: v3 demonstrator and BC clone: 0 debounced
+  qualified swings in every configuration (amplitudes 0.18–0.40, assists
+  swept, aligned and random phase starts); clone survival 0.72–0.84 s.
+
+STATE LEFT: all suites green with the two stepping gates present but
+@skip-BLOCKED (ExecutedValidation in test_reference_gait.py and
+test_closed_loop_replay_steps in test_bc_pretrain.py), each skip message
+carrying the blocker analysis; survival gates active; drift/parity/FK
+gates all green; v3 artifacts committed (a strictly better scaffold the
+moment the plant is fixed).
+
+H1.1 REQUIREMENT (orchestrator + kernel specialist; NOT implemented here
+per instruction): per-joint gain tables in the kernel — DW_KP_TABLE /
+DW_KV_TABLE consumed like the existing DW_EFFORT_CAP_TABLE — with
+hip-roll kp ≳ 500 N·m/rad (≥ 388 + margin; also lifts the roll bandwidth
+to √(500/1.74) ≈ 2.7 Hz) and kv ≈ 60–100 (ζ ≈ 0.3–0.5 against the ~20
+kg·m² pendulum inertia). The lowering, generator, env and oracle already
+carry per-joint values natively (av1 Hinge.kp/kv are per-joint); only the
+kernel consumes scalars. When it lands: set the two gains in
+h1_lowering, regenerate, UNSKIP the two gates, rerun the executed sweep.

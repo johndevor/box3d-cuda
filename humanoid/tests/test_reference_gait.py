@@ -110,25 +110,27 @@ class TableTests(unittest.TestCase):
 
 
 class KinematicValidation(unittest.TestCase):
-    """Per-frame FK validation on the real fixture (no dynamics)."""
+    """Per-frame FK validation on the real fixture (no dynamics), v3.
+
+    SAGITTAL gates run with the roll columns ZEROED (the roll channel is
+    the weight-transfer command; its kinematic effect under load differs
+    from pinned-pelvis FK by design) and the pelvis PINNED at reset
+    height, so the planted-foot |z| bound is the stance-extreme bob
+    2L*(1-cos(HIP_AMPLITUDE)) ~= 22 mm, not the 4 mm of v1/v2's smaller
+    stride. Roll columns get their own waveform/limit checks. EXECUTED
+    validation lives in ExecutedValidation below -- FK alone provably
+    cannot certify a gait (PHASE2.md section 14)."""
 
     @classmethod
     def setUpClass(cls):
         cls.native = native_lane._native()
         cls.lib = cls.native.library(str(native_lane.build_library()))
         cls.fixture = h0.fixture()
+        cls.arg = _author_module()
         cls.table = np.asarray(json.loads(JSON_PATH.read_text())["table"])
         cls.verts = np.array(h0.foot_vertices())
-        # SAGITTAL validation uses the roll-zeroed table: the roll columns
-        # are LOAD COMPENSATION (0.25 rad commands what sags to the desired
-        # ~0.1 rad lean under the single-support gravity moment); their
-        # pure-FK pose over-leans by design, so stance flatness/clearance
-        # are the sagittal columns' contract and the roll columns get their
-        # own amplitude/timing checks (test_roll_columns).
         cls.sagittal = cls.table.copy()
         cls.sagittal[:, [2, 6]] = 0.0
-        # nominal pelvis path: constant height (straight-leg bob <= 3.3 mm
-        # is measured on the FEET below, not compensated here)
         cls.poses = []
         for b in range(64):
             q = h0.reset_qpos()
@@ -143,94 +145,138 @@ class KinematicValidation(unittest.TestCase):
         world = pose[body, :3] + self.verts @ rot.T
         return world[:, 2], pose[body, 0]
 
-    def test_per_frame_alternation_clearance_and_flatness(self):
-        for b in range(64):
-            phase = 2.0 * math.pi * (b + 0.5) / 64.0
-            left, right = h0.FOOT_BODIES
-            stance, swing = (left, right) if math.sin(phase) >= 0 else (right, left)
-            z_st, _ = self._sole(self.poses[b], stance)
-            z_sw, _ = self._sole(self.poses[b], swing)
-            # stance foot: whole sole on the floor within the pelvis bob;
-            # flatness over the BOTTOM face (lowest 4 of the 8 box corners)
-            self.assertLessEqual(abs(float(z_st.min())), 0.004, b)
-            bottom = np.sort(z_st)[:4]
-            self.assertLessEqual(float(bottom.max() - bottom.min()), 0.02, b)
-            # swing foot never below the floor
-            self.assertGreaterEqual(float(z_sw.min()), -1e-9, b)
-            # certified mid-swing window: whole-sole clearance >= 30 mm
-            if abs(math.sin(phase)) >= math.sqrt(0.5):
-                self.assertGreaterEqual(float(z_sw.min()), 0.030, b)
+    def _planted(self, s, off):
+        return (s + off) % 1.0 < self.arg.STANCE_FRACTION
 
-    def test_peak_clearance_and_sweep(self):
-        clear = []
-        left_x = []
+    def test_per_frame_support_and_clearance(self):
+        lf, rf = h0.FOOT_BODIES
         for b in range(64):
-            phase = 2.0 * math.pi * (b + 0.5) / 64.0
-            z_l, x_l = self._sole(self.poses[b], h0.FOOT_BODIES[0])
-            left_x.append(x_l)
-            if math.sin(phase) < 0:                 # left swing bins
-                clear.append(float(z_l.min()))
-        self.assertGreaterEqual(max(clear), 0.050)  # measured ~56 mm peak
-        # stance-foot sweep over the stance half-cycle = half-stride 0.15 m
-        sweep = left_x[0] - left_x[31]              # bin 0 (td) -> bin 31 (lo)
-        self.assertAlmostEqual(float(sweep), 0.15, delta=0.005)
-        # -> per-swing world placement at the clock cadence = full stride
-        # 0.30 m: inside the judge's band (>= PLACEMENT_MIN_M with 2x margin)
+            s = (b + 0.5) / 64.0
+            for body, off in ((lf, 0.0), (rf, 0.5)):
+                z, _ = self._sole(self.poses[b], body)
+                if self._planted(s, off):
+                    # planted foot on the floor within the stance-extreme
+                    # pinned-pelvis bob (measured 22.3 mm at |hip|=ALPHA)
+                    self.assertLessEqual(abs(float(z.min())), 0.025, (b, body))
+                    bottom = np.sort(z)[:4]
+                    self.assertLessEqual(float(bottom.max() - bottom.min()),
+                                         0.06, (b, body))
+                else:
+                    self.assertGreaterEqual(float(z.min()), -1e-9, (b, body))
+                    u = (((s + off) % 1.0) - self.arg.STANCE_FRACTION) \
+                        / self.arg.SWING_FRACTION
+                    if 0.25 <= u <= 0.75:      # knee-plateau certified window
+                        # measured 44 mm min (hip-lift bump; peak 123 mm)
+                        self.assertGreaterEqual(float(z.min()), 0.040,
+                                                (b, body))
+
+    def test_sweep_and_placement(self):
+        lf = h0.FOOT_BODIES[0]
+        xs = [self._sole(self.poses[b], lf)[1] for b in range(64)]
+        b_hi = int(self.arg.STANCE_FRACTION * 64) - 1
+        sweep = float(xs[0] - xs[b_hi])
+        expect = 2.0 * self.arg.LEG_LENGTH_M * math.sin(self.arg.HIP_AMPLITUDE)
+        self.assertAlmostEqual(sweep, expect, delta=0.01)   # measured 0.3884
+        # per-swing world placement at the clock cadence = one full stride
         from walk.eval import humanoid_gait
-        self.assertGreaterEqual(2.0 * float(sweep),
-                                humanoid_gait.PLACEMENT_MIN_M * 1.9)
+        self.assertGreaterEqual(self.arg.STRIDE_M,
+                                humanoid_gait.PLACEMENT_MIN_M * 2.0)
 
     def test_roll_columns(self):
-        """H1 roll channel: amplitude, timing and limit checks."""
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "arg", ROOT / "humanoid" / "author_reference_gait.py")
-        arg = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(arg)
-        p = 2.0 * np.pi * (np.arange(64) + 0.5) / 64.0
-        expect = arg.ROLL_AMPLITUDE * np.sin(p + arg.ROLL_PHASE_ADVANCE)
+        """v3 roll: transfer trapezoid, balance-point hold, action-box."""
+        arg = self.arg
+        s = (np.arange(64) + 0.5) / 64.0
+        expect = arg.ROLL_AMPLITUDE * np.array([arg.lean(x) for x in s])
         np.testing.assert_allclose(self.table[:, 2], expect, atol=1e-12)
-        # inside the authored roll limit with headroom
+        np.testing.assert_allclose(self.table[:, 2], self.table[:, 6], atol=0)
+        # hold target = static balance point (asin(0.15/0.86) ~ 0.175) + hair;
+        # NOT a droop-fighting overdrive (measured runaway at 0.35 holds)
+        self.assertAlmostEqual(arg.ROLL_AMPLITUDE, 0.18, places=9)
         self.assertLessEqual(float(np.abs(self.table[:, 2]).max()),
                              h0.HIP_ROLL_LIMIT - 0.1)
-        # action-box reachable (targets = 0.25 <= ACTION_SCALE 0.5)
-        self.assertLessEqual(float(np.abs(self.table[:, 2]).max()) / 0.5, 1.0)
-        # lean is TOWARD the stance side and pre-established at liftoff:
-        # positive (pelvis -> left foot at -y) through most of left stance
-        left_stance = np.sin(p) >= 0
-        self.assertGreater(float(self.table[left_stance, 2].mean()), 0.1)
-        self.assertGreater(float(self.table[0, 2]), 0.05)   # already leaning
+        # whole table inside the action box (reachable imitation targets)
+        self.assertLessEqual(float(np.abs(self.table).max()),
+                             arg.ACTION_BOX + 1e-12)
+        # transfer completes BEFORE liftoff: full lean at the first swing bin
+        first_right_swing = int(np.ceil(arg.DS_FRACTION * 64 - 0.5)) + 1
+        self.assertAlmostEqual(float(self.table[first_right_swing, 2]),
+                               arg.ROLL_AMPLITUDE, places=9)
+
+    def test_double_support_fraction(self):
+        arg = self.arg
+        s = (np.arange(64) + 0.5) / 64.0
+        both = np.array([self._planted(x, 0.0) and self._planted(x, 0.5)
+                         for x in s])
+        frac = float(both.mean())
+        self.assertAlmostEqual(frac, 2 * arg.DS_FRACTION, delta=0.04)
 
 
 class OpenLoopPhysicsSmoke(unittest.TestCase):
-    def test_open_loop_replay_lifts_alternating_feet(self):
-        """Open-loop PD replay at the cmd-0.75 clock: fault-free 0.6 s, each
-        foot airborne at least once in its own swing window. Falling later
-        is expected (open-loop biped); NOT a stability or walking claim."""
+    def test_open_loop_replay_is_fault_free(self):
+        """Open-loop PD replay at the cmd-0.75 clock: fault-free and finite
+        for 0.6 s on the f64 CPU lane. NO stepping claim: v2's in-window
+        contact-break assertion was satisfied by single-tick solver
+        flickers (PHASE2.md section 14); real-swing claims now live ONLY
+        in ExecutedValidation's debounced analyzer."""
         from walk.env.humanoid_native_lane import NativeHumanoidLane
         table = np.asarray(json.loads(JSON_PATH.read_text())["table"])
         lane = NativeHumanoidLane(1)
         try:
-            hz = 3.33 * 0.75                    # env clock, cmd 0.75
-            lf, rf = h0.FOOT_BODIES
-            air_in_window = {lf: False, rf: False}
-            for tick in range(300):             # 0.6 s = 1.5 cycles
-                t = tick * h0.SIM_DT
-                frac = (hz * t) % 1.0
+            hz = 1.67 * 0.75
+            for tick in range(300):
+                frac = (hz * tick * h0.SIM_DT) % 1.0
                 bin_ = int(frac * 64) % 64
                 rc, diag = lane.tick(table[bin_][None, :])
                 self.assertEqual(rc, 0, (tick, diag))
-                x = lane.read()
-                self.assertTrue(x.finite().all(), tick)
-                phase = 2.0 * math.pi * frac
-                if math.sin(phase) < 0 and not x.foot_contact[0, 0]:
-                    air_in_window[lf] = True    # left airborne in left swing
-                if math.sin(phase) >= 0 and not x.foot_contact[0, 1]:
-                    air_in_window[rf] = True    # right airborne in right swing
-            self.assertTrue(air_in_window[lf], "left foot never lifted")
-            self.assertTrue(air_in_window[rf], "right foot never lifted")
+            self.assertTrue(lane.read().finite().all())
         finally:
             lane.close()
+
+
+class ExecutedValidation(unittest.TestCase):
+    """MANDATORY executed-validation gate (the FK-only lesson,
+    institutionalized): before anything trains on the reference, the
+    DEMONSTRATOR's closed-loop rollout must produce >= 1 debounced
+    qualified swing per episode at each command <= 0.75 (debounced
+    analyzer = humanoid/diagnose_swings.swings_from_trace)."""
+
+    @unittest.skip(
+        "BLOCKED on H1.1 (orchestrator + kernel specialist): executed "
+        "single support is impossible on the current plant -- the body "
+        "above the hip-roll joint is a lateral inverted pendulum with "
+        "destabilizing stiffness g*sum(m_i*h_i) ~= 388 N*m/rad vs kp = 90; "
+        "a saturated counter-target (<= 45 N*m of restoring headroom) "
+        "stabilizes leans only below ~0.116 rad while unloading a foot "
+        "needs 0.175 rad. Measured: every hold target 0.18..0.40 runs away "
+        "past the balance point to the 28-deg termination; 0 debounced "
+        "swings in every configuration (PHASE2.md section 15). Requires "
+        "per-joint kp/kv (roll kp >~ 500, kv ~60-100) = kernel "
+        "DW_KP/KV_TABLE decision. UNSKIP when H1.1 lands.")
+    def test_demonstrator_produces_debounced_qualified_swings(self):
+        import bc_dataset as bd
+        import diagnose_swings as dg
+        from walk.env import humanoid_flat as hf
+        from walk.env.humanoid_cuda_lane import CudaHumanoidLane
+        from walk.eval.capture import capture_episodes
+        for cmd in (0.50, 0.75):
+            env = hf.FlatFloorHumanoidEnv(
+                environments=2, seed=4242,
+                lane_factory=lambda E, off: CudaHumanoidLane(
+                    E, joint_offsets=off))
+            try:
+                env.set_command(cmd)
+                env.pin_phase(2.0 * math.pi * 0.075)   # mid-DS1 start
+                traces = capture_episodes(
+                    env, lambda o: bd.reference_actions(o).astype(np.float32),
+                    command=cmd, seconds=8.0, seed=4242)
+            finally:
+                env.close()
+            for tr in traces:
+                swings = dg.swings_from_trace(tr, debounce=True)
+                qualified = sum(s["qualified"] for s in swings)
+                self.assertGreaterEqual(
+                    qualified, 1,
+                    (cmd, [s["first_fail"] for s in swings]))
 
 
 if __name__ == "__main__":

@@ -78,7 +78,17 @@ ACTION_SCALE = 0.5                  # rad; rationale in module docstring
 MAX_TARGET_INCREMENT = h0.SPEED_LIMIT * CONTROL_DT  # 8 rad/s * 0.02 = 0.16
 # Affine gait clock (duck flat.py mechanism, humanoid constants; sweepable).
 PHASE_HZ_BASE = float(_os.environ.get("HUMANOID_PHASE_HZ_BASE", "0.0"))
-PHASE_HZ_PER_MPS = float(_os.environ.get("HUMANOID_PHASE_HZ_PER_MPS", "3.33"))
+# v3: 3.33 -> 1.67. NOT a style choice: the weight-shift must happen at the
+# cycle rate, and the hip-roll plant's bandwidth is sqrt(kp/I_eff) =
+# sqrt(90/1.74) ~= 1.15 Hz (PHASE2.md section 14: at 3.33 the executed
+# lateral shift attenuated to ~60% with a quarter-cycle lag and NO real
+# swing ever occurred -- 0 debounced swings in 288 episodes across three
+# policies). 1.67 puts the shift at 0.83-1.25 Hz for cmd <= 0.75 (inside
+# bandwidth) and encodes stride 1/1.67 = 0.60 m (step 0.30 m, 2x the
+# judge's placement bar). The duck's twice-relearned clock lesson applies:
+# DO NOT move this value without a fresh EXECUTED-validation run
+# (humanoid/tests/test_reference_gait.py ExecutedValidation).
+PHASE_HZ_PER_MPS = float(_os.environ.get("HUMANOID_PHASE_HZ_PER_MPS", "1.67"))
 COMMANDS_MPS = (0.50, 0.75, 1.00)   # ~5x duck (leg-length ratio)
 HORIZON_STEPS = 400                 # 8 s at 0.02 s -- duck-proven horizon
 MIN_HEIGHT_FRACTION = 0.7           # of home root height (1.15 m -> 0.805)
@@ -189,6 +199,17 @@ class FlatFloorHumanoidEnv(DuckEnvBatch):
     @property
     def command(self) -> np.ndarray:
         return self._command.copy()
+
+    def pin_phase(self, phase0) -> np.ndarray:
+        """Evaluation/dataset hook: pin per-env gait-phase offsets (rad).
+
+        Training keeps flat.py's random per-episode phase0 (anti-bias);
+        the executed-validation gate and demonstrator studies pin the
+        clock so the cycle starts in a defined transfer state (a gait
+        cycle is not a start-up controller). Returns refreshed obs."""
+        self._phase0[:] = np.broadcast_to(np.asarray(phase0, np.float64),
+                                          (self.E,))
+        return self._observe(self._lane.read())
 
     # ------------------------------------------------------------------
     def step(self, action: np.ndarray, on_tick=None):

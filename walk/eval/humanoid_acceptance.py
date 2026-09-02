@@ -35,7 +35,7 @@ from walk.train.ppo import Actor, RecurrentActor, unpack_actor_file
 
 SEEDS = (4242, 7, 1913, 90210)        # identical to the duck harness's
 COMMANDS = COMMANDS_MPS               # (0.50, 0.75, 1.00) m/s
-OBS, ACT = 52, 12                     # H0 humanoid contract dims
+from walk.env.humanoid_flat import OBS, ACT  # active lowering dims (H1: 58/14)
 
 
 def load_actor(path: str):
