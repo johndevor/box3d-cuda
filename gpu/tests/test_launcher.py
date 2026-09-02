@@ -239,7 +239,10 @@ class TestJobSequencing(LauncherTestCase):
     def test_continue_on_error(self):
         provider = FakeProvider(exec_results={"run-b": (7, "boom\n")})
         code = self.run_spec(make_spec(jobs=self.jobs3(coe_second=True)), provider)
-        self.assertEqual(code, rd.EXIT_JOB_FAILED)  # still nonzero overall
+        # 2026-09-02 contract: a continue_on_error job's failure is a recorded
+        # RESULT (e.g. an acceptance verdict of "not accepted"), not a run
+        # failure -- the run exits 0 and later jobs still execute.
+        self.assertEqual(code, rd.EXIT_OK)
         self.assertTrue(any("run-c" in c for c in provider.commands))
 
     def test_concurrency_guard(self):

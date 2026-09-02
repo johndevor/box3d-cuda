@@ -354,6 +354,16 @@ def payload_import_check(repo_root, tar_path, spec):
                    or PAYLOAD_IMPORT_MODULES)
     venv_py = Path(repo_root).resolve() / ".venv/bin/python"
     py = str(venv_py) if venv_py.is_file() else sys.executable
+    members = set(tar_member_names(tar_path))
+    # Only import modules whose source is actually in this payload (fixture
+    # repos in the launcher's unit tests carry none of them; a real spec's
+    # tar_globs may legitimately exclude some).
+    modules = [m for m in modules
+               if m.replace(".", "/") + ".py" in members
+               or m.replace(".", "/") + "/__init__.py" in members]
+    has_trainer = "walk/train/gpu_train.py" in members
+    if not modules and not has_trainer:
+        return
     with tempfile.TemporaryDirectory(prefix="payload-import-") as tmp:
         with tarfile.open(tar_path, "r") as tf:
             tf.extractall(tmp, filter="data")
@@ -395,7 +405,7 @@ def payload_import_check(repo_root, tar_path, spec):
     import shlex
     for job in spec.jobs:
         cmd = job.get("command", "") if isinstance(job, dict) else getattr(job, "command", "")
-        if "-m walk.train.gpu_train" not in cmd:
+        if "-m walk.train.gpu_train" not in cmd or not has_trainer:
             continue
         toks = shlex.split(cmd[cmd.index("-m walk.train.gpu_train"):])
         args = []
