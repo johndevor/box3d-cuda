@@ -3,11 +3,11 @@
 // arm/arm_lowering.py (URDF-sourced KR240; 'lite' = 0.5 x length,
 // 1/8 x mass Froude scaling). Every constant rounded once to float32.
 // Shadows the duck header by include order (arm builds only).
-// PHYSICS ONLY -- the kernel's device policy layer is NOT valid for
-// this model (see generate_model_arm.py docstring; DW_ARM_* pins the
-// python-side contract). FIXED BASE: DW_HINGE_PARENT[0] == 0, the
-// static floor; body 1 is a decoupled phantom root (FEASIBILITY.md 1).
-// Drift-checked by arm/tests/test_arm_serial_parity.py.
+// DW_ENV_KIND 1 (REACH) selects the kernel's reach policy layer; the
+// DW_ENV_* / DW_RW_* / DW_GATE_* block pins walk/env/arm_reach.py,
+// arm_reward.py and the frozen arm judge. FIXED BASE: DW_HINGE_PARENT[0]
+// == 0, the static floor; body 1 is a decoupled phantom root
+// (FEASIBILITY.md 1). Drift-checked by arm/tests/test_arm_serial_parity.py.
 #ifndef DUCK_MODEL_H
 #define DUCK_MODEL_H
 #if defined(__CUDACC__)
@@ -26,9 +26,6 @@
 #define DW_FOOT_VERTS 8    // placeholder box corners
 #define DW_DT 0.00200000009f  // duck-stack tick; 10 per 0.02 s step
 #define DW_GRAVITY_Z -9.81000042f  // authored -9.81 (KR240 contract); humanoid is -20, NOT unified
-// gait clock: unused by the arm (kernel compile requirement)
-#define DW_PHASE_HZ_BASE 0.0
-#define DW_PHASE_HZ_PER_MPS 0.0
 #define DW_ARMATURE 0.0f       // not authored by the URDF
 #define DW_DAMPING 0.0f  // URDF joint damping folded into DW_KV_TABLE
 #define DW_FRICTION_LOSS 0.0f  // URDF Coulomb friction (<= 0.1 % of effort) dropped
@@ -78,95 +75,65 @@ DW_MODEL_CONST float DW_INITIAL_QPOS[DW_Q] = {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,1.0f
 DW_MODEL_CONST float DW_INITIAL_VEL[DW_N] = {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f};
 DW_MODEL_CONST float DW_HOME_TARGETS[DW_J] = {0.0f,-1.20000005f,1.60000002f,0.0f,-0.400000006f,0.0f};
 DW_MODEL_CONST double DW_HOME_TARGETS_F64[DW_J] = {0,-1.2,1.6000000000000001,0,-0.40000000000000002,0};
-// ---- kernel compile requirements (locomotion policy layer; NOT
-// valid for the arm, never called by the arm lanes) ----
-#define DW_RW_W_TRACK 0.0
-#define DW_RW_W_ALIVE 0.0
-#define DW_RW_W_LATERAL 0.0
-#define DW_RW_W_ACTION_RATE 0.0
-#define DW_RW_W_TORQUE 0.0
-#define DW_RW_W_AIR_TIME 0.0
-#define DW_RW_AIR_TIME_MIN 0.0
-#define DW_RW_AIR_TIME_MAX 0.0
-#define DW_RW_PLACEMENT_MIN_M 0.0
-#define DW_RW_OPP_SUPPORT_FRAC 0.0
-#define DW_RW_W_CHATTER 0.0
-#define DW_RW_CHATTER_MAX_S 0.0
-#define DW_RW_W_FLICKER 0.0
-#define DW_RW_STANCE_MIN_S 0.0
-#define DW_RW_W_CLEARANCE 0.0
-#define DW_RW_CLEARANCE_M 0.0
-#define DW_RW_W_DOUBLE_SUPPORT 0.0
-#define DW_RW_DOUBLE_SUPPORT_GRACE 0.0
-#define DW_RW_W_ALTERNATE 0.0
-#define DW_RW_W_SAME_FOOT 0.0
-#define DW_RW_W_PHASE 0.0
-#define DW_RW_TRACK_SIGMA_SQ 1.0
-#define DW_RW_TRACK_EMA_S 1.0    // nonzero: the kernel divides by it
-#define DW_RW_TICKS_FULL 10u
-#define DW_REF_BINS 1
-#define DW_IMIT_W 0.0
-#define DW_IMIT_SIGMA_SQ 1.0
-#define DW_ENV_OBS 34   // kernel layout width (memory safety); the arm's obs is 27, python-side
+// ---- DEVICE POLICY LAYER: DW_ENV_KIND_REACH (kernel ABI v8) ----
+// walk/env/arm_reach.py contract, mirrored f64 in-kernel
+#define DW_ENV_KIND 1   // DW_ENV_KIND_REACH
+#define DW_ENV_OBS 27   // [q, QDOT*qd, target, tip, target-tip, prev action]
 #define DW_ENV_ACT 6
 #define DW_ENV_TICKS_PER_STEP 10u
 #define DW_ENV_CONTROL_DT 0.02
-#define DW_ENV_ACTION_SCALE 0.0
-#define DW_ENV_MAX_TARGET_INCREMENT 0.0
-#define DW_ENV_QDOT_OBS_SCALE 0.0
 #define DW_ENV_HORIZON_STEPS 400u
-#define DW_ENV_MIN_HEIGHT_FRACTION -1e30
-#define DW_ENV_MAX_TILT_RAD 3.141592653589793
-#define DW_ENV_COS_MAX_TILT -1.0
-#define DW_ENV_UP_AXIS 2
-DW_MODEL_CONST double DW_ENV_COMMANDS_MPS[3] = {0.0,0.0,0.0};
-#define DW_GATE_SWING_MIN_S 0.0
-#define DW_GATE_SWING_MAX_S 0.0
-#define DW_GATE_CLEARANCE_M 0.0f
-#define DW_GATE_CLEARANCE_MIN_S 0.0
-#define DW_GATE_PLACEMENT_MIN_M 0.0f
-DW_MODEL_CONST double DW_REF_GAIT[DW_REF_BINS][DW_J] = {{0.0,0.0,0.0,0.0,0.0,0.0}};
+#define DW_ENV_QDOT_OBS_SCALE 0.25
+#define DW_ENV_TIP_BODY 7      // link_6 (flange carrier)
+#define DW_ENV_WRIST_BODY 6    // link_5 origin = a5 (judge wrist)
+#define DW_ENV_ELBOW_BODY 4    // link_3 origin = a3 (judge elbow)
+// tip = p_link6 + R (tool_xyz - com_link6); origins = p - R com (f64)
+DW_MODEL_CONST double DW_ENV_TIP_OFFSET[3] = {-0.017113000000000045,0.0,4.2e-05};
+DW_MODEL_CONST double DW_ENV_WRIST_COM[3] = {0.05864,0.018541,-3e-05};
+DW_MODEL_CONST double DW_ENV_ELBOW_COM[3] = {0.232041,0.07618,-0.044416};
+#define DW_ENV_REACH_M 3.461500099999997
+#define DW_ENV_ACQ_RADIUS_M 0.02   // frozen judge
+#define DW_ENV_ACQ_HOLD_STEPS 14u   // consecutive boundaries
+#define DW_ENV_REACH_N_TARGETS 5   // == DWC1_REACH_TARGETS
+// f64 env tables (arm_lowering.joint_limits / velocity_limits): the
+// python env slews and clips with these, the physics with the f32 ones
+DW_MODEL_CONST double DW_ENV_LIMIT_LOWER_F64[DW_J] = {-3.2288591,-2.7052601,-2.268928,-6.1086524,-2.268928,-6.1086524};
+DW_MODEL_CONST double DW_ENV_LIMIT_UPPER_F64[DW_J] = {3.2288591,0.6108652,2.687807,6.1086524,2.268928,6.1086524};
+DW_MODEL_CONST double DW_ENV_VELOCITY_LIMIT_F64[DW_J] = {1.797689,1.64061,1.745329,2.96706,2.251475,3.595378};
+DW_MODEL_CONST double DW_ENV_MAX_TARGET_INCREMENT_F64[DW_J] = {0.035953780000000005,0.0328122,0.03490658,0.059341200000000004,0.0450295,0.07190756000000001};
+// reward v1 (walk/env/arm_reward.py) -- the kernel's DW_RW_* block
+#define DW_RW_W_DIST 1.0
+#define DW_RW_DIST_SIGMA_FRAC 0.1
+#define DW_RW_W_LIN 0.5
+#define DW_RW_W_ACQUIRE 10.0
+#define DW_RW_W_ACTION_RATE 0.05
+#define DW_RW_W_TORQUE 0.05
+#define DW_RW_W_SPEED 0.5
+#define DW_RW_SPEED_FRAC 0.9
+#define DW_RW_W_PROXY 5.0
+// FROZEN judge clause thresholds (walk/eval/arm_reach_judge.py) for the
+// in-kernel judge-shadow counters and the proxy termination
+#define DW_GATE_LIMIT_TOL_RAD 0.01
+#define DW_GATE_SPEED_TOL_FRAC 1.0
+#define DW_GATE_FLOOR_MARGIN_FRAC 0.05
+#define DW_GATE_COLUMN_RADIUS_FRAC 0.2
+#define DW_GATE_COLUMN_HEIGHT_FRAC 0.4
 // placeholder pairs: link_1 (yaws only, box ~0.7 m above the floor)
 DW_MODEL_CONST unsigned DW_PAIR_BODY_A[DW_PAIRS] = {2u,2u};
 DW_MODEL_CONST unsigned DW_PAIR_BODY_B[DW_PAIRS] = {0u,0u};
 DW_MODEL_CONST float DW_PAIR_MU[DW_PAIRS] = {0.600000024f,0.600000024f};
 DW_MODEL_CONST float DW_FOOT_VERTICES[DW_PAIRS][DW_FOOT_VERTS][3] = {{{-0.100000001f,-0.100000001f,-0.100000001f},{0.100000001f,-0.100000001f,-0.100000001f},{-0.100000001f,0.100000001f,-0.100000001f},{0.100000001f,0.100000001f,-0.100000001f},{-0.100000001f,-0.100000001f,0.100000001f},{0.100000001f,-0.100000001f,0.100000001f},{-0.100000001f,0.100000001f,0.100000001f},{0.100000001f,0.100000001f,0.100000001f}},{{-0.100000001f,-0.100000001f,-0.100000001f},{0.100000001f,-0.100000001f,-0.100000001f},{-0.100000001f,0.100000001f,-0.100000001f},{0.100000001f,0.100000001f,-0.100000001f},{-0.100000001f,-0.100000001f,0.100000001f},{0.100000001f,-0.100000001f,0.100000001f},{-0.100000001f,0.100000001f,0.100000001f},{0.100000001f,0.100000001f,0.100000001f}}};
-// ---- ARM CONTRACT PINS (python-side env/reward/judge; header-drift
-// pinned so a python change must regenerate this header) ----
+// ---- host-side contract pins (target sampler + judge episode shape;
+// header-drift pinned so a python change must regenerate this header) ----
 #define DW_ARM_VARIANT "kr240"
-#define DW_ARM_OBS 27
-#define DW_ARM_ACT 6
-#define DW_ARM_HORIZON_STEPS 400u
-#define DW_ARM_QDOT_OBS_SCALE 0.25
-#define DW_ARM_ACQ_HOLD_STEPS 14
-#define DW_ARM_REACH_M 3.461500099999997
 DW_MODEL_CONST double DW_ARM_HOME_TIP[3] = {2.4055530731170105,5.6852105185383916e-08,1.6825704209525858};
-DW_MODEL_CONST float DW_ARM_VELOCITY_LIMIT[DW_J] = {1.79768896f,1.64060998f,1.74532902f,2.96706009f,2.2514751f,3.59537792f};
-DW_MODEL_CONST double DW_ARM_MAX_TARGET_INCREMENT[DW_J] = {0.035953780000000005,0.0328122,0.03490658,0.059341200000000004,0.0450295,0.07190756000000001};
 DW_MODEL_CONST double DW_ARM_TARGET_JOINT_BOX[DW_J][2] = {{-1.2,1.2},{-2.0,0.2},{0.4,2.2},{-0.6,0.6},{-1.6,1.6},{0.0,0.0}};
 // feasibility tables (arm_lowering.inertia_scan over pose_grid)
 DW_MODEL_CONST float DW_ARM_INERTIA_MAX[DW_J] = {2251.03467f,1492.93787f,246.636963f,3.23213291f,2.35174012f,0.120170042f};
 DW_MODEL_CONST float DW_ARM_INERTIA_MIN[DW_J] = {191.928391f,559.86084f,220.887787f,1.56664431f,2.35174012f,0.120170042f};
 DW_MODEL_CONST float DW_ARM_TAU_HOLD[DW_J] = {0.000402162492f,6706.77881f,1857.66711f,6.91172028f,77.3011703f,1.258328e-09f};
-// reward v1 (walk/env/arm_reward.py)
-#define DW_ARM_RW_W_DIST 1.0
-#define DW_ARM_RW_DIST_SIGMA_FRAC 0.1
-#define DW_ARM_RW_W_LIN 0.5
-#define DW_ARM_RW_W_ACQUIRE 10.0
-#define DW_ARM_RW_W_ACTION_RATE 0.05
-#define DW_ARM_RW_W_TORQUE 0.05
-#define DW_ARM_RW_W_SPEED 0.5
-#define DW_ARM_RW_SPEED_FRAC 0.9
-#define DW_ARM_RW_W_PROXY 5.0
-// FROZEN judge (walk/eval/arm_reach_judge.py)
+// FROZEN judge episode shape (walk/eval/arm_reach_judge.py)
 #define DW_ARM_JUDGE_EPISODE_S 8.0
-#define DW_ARM_JUDGE_N_TARGETS 5
-#define DW_ARM_JUDGE_ACQ_RADIUS_M 0.02
 #define DW_ARM_JUDGE_ACQ_HOLD_S 0.25
 DW_MODEL_CONST double DW_ARM_JUDGE_TIER_RADIUS_FRAC[3] = {0.15,0.3,0.4};
-#define DW_ARM_JUDGE_LIMIT_TOL_RAD 0.01
-#define DW_ARM_JUDGE_SPEED_TOL_FRAC 1.0
-#define DW_ARM_JUDGE_FLOOR_MARGIN_FRAC 0.05
-#define DW_ARM_JUDGE_COLUMN_RADIUS_FRAC 0.2
-#define DW_ARM_JUDGE_COLUMN_HEIGHT_FRAC 0.4
 #endif

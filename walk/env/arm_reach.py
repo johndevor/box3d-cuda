@@ -81,6 +81,23 @@ def _episode_rng(seed: int, env: int, episode: int) -> np.random.Generator:
     return np.random.default_rng([int(seed) & 0xFFFFFFFF, int(env), int(episode)])
 
 
+def episode_draw(spec: al.ArmSpec, seed: int, env: int, episode: int,
+                 tier_pin: int | None):
+    """The FROZEN per-episode draw order shared by ArmReachEnv.reset() and
+    the device-path lane (walk/env/arm_cuda_lane.CudaArmLane.reset_policy):
+    rng = _episode_rng(seed, env, episode); tier = rng.integers(len(TIERS))
+    (drawn even when pinned, so pinning never shifts the stream); then the
+    targets are drawn lazily from `rng` in acquisition order with
+    sample_target -- the env draws target k+1 when k is acquired, the lane
+    draws one target AHEAD (a queued next target); both consume the same
+    rng in the same order, so the presented sequences are bit-identical.
+    Returns (rng, tier, first_target)."""
+    rng = _episode_rng(seed, env, episode)
+    drawn = int(rng.integers(len(judge.TIERS)))
+    tier = drawn if tier_pin is None else int(tier_pin)
+    return rng, tier, sample_target(spec, rng, tier)
+
+
 def sample_target(spec: al.ArmSpec, rng: np.random.Generator, tier: int
                   ) -> np.ndarray:
     """One reachable target for `tier`: FK of a uniform joint-box draw,
@@ -205,13 +222,14 @@ class ArmReachEnv(DuckEnvBatch):
         if m.any():
             self._lane.restore(m)
             for e in np.flatnonzero(m):
-                rng = _episode_rng(self._seed, int(e),
-                                   int(self._episode[e]) + 1)
-                # draw order (frozen): tier, then targets lazily from rng
-                drawn = int(rng.integers(len(judge.TIERS)))
-                self._tier[e] = drawn if self._tier_pin is None else self._tier_pin
+                # draw order (frozen, shared with the device-path lane):
+                # tier, then targets lazily from rng (episode_draw)
+                rng, tier, target = episode_draw(
+                    self.spec, self._seed, int(e), int(self._episode[e]) + 1,
+                    self._tier_pin)
+                self._tier[e] = tier
                 self._rng[e] = rng
-                self._target[e] = sample_target(self.spec, rng, int(self._tier[e]))
+                self._target[e] = target
                 self._episode[e] += 1
             self._t[m] = 0
             self._done[m] = False

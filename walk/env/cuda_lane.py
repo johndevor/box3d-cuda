@@ -67,7 +67,11 @@ import numpy as np
 
 from .native_lane import LaneState
 
-ABI_VERSION = 7  # must match DWC1_ABI_VERSION in duck_cuda.h
+ABI_VERSION = 8  # must match DWC1_ABI_VERSION in duck_cuda.h
+
+# dwc1_env_kind(): which device policy layer a library compiled (ABI v8).
+ENV_KIND_LOCOMOTION = 0      # duck / humanoid 3*J+16 gait contract
+ENV_KIND_REACH = 1           # fixed-base arm reach contract (arm_cuda_lane)
 
 OBS = 58
 COMMANDS_MPS = (0.10, 0.15, 0.20)   # flat.py per-episode forward commands
@@ -280,9 +284,47 @@ class GateProxy(C.Structure):
 GATE_PROXY_DTYPE = np.dtype(
     [(name, "u4") for name, _ in GateProxy._fields_])
 
-# dwc1 DWC1_TERM_* codes (why an env last became done; metrics only)
+# dwc1 DWC1_TERM_* codes (why an env last became done; metrics only).
+# REACH kind: "fell" = proxy crash / non-finite, "reach_starved" = an
+# acquisition found no queued target (host contract violation).
 TERM_REASONS = ("none", "fell", "gate_deadline", "alternation", "horizon",
-                "fault")
+                "fault", "reach_starved")
+
+REACH_TARGETS = 5            # DWC1_REACH_TARGETS (judged targets/episode)
+
+
+class ReachState(C.Structure):
+    """dwc1_reach_state (ABI v8, REACH kind): target queue + judge-shadow
+    counters of the arm reach layer (see duck_cuda.h)."""
+    _fields_ = [("target", C.c_double * 3), ("next_target", C.c_double * 3),
+                ("tier", C.c_double), ("key", C.c_double)] + \
+               [(n, C.c_uint32) for n in
+                ["target_index", "hold", "next_valid", "valid"]] + \
+               [("acquire_step", C.c_uint32 * REACH_TARGETS)] + \
+               [(n, C.c_uint32) for n in
+                ["limit_violation_ticks", "speed_violation_ticks",
+                 "proxy_violation_ticks", "starved", "episode_acquired"]] + \
+               [("episode_acquire_step", C.c_uint32 * REACH_TARGETS)] + \
+               [(n, C.c_uint32) for n in
+                ["episode_limit_violation_ticks",
+                 "episode_speed_violation_ticks",
+                 "episode_proxy_violation_ticks", "reserved"]]
+
+
+REACH_STATE_DTYPE = np.dtype(
+    [("target", "f8", (3,)), ("next_target", "f8", (3,)),
+     ("tier", "f8"), ("key", "f8"),
+     ("target_index", "u4"), ("hold", "u4"), ("next_valid", "u4"),
+     ("valid", "u4"), ("acquire_step", "u4", (REACH_TARGETS,)),
+     ("limit_violation_ticks", "u4"), ("speed_violation_ticks", "u4"),
+     ("proxy_violation_ticks", "u4"), ("starved", "u4"),
+     ("episode_acquired", "u4"),
+     ("episode_acquire_step", "u4", (REACH_TARGETS,)),
+     ("episode_limit_violation_ticks", "u4"),
+     ("episode_speed_violation_ticks", "u4"),
+     ("episode_proxy_violation_ticks", "u4"), ("reserved", "u4")],
+    align=True)   # the C struct is 8-byte aligned (doubles): 160 B, not 156
+assert REACH_STATE_DTYPE.itemsize == C.sizeof(ReachState)
 
 
 class DeviceInfo(C.Structure):
@@ -348,6 +390,12 @@ def load_library(path: Path):
         "dwc1_set_fast_termination": [C.c_void_p, C.c_uint32],
         "dwc1_set_gate_termination": [C.c_void_p, C.c_uint32, C.c_uint32],
         "dwc1_set_rsi": [C.c_void_p, C.c_double],
+        # ABI v8: env kind + reach entries (exported by every build; the
+        # reach calls return DWC1_INVALID on locomotion builds)
+        "dwc1_env_kind": [],
+        "dwc1_obs_width": [],
+        "dwc1_reach_set_targets": [C.c_void_p, U8P, DP, DP],
+        "dwc1_reach_get": [C.c_void_p, C.POINTER(ReachState)],
     }
     for name, args in specs.items():
         fn = getattr(lib, name)

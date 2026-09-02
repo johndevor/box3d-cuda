@@ -33,6 +33,27 @@
 #error "include cuda_compat.h (serial) or compile with nvcc defining DW_HD"
 #endif
 
+// ==================== environment kind (ABI v8) ============================
+// The generated model header selects the DEVICE POLICY LAYER at compile
+// time. DW_ENV_KIND_LOCOMOTION -- the default whenever the header omits the
+// macro, i.e. every duck/humanoid header -- compiles today's exact 3*J+16
+// gait contract (walk/env/flat.py + reward.py / humanoid_flat.py +
+// humanoid_reward.py): the code, the DwState layout and the arithmetic are
+// byte-for-byte what they were (tests/test_duck_fingerprint.py pins the
+// trajectories). DW_ENV_KIND_REACH (arm headers, generate_model_arm.py)
+// compiles the fixed-base reach contract (walk/env/arm_reach.py +
+// arm_reward.py; frozen judge walk/eval/arm_reach_judge.py). The physics
+// path is kind-agnostic; only the policy layer, the gate-proxy tick and the
+// per-kind DwState tail differ.
+#define DW_ENV_KIND_LOCOMOTION 0
+#define DW_ENV_KIND_REACH 1
+#ifndef DW_ENV_KIND
+#define DW_ENV_KIND DW_ENV_KIND_LOCOMOTION
+#endif
+#if DW_ENV_KIND != DW_ENV_KIND_LOCOMOTION && DW_ENV_KIND != DW_ENV_KIND_REACH
+#error "DW_ENV_KIND must be DW_ENV_KIND_LOCOMOTION (0) or DW_ENV_KIND_REACH (1)"
+#endif
+
 #ifndef DW_SOLVE_TOLERANCE
 #define DW_SOLVE_TOLERANCE 5e-6f
 #endif
@@ -281,6 +302,22 @@ typedef struct DwState {
   // the policy boundary even with the death-rule knobs off) + the last
   // completed episode's reason snapshot.
   uint32_t gp_term_reason, gp_ep_term_reason, gp_pad[2];
+#if DW_ENV_KIND == DW_ENV_KIND_REACH
+  // ---- reach policy layer (walk/env/arm_reach.py contract; ABI v8) ------
+  // Present in REACH builds only, so the locomotion layout above is
+  // untouched. Target queue = the ACTIVE target plus ONE queued NEXT target,
+  // both host-drawn (dwc1_reach_set_targets: arm_reach's exact numpy
+  // stream); the kernel promotes next -> active on acquisition.
+  double rt_target[3], rt_next[3];
+  double rt_tier, rt_key;             // dwc1_reset_policy slots a / b
+  uint32_t rt_index, rt_hold, rt_next_valid, rt_valid;
+  // judge-shadow counters (METRICS ONLY, read by no reward/termination
+  // path except the opt-in gate rules; see dwc1_reach_state)
+  uint32_t rt_acq_step[DWC1_REACH_TARGETS];
+  uint32_t rt_limit_ticks, rt_speed_ticks, rt_proxy_ticks, rt_starved;
+  uint32_t rt_ep_acquired, rt_ep_acq_step[DWC1_REACH_TARGETS];
+  uint32_t rt_ep_limit_ticks, rt_ep_speed_ticks, rt_ep_proxy_ticks, rt_pad;
+#endif
 } DwState;
 
 typedef struct DwParams {
@@ -1485,26 +1522,13 @@ static DW_HD int dw_tick(DwState* s, const float* target,
 // see the DwState field block for semantics and the honesty note).
 static DW_HD void dw_gate_proxy_tick(DwState* s);
 
-// The policy termination predicate (height / tilt on the model's up-axis /
+// The policy termination predicate (per env kind: locomotion height / tilt
+// on the model's up-axis / nonfinite; reach: judge proxy clause /
 // nonfinite), shared by the policy-step boundary check and the optional
 // mid-block fast-termination latch. Every lane computes it from the shared
-// env state, so branching on it stays warp-uniform.
-static DW_HD bool dw_policy_fell(const DwState* s) {
-  bool finite = dw_finite(s->q, DW_Q) && dw_finite(s->v, DW_N);
-  // world-Z component of the model's body up axis: duck body +Z ->
-  // R[2][2] = 1-2(qx^2+qy^2); H0 humanoid body +Y -> R[2][1] =
-  // 2(qy*qz + qx*qw) (humanoid_native_lane.tilt). q[3..6] is root xyzw.
-#if DW_ENV_UP_AXIS == 1
-  double up = 2.0 * ((double)s->q[4] * (double)s->q[5]
-                     + (double)s->q[3] * (double)s->q[6]);
-#else
-  double up = 1.0 - 2.0 * ((double)s->q[3] * (double)s->q[3]
-                           + (double)s->q[4] * (double)s->q[4]);
-#endif
-  return ((double)s->q[2] < DW_ENV_MIN_HEIGHT_FRACTION
-                            * (double)DW_INITIAL_QPOS[2])
-      || (up < DW_ENV_COS_MAX_TILT) || !finite;
-}
+// env state, so branching on it stays warp-uniform. Defined per kind in the
+// policy-layer section below.
+static DW_HD bool dw_policy_fell(const DwState* s);
 
 // n_ticks with the targets held, all inside ONE call (one kernel launch on
 // device): a failing environment freezes (state and cache untouched from its
@@ -1675,6 +1699,7 @@ static DW_HD void dw_sole_heights(const float body[DW_B][13], float out[2]) {
 // NOT mirrored (honesty): the 20 ms contact debounce, the pre/post support
 // windows, opposite-foot support fraction, and stance slip -- this is a
 // cheap monotone shadow for culling, not the judge.
+#if DW_ENV_KIND == DW_ENV_KIND_LOCOMOTION
 static DW_HD void dw_gate_proxy_tick(DwState* s) {
   float bodies[DW_B][13], sole[2];
   dw_body_states(s->q, s->v, bodies);
@@ -1716,6 +1741,7 @@ static DW_HD void dw_gate_proxy_tick(DwState* s) {
     s->gp_contact[f] = c ? 1 : 0;
   }
 }
+#endif  // DW_ENV_KIND_LOCOMOTION gate-proxy tick (reach: policy section)
 
 static DW_HD void dw_fill_info(uint32_t environments, dwc1_info* info) {
   info->environments = environments;
@@ -1734,6 +1760,10 @@ static DW_HD void dw_fill_info(uint32_t environments, dwc1_info* info) {
 }
 
 // ==================== device policy layer ==================================
+// Selected per generated header by DW_ENV_KIND (see the environment-kind
+// block at the top): the shared defines/helpers come first, then the
+// LOCOMOTION layer (duck / humanoid) and the REACH layer (arm) in
+// mutually exclusive #if branches. LOCOMOTION:
 // Verbatim f64 port of the flat-floor env contract (action->target slew
 // chain, 3*J+16 observation, termination) and its reward (EMA velocity
 // tracking, alive, lateral/yaw, action-rate, torque, phase-gated qualified
@@ -1749,9 +1779,27 @@ static DW_HD void dw_fill_info(uint32_t environments, dwc1_info* info) {
 #define DWP_OBS DW_ENV_OBS
 #define DWP_PI 3.141592653589793
 #define DWP_CONTROL_DT DW_ENV_CONTROL_DT
+#define DWP_HORIZON DW_ENV_HORIZON_STEPS
+
+// native_lane.quat_to_rot in f64 (body->world rotation from xyzw quat);
+// shared by both env kinds.
+static DW_HD void dw_quat_rot_f64(const float* q, double R[3][3]) {
+  double x = q[0], y = q[1], z = q[2], w = q[3];
+  R[0][0] = 1.0 - 2.0 * (y * y + z * z);
+  R[0][1] = 2.0 * (x * y - z * w);
+  R[0][2] = 2.0 * (x * z + y * w);
+  R[1][0] = 2.0 * (x * y + z * w);
+  R[1][1] = 1.0 - 2.0 * (x * x + z * z);
+  R[1][2] = 2.0 * (y * z - x * w);
+  R[2][0] = 2.0 * (x * z - y * w);
+  R[2][1] = 2.0 * (y * z + x * w);
+  R[2][2] = 1.0 - 2.0 * (x * x + y * y);
+}
+
+#if DW_ENV_KIND == DW_ENV_KIND_LOCOMOTION
+// ==================== locomotion policy layer (duck / humanoid) ===========
 #define DWP_ACTION_SCALE DW_ENV_ACTION_SCALE
 #define DWP_MAX_TARGET_INCREMENT DW_ENV_MAX_TARGET_INCREMENT
-#define DWP_HORIZON DW_ENV_HORIZON_STEPS
 #define DWP_COS_MAX_TILT DW_ENV_COS_MAX_TILT     // tilt > max  <=>  up < cos
 // reward.py weights/constants: GENERATED into duck_model.h from reward.py
 // itself (DW_RW_*), so any python-side weight change fails the header-drift
@@ -1793,18 +1841,23 @@ static DW_HD double dw_policy_phase(double phase0, uint32_t t, double command) {
          * (double)t * DW_ENV_CONTROL_DT;
 }
 
-// native_lane.quat_to_rot in f64 (body->world rotation from xyzw quat).
-static DW_HD void dw_quat_rot_f64(const float* q, double R[3][3]) {
-  double x = q[0], y = q[1], z = q[2], w = q[3];
-  R[0][0] = 1.0 - 2.0 * (y * y + z * z);
-  R[0][1] = 2.0 * (x * y - z * w);
-  R[0][2] = 2.0 * (x * z + y * w);
-  R[1][0] = 2.0 * (x * y + z * w);
-  R[1][1] = 1.0 - 2.0 * (x * x + z * z);
-  R[1][2] = 2.0 * (y * z - x * w);
-  R[2][0] = 2.0 * (x * z - y * w);
-  R[2][1] = 2.0 * (y * z + x * w);
-  R[2][2] = 1.0 - 2.0 * (x * x + y * y);
+// The locomotion termination predicate: height / tilt on the model's
+// up-axis / nonfinite.
+static DW_HD bool dw_policy_fell(const DwState* s) {
+  bool finite = dw_finite(s->q, DW_Q) && dw_finite(s->v, DW_N);
+  // world-Z component of the model's body up axis: duck body +Z ->
+  // R[2][2] = 1-2(qx^2+qy^2); H0 humanoid body +Y -> R[2][1] =
+  // 2(qy*qz + qx*qw) (humanoid_native_lane.tilt). q[3..6] is root xyzw.
+#if DW_ENV_UP_AXIS == 1
+  double up = 2.0 * ((double)s->q[4] * (double)s->q[5]
+                     + (double)s->q[3] * (double)s->q[6]);
+#else
+  double up = 1.0 - 2.0 * ((double)s->q[3] * (double)s->q[3]
+                           + (double)s->q[4] * (double)s->q[4]);
+#endif
+  return ((double)s->q[2] < DW_ENV_MIN_HEIGHT_FRACTION
+                            * (double)DW_INITIAL_QPOS[2])
+      || (up < DW_ENV_COS_MAX_TILT) || !finite;
 }
 
 // env _observe(): the DW_ENV_OBS (= 3*J + 16) observation at the CURRENT
@@ -2137,5 +2190,374 @@ static DW_HD bool dw_policy_rsi_init(DwState* s) {
   }
   return true;
 }
+
+// dwc1_gate_proxy readback (shared by both drivers).
+static DW_HD void dw_gate_proxy_fill(const DwState* st, dwc1_gate_proxy* o) {
+  o->qualified_left = st->gp_qual[0];
+  o->qualified_right = st->gp_qual[1];
+  o->alternation_violations = st->gp_alt_viol;
+  o->episode_qualified_left = st->gp_ep_qual[0];
+  o->episode_qualified_right = st->gp_ep_qual[1];
+  o->episode_alternation_violations = st->gp_ep_alt_viol;
+  o->termination_reason = st->gp_term_reason;
+  o->episode_termination_reason = st->gp_ep_term_reason;
+}
+
+#else  // DW_ENV_KIND == DW_ENV_KIND_REACH
+// ==================== reach policy layer (fixed-base arm) =================
+// Verbatim f64 port of walk/env/arm_reach.py (step / _observe / reset
+// bookkeeping) and walk/env/arm_reward.py reward(), every constant from
+// the generated arm header's DW_ENV_* / DW_RW_* / DW_GATE_* reach block
+// (drift-tested against the python modules by arm/tests). The target
+// SEQUENCE is host-drawn (arm_reach.sample_target's numpy PCG64 rejection
+// sampler over a batched f64 FK is not reproducible in-kernel) and pushed
+// through dwc1_reach_set_targets; the kernel owns the acquisition rule,
+// the queue promotion, reward, termination and the judge-shadow counters.
+// Numerics: the chain is f64 on the f32 lane state exactly like the numpy
+// env; the only place the two can differ is the association of the three-
+// term rotation products in the tip / link-origin geometry (numpy matmul
+// may call BLAS), i.e. ULP-level f64 noise that is invisible after the f32
+// obs cast except at a rounding boundary -- arm/tests/
+// test_arm_device_policy.py reports the measured worst case.
+static_assert(DW_ENV_OBS == 3 * DW_J + 9,
+              "reach obs = q, qd, target, tip, target - tip, prev action");
+static_assert(DW_ENV_ACQ_HOLD_STEPS >= 1, "acquisition hold");
+static_assert(DW_ENV_REACH_N_TARGETS == DWC1_REACH_TARGETS,
+              "judged target count must match the ABI struct");
+
+// f64 geometry from the light f32 FK, exactly arm_reach._geometry():
+//   tip   = p_link6 + R_link6 (tool_xyz - com_link6)   (flange)
+//   wrist = p_link5 - R_link5 com_link5                 (a5 origin)
+//   elbow = p_link3 - R_link3 com_link3                 (a3 origin)
+static DW_HD void dw_reach_point(const float* body13, const double off[3],
+                                 bool subtract, double out[3]) {
+  double R[3][3];
+  dw_quat_rot_f64(body13 + 3, R);
+  for (int i = 0; i < 3; i++) {
+    const double rot = R[i][0] * off[0] + R[i][1] * off[1] + R[i][2] * off[2];
+    out[i] = subtract ? (double)body13[i] - rot : (double)body13[i] + rot;
+  }
+}
+static DW_HD void dw_reach_geometry(const float bodies[DW_B][13],
+                                    double tip[3], double wrist[3],
+                                    double elbow[3]) {
+  dw_reach_point(bodies[DW_ENV_TIP_BODY], DW_ENV_TIP_OFFSET, false, tip);
+  dw_reach_point(bodies[DW_ENV_WRIST_BODY], DW_ENV_WRIST_COM, true, wrist);
+  dw_reach_point(bodies[DW_ENV_ELBOW_BODY], DW_ENV_ELBOW_COM, true, elbow);
+}
+// Frozen judge clause 5 (walk/eval/arm_reach_judge.proxy_violation):
+// floor margin on tip/wrist/elbow, base column on tip/wrist.
+static DW_HD bool dw_reach_proxy(const double tip[3], const double wrist[3],
+                                 const double elbow[3]) {
+  const double r = DW_ENV_REACH_M;
+  const double zmin = DW_GATE_FLOOR_MARGIN_FRAC * r;
+  const double rcol = DW_GATE_COLUMN_RADIUS_FRAC * r;
+  const double hcol = DW_GATE_COLUMN_HEIGHT_FRAC * r;
+  const bool floor = tip[2] < zmin || wrist[2] < zmin || elbow[2] < zmin;
+  const bool col_tip = tip[2] < hcol && hypot(tip[0], tip[1]) < rcol;
+  const bool col_wrist = wrist[2] < hcol && hypot(wrist[0], wrist[1]) < rcol;
+  return floor || col_tip || col_wrist;
+}
+
+// arm_reach._observe(): OBS 27 = [q, QDOT_OBS_SCALE*qd, target, tip,
+// target - tip, prev action] at the CURRENT state.
+static DW_HD void dw_reach_write_obs(const DwState* s, const double tip[3],
+                                     float* obs) {
+  const int T = 2 * DW_J;
+  for (int j = 0; j < DW_J; j++) {
+    obs[j] = s->q[7 + j];
+    obs[DW_J + j] = (float)(DW_ENV_QDOT_OBS_SCALE * (double)s->v[6 + j]);
+    obs[T + 9 + j] = s->prev_action[j];
+  }
+  for (int i = 0; i < 3; i++) {
+    obs[T + i] = (float)s->rt_target[i];
+    obs[T + 3 + i] = (float)tip[i];
+    obs[T + 6 + i] = (float)(s->rt_target[i] - tip[i]);
+  }
+}
+static DW_HD void dw_policy_observe(const DwState* s, float* obs) {
+  float bodies[DW_B][13];
+  double tip[3], wrist[3], elbow[3];
+  dw_body_states(s->q, s->v, bodies);
+  dw_reach_geometry(bodies, tip, wrist, elbow);
+  dw_reach_write_obs(s, tip, obs);
+}
+
+// Termination predicate = arm_reach's `crashed`: proxy violation or a
+// non-finite state (q, v or body poses).
+static DW_HD bool dw_policy_fell(const DwState* s) {
+  if (!dw_finite(s->q, DW_Q) || !dw_finite(s->v, DW_N)) return true;
+  float bodies[DW_B][13];
+  double tip[3], wrist[3], elbow[3];
+  dw_body_states(s->q, s->v, bodies);
+  if (!dw_finite(&bodies[0][0], DW_B * 13)) return true;
+  dw_reach_geometry(bodies, tip, wrist, elbow);
+  return dw_reach_proxy(tip, wrist, elbow);
+}
+
+// arm_reward.reward(), numpy operation for operation (sequential sums over
+// the J joints, as numpy's small-n reductions are): d = |tip - target|,
+// `a` the clipped f64 action, `app` the APPLIED f64 targets (the torque
+// estimate), kp carries the per-env DR scale like the locomotion reward.
+static DW_HD double dw_reach_reward(const DwState* s, double d, bool acquired,
+                                    const double* a, const double* app,
+                                    bool proxy) {
+  const double sigma = DW_RW_DIST_SIGMA_FRAC * DW_ENV_REACH_M;
+  const double x = d / sigma;
+  double r = DW_RW_W_DIST * exp(-(x * x)) - DW_RW_W_LIN * d / DW_ENV_REACH_M;
+  r = r + DW_RW_W_ACQUIRE * (acquired ? 1.0 : 0.0);
+  double ar = 0;
+  for (int j = 0; j < DW_J; j++) {
+    const double dd = a[j] - (double)s->prev_action[j];
+    ar += dd * dd;
+  }
+  r = r - DW_RW_W_ACTION_RATE * ar;
+  double tq = 0;
+  for (int j = 0; j < DW_J; j++) {
+    double m = ((double)DW_KP_TABLE[j] * s->kp_scale)
+                 * (app[j] - (double)s->q[7 + j])
+             - (double)DW_KV_TABLE[j] * (double)s->v[6 + j];
+    m = fmin((double)DW_EFFORT_CAP_TABLE[j],
+             fmax(-(double)DW_EFFORT_CAP_TABLE[j], m));
+    const double t = m / (double)DW_EFFORT_CAP_TABLE[j];
+    tq += t * t;
+  }
+  r = r - DW_RW_W_TORQUE * (tq / (double)DW_J);
+  double sp = 0;
+  for (int j = 0; j < DW_J; j++) {
+    const double over = fmax(0.0, fabs((double)s->v[6 + j])
+                                  / DW_ENV_VELOCITY_LIMIT_F64[j]
+                                  - DW_RW_SPEED_FRAC);
+    sp += over * over;
+  }
+  r = r - DW_RW_W_SPEED * sp;
+  r = r - DW_RW_W_PROXY * (proxy ? 1.0 : 0.0);
+  return r;
+}
+
+// arm_reach.step() on device: action -> limit-scaled, slew-limited targets
+// -> n_ticks physics -> tip/wrist/elbow -> acquisition hold -> reward ->
+// queue promotion -> termination -> observation. A solver fault (the
+// python env raises SolverFault) freezes the env at its last accepted tick
+// and marks it done; the diagnostic carries the failure.
+static DW_HD void dw_step_policy_env(DwState* s, const float* action,
+                                     uint32_t n_ticks, const DwParams* params,
+                                     DwWork* w, float* obs,
+                                     float* reward_out, uint8_t* done_out,
+                                     dwc1_diagnostic* diag) {
+  const bool live = s->done == 0;   // warp-uniform read (pre-step state)
+  if (params->fast_termination && !live) {   // frozen done env: no physics
+    DW_LANE0 {
+      *reward_out = 0.0f;
+      *done_out = 1;
+      dw_policy_observe(s, obs);
+      diag->status = DWC1_OK;
+    }
+    DW_SYNC();
+    return;
+  }
+  DW_LANE0 {
+    for (int j = 0; j < DW_J; j++)
+      w->a64[j] = fmin(1.0, fmax(-1.0, (double)action[j]));
+    if (live)
+      for (int j = 0; j < DW_J; j++) {
+        // requested = lower + (a + 1)/2 * (upper - lower), slew-limited to
+        // the URDF speed limit per step (f64 limits: the env's tables)
+        const double lo_j = DW_ENV_LIMIT_LOWER_F64[j];
+        const double hi_j = DW_ENV_LIMIT_UPPER_F64[j];
+        const double requested = lo_j + (0.5 * (w->a64[j] + 1.0)) * (hi_j - lo_j);
+        const double lo = s->targets[j] - DW_ENV_MAX_TARGET_INCREMENT_F64[j];
+        const double hi = s->targets[j] + DW_ENV_MAX_TARGET_INCREMENT_F64[j];
+        s->targets[j] = fmin(hi, fmax(lo, requested));
+      }
+    for (int j = 0; j < DW_J; j++)
+      w->eff64[j] = fmin(DW_ENV_LIMIT_UPPER_F64[j],
+                         fmax(DW_ENV_LIMIT_LOWER_F64[j], s->targets[j]));
+    {  // actuation latency ring, identical to the locomotion layer
+      const uint32_t P = (uint32_t)(DWC1_MAX_LATENCY + 1);
+      uint32_t slot = s->t % P;
+      for (int j = 0; j < DW_J; j++) s->eff_ring[slot][j] = w->eff64[j];
+      uint32_t aslot = (s->t + P - s->latency_steps) % P;
+      for (int j = 0; j < DW_J; j++) {
+        w->app64[j] = s->eff_ring[aslot][j];
+        w->eff[j] = (float)w->app64[j];
+      }
+    }
+  }
+  DW_SYNC();
+  int st = dw_step_env(s, w->eff, n_ticks, params, w, diag,
+                       params->fast_termination != 0);
+  DW_LANE0 {
+    if (st != DWC1_OK) {
+      s->done = 1;
+      if (live) s->gp_term_reason = DWC1_TERM_FAULT;    // metrics only
+    }
+    dw_body_states(s->q, s->v, w->bodies13);
+    double tip[3], wrist[3], elbow[3];
+    dw_reach_geometry(w->bodies13, tip, wrist, elbow);
+    const bool finite = dw_finite(s->q, DW_Q) && dw_finite(s->v, DW_N)
+                     && dw_finite(&w->bodies13[0][0], DW_B * 13);
+    const double dx = tip[0] - s->rt_target[0];
+    const double dy = tip[1] - s->rt_target[1];
+    const double dz = tip[2] - s->rt_target[2];
+    const double d = sqrt(dx * dx + dy * dy + dz * dz);
+    const bool inside = d <= DW_ENV_ACQ_RADIUS_M;
+    s->rt_hold = inside ? s->rt_hold + 1 : 0;        // all envs, like numpy
+    const bool acquired = live && s->rt_hold >= DW_ENV_ACQ_HOLD_STEPS;
+    const bool proxy = dw_reach_proxy(tip, wrist, elbow);
+    const double r = dw_reach_reward(s, d, acquired, w->a64, w->app64, proxy);
+    bool starved = false;
+    if (acquired) {                     // advance to the queued target
+      s->rt_index += 1;
+      s->rt_hold = 0;
+      if (s->rt_next_valid) {
+        for (int i = 0; i < 3; i++) s->rt_target[i] = s->rt_next[i];
+        s->rt_next_valid = 0;
+      } else {
+        starved = true;                 // host contract violation
+        s->rt_starved += 1;
+      }
+      if (s->rt_index <= DWC1_REACH_TARGETS)
+        s->rt_acq_step[s->rt_index - 1] = s->t + 1;   // 1-based step
+    }
+    if (live) s->t += 1;
+    const bool fell = proxy || !finite;
+    // OPT-IN gate rules over the reach counters (dwc1_set_gate_termination):
+    // first-acquisition deadline and judge-clause violating-tick cap.
+    const uint32_t viol = s->rt_limit_ticks + s->rt_speed_ticks
+                        + s->rt_proxy_ticks;
+    const bool gate_deadline =
+        params->gate_first_deadline_ticks != 0 && s->rt_index == 0
+        && s->count >= (uint64_t)params->gate_first_deadline_ticks;
+    const bool gate_alt = params->gate_max_alt_violations != 0
+                       && viol >= params->gate_max_alt_violations;
+    if (live && (fell || starved || gate_deadline || gate_alt
+                 || s->t >= DWP_HORIZON)) {
+      s->done = 1;
+      s->gp_term_reason = fell ? DWC1_TERM_FELL
+                        : starved ? DWC1_TERM_REACH_STARVED
+                        : gate_deadline ? DWC1_TERM_GATE_DEADLINE
+                        : gate_alt ? DWC1_TERM_ALTERNATION
+                        : DWC1_TERM_HORIZON;
+    }
+    *reward_out = live ? (float)r : 0.0f;
+    for (int j = 0; j < DW_J; j++) {
+      s->prev_state_action[j] = (float)w->a64[j];
+      if (live) s->prev_action[j] = (float)w->a64[j];  // live-only memory
+    }
+    dw_reach_write_obs(s, tip, obs);
+    *done_out = s->done;
+  }
+  DW_SYNC();
+}
+
+// gate_proxy tick for the reach kind, once per accepted tick (lane 0): the
+// frozen judge's per-tick clauses 3/4/5 -- joint limits (LIMIT_TOL), joint
+// speed (URDF limits) and the self-collision/floor proxy -- counted as
+// violating ticks. Clause 5 is exactly the judge's `violating_ticks`;
+// clauses 3/4 are its pass/fail predicates at tick resolution. Writes only
+// rt_*_ticks (metrics), never read by reward or the default termination.
+static DW_HD void dw_gate_proxy_tick(DwState* s) {
+  float bodies[DW_B][13];
+  double tip[3], wrist[3], elbow[3];
+  dw_body_states(s->q, s->v, bodies);
+  dw_reach_geometry(bodies, tip, wrist, elbow);
+  bool lim = false, spd = false;
+  for (int j = 0; j < DW_J; j++) {
+    const double q = (double)s->q[7 + j];
+    const double excess = fmax(fmax(DW_ENV_LIMIT_LOWER_F64[j] - q,
+                                    q - DW_ENV_LIMIT_UPPER_F64[j]), 0.0);
+    if (excess > DW_GATE_LIMIT_TOL_RAD + 1e-12) lim = true;
+    const double ratio = fabs((double)s->v[6 + j]) / DW_ENV_VELOCITY_LIMIT_F64[j];
+    if (ratio > DW_GATE_SPEED_TOL_FRAC + 1e-9) spd = true;
+  }
+  if (lim) s->rt_limit_ticks++;
+  if (spd) s->rt_speed_ticks++;
+  if (dw_reach_proxy(tip, wrist, elbow)) s->rt_proxy_ticks++;
+}
+
+// Masked policy reset (reach): physics + policy state back to the creation
+// state; slot a = tier, slot b = target-sequence key (kept when NULL). The
+// target queue is CLEARED -- the host pushes the active and the queued
+// target next (dwc1_reach_set_targets). The finished episode's counters are
+// snapshotted into the rt_ep_* fields (metrics only).
+static DW_HD void dw_policy_reset_env(DwState* s, const DwState* initial,
+                                      const double* tier, const double* key) {
+  const double keep_tier = s->rt_tier, keep_key = s->rt_key;
+  const uint32_t ep_acq = s->rt_index, ep_lim = s->rt_limit_ticks;
+  const uint32_t ep_spd = s->rt_speed_ticks, ep_prx = s->rt_proxy_ticks;
+  const uint32_t er = s->gp_term_reason;
+  uint32_t ep_steps[DWC1_REACH_TARGETS];
+  for (int k = 0; k < DWC1_REACH_TARGETS; k++) ep_steps[k] = s->rt_acq_step[k];
+  *s = *initial;
+  s->rt_tier = tier ? *tier : keep_tier;
+  s->rt_key = key ? *key : keep_key;
+  s->rt_ep_acquired = ep_acq;
+  s->rt_ep_limit_ticks = ep_lim;
+  s->rt_ep_speed_ticks = ep_spd;
+  s->rt_ep_proxy_ticks = ep_prx;
+  for (int k = 0; k < DWC1_REACH_TARGETS; k++) s->rt_ep_acq_step[k] = ep_steps[k];
+  s->gp_ep_term_reason = er;
+}
+
+// RSI has no meaning for the reach kind (no reference gait): a no-op so the
+// drivers' shared reset logic compiles; dwc1_set_rsi rejects fractions > 0.
+static DW_HD bool dw_policy_rsi_init(DwState* s) { (void)s; return false; }
+
+// dwc1_reach_set_targets per env: NULL leaves a slot untouched.
+static DW_HD void dw_reach_push(DwState* s, const double* active,
+                                const double* next) {
+  if (active) {
+    for (int i = 0; i < 3; i++) s->rt_target[i] = active[i];
+    s->rt_valid = 1;
+  }
+  if (next) {
+    for (int i = 0; i < 3; i++) s->rt_next[i] = next[i];
+    s->rt_next_valid = 1;
+  }
+}
+// dwc1_reach_get readback.
+static DW_HD void dw_reach_fill(const DwState* st, dwc1_reach_state* o) {
+  for (int i = 0; i < 3; i++) {
+    o->target[i] = st->rt_target[i];
+    o->next_target[i] = st->rt_next[i];
+  }
+  o->tier = st->rt_tier;
+  o->key = st->rt_key;
+  o->target_index = st->rt_index;
+  o->hold = st->rt_hold;
+  o->next_valid = st->rt_next_valid;
+  o->valid = st->rt_valid;
+  for (int k = 0; k < DWC1_REACH_TARGETS; k++) {
+    o->acquire_step[k] = st->rt_acq_step[k];
+    o->episode_acquire_step[k] = st->rt_ep_acq_step[k];
+  }
+  o->limit_violation_ticks = st->rt_limit_ticks;
+  o->speed_violation_ticks = st->rt_speed_ticks;
+  o->proxy_violation_ticks = st->rt_proxy_ticks;
+  o->starved = st->rt_starved;
+  o->episode_acquired = st->rt_ep_acquired;
+  o->episode_limit_violation_ticks = st->rt_ep_limit_ticks;
+  o->episode_speed_violation_ticks = st->rt_ep_speed_ticks;
+  o->episode_proxy_violation_ticks = st->rt_ep_proxy_ticks;
+  o->reserved = 0;
+}
+// dwc1_gate_proxy readback, REACH mapping (documented in duck_cuda.h):
+// qualified_left = targets acquired, qualified_right = 0,
+// alternation_violations = judge-clause violating ticks.
+static DW_HD void dw_gate_proxy_fill(const DwState* st, dwc1_gate_proxy* o) {
+  o->qualified_left = st->rt_index;
+  o->qualified_right = 0;
+  o->alternation_violations = st->rt_limit_ticks + st->rt_speed_ticks
+                            + st->rt_proxy_ticks;
+  o->episode_qualified_left = st->rt_ep_acquired;
+  o->episode_qualified_right = 0;
+  o->episode_alternation_violations = st->rt_ep_limit_ticks
+                                    + st->rt_ep_speed_ticks
+                                    + st->rt_ep_proxy_ticks;
+  o->termination_reason = st->gp_term_reason;
+  o->episode_termination_reason = st->gp_ep_term_reason;
+}
+#endif  // DW_ENV_KIND
 
 #endif  // DUCK_CUDA_KERNEL_H

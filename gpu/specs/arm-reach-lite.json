@@ -22,8 +22,17 @@
       "continue_on_error": false
     },
     {
+      "name": "preflight-abi",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -c \"import sys; sys.path.insert(0,'.'); import numpy as np; from walk.env.arm_cuda_lane import CudaArmLane; l=CudaArmLane(4, variant='lite', library_path='experimental/duck_cuda/build-arm-lite/libarm_lite_cuda.so', fast_termination=True); assert l._lib.dwc1_env_kind()==1 and l._lib.dwc1_obs_width()==27; o=l.reset_policy(seed=1); assert o.shape==(4,27), o.shape; for t in range(20): o2,r,d,diag=l.step_policy(np.zeros((4,6),np.float32)); assert (diag['status']==0).all(), diag['status']; rs=l.reach_state(); gp=l.gate_proxy(); assert (rs['valid']==1).all() and (rs['next_valid']==1).all(); print('ABI v8 reach device path OK', o2.shape, 'acq', rs['target_index'].tolist(), 'viol', gp['alternation_violations'].tolist()); l.close()\" 2>&1 | tee preflight-abi.log",
+      "timeout_s": 300,
+      "artifacts": [
+        "preflight-abi.log"
+      ],
+      "continue_on_error": false
+    },
+    {
       "name": "train",
-      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --robot arm --variant lite --envs 4096 --horizon 64 --updates 99999 --seed 917 --device cuda --library experimental/duck_cuda/build-arm-lite/libarm_lite_cuda.so --policy ff --out gpu-train-out --lr 3e-4 --max-wall-s 900 2>&1 | tee gpu-train.log",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --robot arm --variant lite --envs 4096 --horizon 64 --updates 99999 --seed 917 --device cuda --library experimental/duck_cuda/build-arm-lite/libarm_lite_cuda.so --lane-env --policy ff --out gpu-train-out --lr 3e-4 --max-wall-s 900 2>&1 | tee gpu-train.log",
       "timeout_s": 1200,
       "artifacts": [
         "gpu-train.log",
@@ -57,5 +66,5 @@
     "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
   },
   "use_snapshot": true,
-  "notes": "Same recipe as arm-reach-kr240 with the half-scale 1/8-mass 'lite' variant header (arm/include/lite). Arm obs/reward run PYTHON-SIDE over dwc1_step (no --lane-env)."
+  "notes": "Arm on the kernel's DEVICE POLICY PATH (--lane-env; kernel ABI v8, DW_ENV_KIND_REACH selected by arm/include/<variant>/duck_model.h): obs 27 / arm_reward v1 / acquisition / termination in-kernel, one dwc1_step_policy launch + obs/reward/done readback per policy step plus a dwc1_reach_get readback and a masked dwc1_reach_set_targets push for envs that acquired (host-drawn targets, arm_reach.py's exact stream). preflight-abi exercises dwc1 on the arm CUDA build before training, as the humanoid specs do. Parity/judge cross-check: arm/tests/test_arm_device_policy.py. Acceptance stays on the serial build via ArmReachEnv (the frozen judge consumes per-tick traces). Half-scale 1/8-mass 'lite' variant header (arm/include/lite)."
 }

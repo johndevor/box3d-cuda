@@ -35,6 +35,8 @@ double rsi_draw(uint64_t* st) {
 extern "C" {
 
 int dwc1_abi_version(void) { return DWC1_ABI_VERSION; }
+int dwc1_env_kind(void) { return DW_ENV_KIND; }
+int dwc1_obs_width(void) { return DWP_OBS; }
 
 int dwc1_create(uint32_t environments, const float* joint_offsets,
                 const dwc1_randomization* randomization, dwc1_scene** out) {
@@ -213,11 +215,48 @@ int dwc1_observe(const dwc1_scene* s, float* obs) {
 
 int dwc1_set_command(dwc1_scene* s, const double* commands) {
   if (!s || !commands) return DWC1_INVALID;
+#if DW_ENV_KIND != DW_ENV_KIND_LOCOMOTION
+  return DWC1_INVALID;                     // no command channel (reach)
+#else
   for (uint32_t e = 0; e < s->E; e++) {
     if (!(commands[e] == commands[e])) return DWC1_INVALID;  // NaN
     s->state[e].command = commands[e];
   }
   return DWC1_OK;
+#endif
+}
+
+// ---- REACH kind (ABI v8) ------------------------------------------------
+int dwc1_reach_set_targets(dwc1_scene* s, const uint8_t* mask,
+                           const double* active, const double* next) {
+  if (!s || (!active && !next)) return DWC1_INVALID;
+#if DW_ENV_KIND != DW_ENV_KIND_REACH
+  (void)mask;
+  return DWC1_INVALID;
+#else
+  for (uint32_t e = 0; e < s->E; e++) {
+    if (mask && !mask[e]) continue;
+    for (int i = 0; i < 3; i++) {
+      if (active && !(active[e * 3 + i] == active[e * 3 + i])) return DWC1_INVALID;
+      if (next && !(next[e * 3 + i] == next[e * 3 + i])) return DWC1_INVALID;
+    }
+  }
+  for (uint32_t e = 0; e < s->E; e++)
+    if (!mask || mask[e])
+      dw_reach_push(&s->state[e], active ? active + (size_t)e * 3 : nullptr,
+                    next ? next + (size_t)e * 3 : nullptr);
+  return DWC1_OK;
+#endif
+}
+
+int dwc1_reach_get(const dwc1_scene* s, dwc1_reach_state* out) {
+  if (!s || !out) return DWC1_INVALID;
+#if DW_ENV_KIND != DW_ENV_KIND_REACH
+  return DWC1_INVALID;
+#else
+  for (uint32_t e = 0; e < s->E; e++) dw_reach_fill(&s->state[e], &out[e]);
+  return DWC1_OK;
+#endif
 }
 
 int dwc1_set_fast_termination(dwc1_scene* s, uint32_t enable) {
@@ -237,23 +276,16 @@ int dwc1_set_gate_termination(dwc1_scene* s, uint32_t first_deadline_ticks,
 int dwc1_set_rsi(dwc1_scene* s, double fraction) {
   if (!s || !(fraction == fraction) || fraction < 0.0 || fraction > 1.0)
     return DWC1_INVALID;
+#if DW_ENV_KIND != DW_ENV_KIND_LOCOMOTION
+  if (fraction > 0.0) return DWC1_INVALID;   // no reference gait (reach)
+#endif
   s->params.rsi_fraction = fraction;
   return DWC1_OK;
 }
 
 int dwc1_gate_proxy_get(const dwc1_scene* s, dwc1_gate_proxy* out) {
   if (!s || !out) return DWC1_INVALID;
-  for (uint32_t e = 0; e < s->E; e++) {
-    const DwState* st = &s->state[e];
-    out[e].qualified_left = st->gp_qual[0];
-    out[e].qualified_right = st->gp_qual[1];
-    out[e].alternation_violations = st->gp_alt_viol;
-    out[e].episode_qualified_left = st->gp_ep_qual[0];
-    out[e].episode_qualified_right = st->gp_ep_qual[1];
-    out[e].episode_alternation_violations = st->gp_ep_alt_viol;
-    out[e].termination_reason = st->gp_term_reason;
-    out[e].episode_termination_reason = st->gp_ep_term_reason;
-  }
+  for (uint32_t e = 0; e < s->E; e++) dw_gate_proxy_fill(&s->state[e], &out[e]);
   return DWC1_OK;
 }
 

@@ -4,7 +4,7 @@ Dense tip-distance shaping + acquisition bonus + action-rate + torque
 regularizers (the spec), plus a speed regularizer that mirrors the frozen
 judge's joint-speed clause and a proxy penalty that mirrors its
 self-collision / floor clause. Every constant here is ALSO emitted into the
-generated arm headers (DW_ARM_RW_*, experimental/duck_cuda/tools/
+generated arm headers (DW_RW_* (reach block), experimental/duck_cuda/tools/
 generate_model_arm.py) so a python-side change fails the header-drift test
 until regenerated -- the same reward <-> header pin the duck and humanoid
 carry, even though the arm's obs/reward run python-side today (the kernel's

@@ -175,9 +175,10 @@ def robot_classes(robot: str, variant: str | None = None):
         return humanoid_flat.OBS, humanoid_flat.ACT, lane_cls, env_cls
     if robot == "arm":
         # fixed-base 6-axis reach family (arm/arm_lowering.py): the variant
-        # ("kr240" default | "lite") is bound into both classes; obs/reward
-        # run python-side over dwc1_step (no device policy path, see
-        # arm/FEASIBILITY.md section 6), so --lane-env is rejected below.
+        # ("kr240" default | "lite") is bound into both classes. Without
+        # --lane-env obs/reward run python-side over dwc1_step; with it the
+        # kernel's DW_ENV_KIND_REACH device policy layer (ABI v8) runs the
+        # whole step in-kernel (CudaArmLane.step_policy / reset_policy).
         import functools
         from walk.env import arm_reach
         from walk.env.arm_cuda_lane import CudaArmLane
@@ -201,11 +202,6 @@ class LanePolicyEnv:
 
     def __init__(self, cfg):
         robot = getattr(cfg, "robot", "duck")
-        if robot == "arm":
-            raise SystemExit("--lane-env needs the in-kernel device policy "
-                             "path, which cannot express the arm's obs "
-                             "(arm/FEASIBILITY.md section 6); run --robot arm "
-                             "without --lane-env")
         self.OBS, self.ACT, lane_cls, _ = robot_classes(
             robot, getattr(cfg, "variant", None))
         self.E = cfg.envs

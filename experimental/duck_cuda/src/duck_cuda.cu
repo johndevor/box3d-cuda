@@ -81,6 +81,20 @@ dw_step_policy_kernel(DwState* states, const float* actions,
     DW_LANE0 diags[e] = d;
   }
 }
+
+#if DW_ENV_KIND == DW_ENV_KIND_REACH
+// dwc1_reach_set_targets: one thread per env applies the masked host push
+// (buffers staged by the host: targets [E,6] = active xyz | next xyz, flags
+// [E] bit0 = active present, bit1 = next present, mask [E]).
+__global__ void dw_reach_push_kernel(DwState* states, const double* targets,
+                                     const uint8_t* flags, const uint8_t* mask,
+                                     uint32_t E) {
+  const uint32_t e = blockIdx.x * blockDim.x + threadIdx.x;
+  if (e >= E || !mask[e]) return;
+  dw_reach_push(&states[e], (flags[e] & 1u) ? targets + (size_t)e * 6 : nullptr,
+                (flags[e] & 2u) ? targets + (size_t)e * 6 + 3 : nullptr);
+}
+#endif
 }  // namespace
 
 struct dwc1_scene {
@@ -95,6 +109,9 @@ struct dwc1_scene {
   float* device_reward = nullptr;       // [E]
   uint8_t* device_done = nullptr;       // [E]
   dwc1_diagnostic* device_diag = nullptr;  // [E]
+  double* device_reach = nullptr;       // [E, 6] reach push staging (v8)
+  uint8_t* device_reach_flags = nullptr;   // [E]
+  uint8_t* device_mask = nullptr;          // [E]
   std::vector<DwState> initial, host;   // creation state + read scratch
   ~dwc1_scene() {
     cudaFree(device_state);
@@ -104,6 +121,9 @@ struct dwc1_scene {
     cudaFree(device_reward);
     cudaFree(device_done);
     cudaFree(device_diag);
+    cudaFree(device_reach);
+    cudaFree(device_reach_flags);
+    cudaFree(device_mask);
   }
 };
 
@@ -127,6 +147,8 @@ int pull_states(const dwc1_scene* s) {
 extern "C" {
 
 int dwc1_abi_version(void) { return DWC1_ABI_VERSION; }
+int dwc1_env_kind(void) { return DW_ENV_KIND; }
+int dwc1_obs_width(void) { return DWP_OBS; }
 
 int dwc1_create(uint32_t environments, const float* joint_offsets,
                 const dwc1_randomization* randomization, dwc1_scene** out) {
@@ -167,6 +189,11 @@ int dwc1_create(uint32_t environments, const float* joint_offsets,
         || cudaMalloc(&s->device_reward, sizeof(float) * environments) != cudaSuccess
         || cudaMalloc(&s->device_done, sizeof(uint8_t) * environments) != cudaSuccess
         || cudaMalloc(&s->device_diag, sizeof(dwc1_diagnostic) * environments) != cudaSuccess
+#if DW_ENV_KIND == DW_ENV_KIND_REACH
+        || cudaMalloc(&s->device_reach, sizeof(double) * 6 * (size_t)environments) != cudaSuccess
+        || cudaMalloc(&s->device_reach_flags, environments) != cudaSuccess
+        || cudaMalloc(&s->device_mask, environments) != cudaSuccess
+#endif
         || cudaMemcpy(s->device_state, s->initial.data(),
                       sizeof(DwState) * environments,
                       cudaMemcpyHostToDevice) != cudaSuccess) {
@@ -314,36 +341,18 @@ int dwc1_reset_policy(dwc1_scene* s, const uint8_t* mask,
     if (phase_offsets && !(phase_offsets[e] == phase_offsets[e]))
       return DWC1_INVALID;
   }
-  // one bulk device->host pull: the finished episodes' gate-proxy counters
-  // must be snapshotted into the reset state (the serial driver does this
-  // inside dw_policy_reset_env from the live state), and keep-cases read
-  // command/phase0 from the same copy.
+  // one bulk device->host pull: the reset runs the SAME single-source
+  // dw_policy_reset_env as the serial driver on the pulled live state (it
+  // snapshots the finished episode's gate-proxy counters and keeps the
+  // per-kind slot values when the caller passes NULL), then pushes the
+  // reset state back per selected env.
   if (pull_states(s) != DWC1_OK) return DWC1_NUMERIC;
   for (uint32_t e = 0; e < s->E; e++) {
     if (mask && !mask[e]) continue;
-    DwState next = s->initial[e];
-    next.gp_ep_qual[0] = s->host[e].gp_qual[0];
-    next.gp_ep_qual[1] = s->host[e].gp_qual[1];
-    next.gp_ep_alt_viol = s->host[e].gp_alt_viol;
-    next.gp_ep_term_reason = s->host[e].gp_term_reason;
-    if (commands) {
-      next.command = commands[e];
-    } else {  // keep the env's previous command (creation default: 0)
-      if (cudaMemcpy(&next.command,
-                     (const char*)(s->device_state + e)
-                         + offsetof(DwState, command),
-                     sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess)
-        return DWC1_NUMERIC;
-    }
-    if (phase_offsets) {
-      next.phase0 = phase_offsets[e];
-    } else {  // keep the env's previous phase offset (creation default: 0)
-      if (cudaMemcpy(&next.phase0,
-                     (const char*)(s->device_state + e)
-                         + offsetof(DwState, phase0),
-                     sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess)
-        return DWC1_NUMERIC;
-    }
+    DwState next = s->host[e];
+    dw_policy_reset_env(&next, &s->initial[e],
+                        commands ? commands + e : nullptr,
+                        phase_offsets ? phase_offsets + e : nullptr);
     // RSI (default 0.0 = OFF: no draw, resets bit-identical to today)
     if (s->params.rsi_fraction > 0.0
         && rsi_draw(&s->rsi_rng) < s->params.rsi_fraction)
@@ -421,6 +430,9 @@ int dwc1_observe(const dwc1_scene* s, float* obs) {
 
 int dwc1_set_command(dwc1_scene* s, const double* commands) {
   if (!s || !commands) return DWC1_INVALID;
+#if DW_ENV_KIND != DW_ENV_KIND_LOCOMOTION
+  return DWC1_INVALID;                     // no command channel (reach)
+#else
   for (uint32_t e = 0; e < s->E; e++) {
     if (!(commands[e] == commands[e])) return DWC1_INVALID;  // NaN
     if (cudaMemcpy((char*)(s->device_state + e) + offsetof(DwState, command),
@@ -429,6 +441,63 @@ int dwc1_set_command(dwc1_scene* s, const double* commands) {
       return DWC1_NUMERIC;
   }
   return DWC1_OK;
+#endif
+}
+
+// ---- REACH kind (ABI v8) ------------------------------------------------
+int dwc1_reach_set_targets(dwc1_scene* s, const uint8_t* mask,
+                           const double* active, const double* next) {
+  if (!s || (!active && !next)) return DWC1_INVALID;
+#if DW_ENV_KIND != DW_ENV_KIND_REACH
+  (void)mask;
+  return DWC1_INVALID;
+#else
+  std::vector<double> stage((size_t)s->E * 6, 0.0);
+  std::vector<uint8_t> flags(s->E, 0), m(s->E, 1);
+  for (uint32_t e = 0; e < s->E; e++) {
+    if (mask) m[e] = mask[e] ? 1 : 0;
+    if (!m[e]) continue;
+    for (int i = 0; i < 3; i++) {
+      if (active) {
+        const double v = active[(size_t)e * 3 + i];
+        if (!(v == v)) return DWC1_INVALID;
+        stage[(size_t)e * 6 + i] = v;
+      }
+      if (next) {
+        const double v = next[(size_t)e * 3 + i];
+        if (!(v == v)) return DWC1_INVALID;
+        stage[(size_t)e * 6 + 3 + i] = v;
+      }
+    }
+    flags[e] = (active ? 1u : 0u) | (next ? 2u : 0u);
+  }
+  if (cudaMemcpy(s->device_reach, stage.data(), sizeof(double) * stage.size(),
+                 cudaMemcpyHostToDevice) != cudaSuccess
+      || cudaMemcpy(s->device_reach_flags, flags.data(), s->E,
+                    cudaMemcpyHostToDevice) != cudaSuccess
+      || cudaMemcpy(s->device_mask, m.data(), s->E,
+                    cudaMemcpyHostToDevice) != cudaSuccess)
+    return DWC1_NUMERIC;
+  const int blocks = (int)((s->E + 255) / 256);
+  dw_reach_push_kernel<<<blocks, 256>>>(s->device_state, s->device_reach,
+                                        s->device_reach_flags, s->device_mask,
+                                        s->E);
+  if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess)
+    return DWC1_NUMERIC;
+  return DWC1_OK;
+#endif
+}
+
+int dwc1_reach_get(const dwc1_scene* s, dwc1_reach_state* out) {
+  if (!s || !out) return DWC1_INVALID;
+#if DW_ENV_KIND != DW_ENV_KIND_REACH
+  return DWC1_INVALID;
+#else
+  int rc = pull_states(s);
+  if (rc != DWC1_OK) return rc;
+  for (uint32_t e = 0; e < s->E; e++) dw_reach_fill(&s->host[e], &out[e]);
+  return DWC1_OK;
+#endif
 }
 
 int dwc1_set_fast_termination(dwc1_scene* s, uint32_t enable) {
@@ -448,6 +517,9 @@ int dwc1_set_gate_termination(dwc1_scene* s, uint32_t first_deadline_ticks,
 int dwc1_set_rsi(dwc1_scene* s, double fraction) {
   if (!s || !(fraction == fraction) || fraction < 0.0 || fraction > 1.0)
     return DWC1_INVALID;
+#if DW_ENV_KIND != DW_ENV_KIND_LOCOMOTION
+  if (fraction > 0.0) return DWC1_INVALID;   // no reference gait (reach)
+#endif
   s->params.rsi_fraction = fraction;
   return DWC1_OK;
 }
@@ -456,17 +528,7 @@ int dwc1_gate_proxy_get(const dwc1_scene* s, dwc1_gate_proxy* out) {
   if (!s || !out) return DWC1_INVALID;
   int rc = pull_states(s);
   if (rc != DWC1_OK) return rc;
-  for (uint32_t e = 0; e < s->E; e++) {
-    const DwState* st = &s->host[e];
-    out[e].qualified_left = st->gp_qual[0];
-    out[e].qualified_right = st->gp_qual[1];
-    out[e].alternation_violations = st->gp_alt_viol;
-    out[e].episode_qualified_left = st->gp_ep_qual[0];
-    out[e].episode_qualified_right = st->gp_ep_qual[1];
-    out[e].episode_alternation_violations = st->gp_ep_alt_viol;
-    out[e].termination_reason = st->gp_term_reason;
-    out[e].episode_termination_reason = st->gp_ep_term_reason;
-  }
+  for (uint32_t e = 0; e < s->E; e++) dw_gate_proxy_fill(&s->host[e], &out[e]);
   return DWC1_OK;
 }
 

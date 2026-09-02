@@ -170,6 +170,8 @@ Reward (`walk/env/arm_reward.py`): `+exp(−(d/0.1R)²) − 0.5·d/R +
 
 ## 6. Device policy path — not expressible; exact kernel block needed
 
+> **UPDATE 2026-09-02 — IMPLEMENTED.** The device policy path described below now exists: `DW_ENV_KIND_REACH` (ABI v8), host-drawn target queue via `dwc1_reach_set_targets`, gate-proxy mapping (acquired targets / violating ticks), bit-exact device-vs-python parity (`arm/tests/test_arm_device_policy.py`). Reward pins are `DW_RW_*`. `--lane-env` is the default arm training path.
+
 `dw_policy_observe` / `dw_step_policy_env` implement the duck/humanoid
 `3·J+16` locomotion observation (gravity/velocity/contacts/phase clock) and
 gait reward through the `DW_ENV_*` block; none of {target xyz, tip FK,

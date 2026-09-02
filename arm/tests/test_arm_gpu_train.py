@@ -5,11 +5,14 @@ Run: .venv/bin/python -B arm/tests/test_arm_gpu_train.py
 - robot_classes("arm", variant) returns OBS/ACT 27/6 with the variant bound
   into CudaArmLane / ArmReachEnv (default variant kr240; bad variant ->
   SystemExit); the duck row is untouched (identity pins);
-- --lane-env is rejected for the arm (no device policy path);
+- --lane-env builds a LanePolicyEnv over CudaArmLane (kernel ABI v8 reach
+  device policy path) with OBS/ACT 27/6 and the gate_proxy hook the
+  curriculum machinery expects;
 - gpu_train.train(robot="arm") runs 8 envs x 2 updates on cpu end to end
   through the UNMODIFIED trainer loop (preflight included), zero faults,
   finite non-constant rewards, and actor_final.pt round-trips into a
-  27 -> ... -> 6 feed-forward actor.
+  27 -> ... -> 6 feed-forward actor -- on BOTH the python-side path and
+  the --lane-env device path.
 """
 from __future__ import annotations
 
@@ -53,11 +56,24 @@ class RobotSwitchTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             gt.robot_classes("arm", "ur10")
 
-    def test_lane_env_rejected_for_arm(self):
-        cfg = gt.GpuTrainConfig(robot="arm", variant="kr240", envs=2,
+    def test_lane_env_builds_arm_device_path(self):
+        cfg = gt.GpuTrainConfig(robot="arm", variant="lite", envs=2,
                                 lane_env=True, out="/tmp/unused")
-        with self.assertRaises(SystemExit):
-            gt.LanePolicyEnv(cfg)
+        env = gt.LanePolicyEnv(cfg)
+        try:
+            self.assertEqual((env.OBS, env.ACT), (27, 6))
+            self.assertIsInstance(env._lane, CudaArmLane)
+            self.assertEqual(env._lane.variant, "lite")
+            self.assertTrue(env._lane.fast_termination)
+            self.assertTrue(hasattr(env._lane, "gate_proxy"))
+            self.assertTrue(hasattr(env._lane, "set_gate_termination"))
+            obs = env.reset(seed=3)
+            self.assertEqual(obs.shape, (2, 27))
+            o, r, d, info = env.step(np.zeros((2, 6), np.float32))
+            self.assertEqual((o.shape, r.shape, d.shape), ((2, 27), (2,), (2,)))
+            self.assertEqual(info["faults"], 0)
+        finally:
+            env.close()
 
     def test_make_env_binds_variant(self):
         cfg = gt.GpuTrainConfig(robot="arm", variant="lite", envs=2,
@@ -74,12 +90,23 @@ class RobotSwitchTests(unittest.TestCase):
 
 class ArmTrainSmoke(unittest.TestCase):
     def test_two_updates_eight_envs_cpu(self):
+        self._smoke(lane_env=False)
+
+    def test_two_updates_eight_envs_cpu_lane_env(self):
+        rows = self._smoke(lane_env=True)
+        # the device path publishes the gate_proxy_* metrics the chain /
+        # curriculum machinery reads (reach mapping: acquired / violations)
+        for row in rows:
+            self.assertIn("gate_proxy_ep_qualified_l", row)
+            self.assertIn("gate_proxy_ep_alt_violations", row)
+
+    def _smoke(self, lane_env: bool):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = gt.GpuTrainConfig(
                 robot="arm", variant="kr240", envs=8, horizon=8, updates=2,
                 seed=20260902, device="cpu", out=str(Path(tmp) / "smoke"),
                 preflight_steps=20, checkpoint_every=1000, torch_threads=1,
-                quiet=True)
+                quiet=True, lane_env=lane_env)
             metrics = gt.train(cfg)
             rows = [m for m in metrics if m.get("kind") == "train"]
             self.assertEqual(len(rows), 2, metrics)
@@ -98,9 +125,11 @@ class ArmTrainSmoke(unittest.TestCase):
             out = actor.deterministic(torch.zeros(3, 27))
             self.assertEqual(tuple(out.shape), (3, 6))
             self.assertEqual((Path(cfg.out) / "faults.jsonl").read_text().strip(), "")
-            print("arm smoke:", {k: rows[-1][k] for k in
-                                 ["update", "reward_mean", "reward_std",
-                                  "faults", "steps_per_s"]}, file=sys.stderr)
+            print(f"arm smoke lane_env={lane_env}:",
+                  {k: rows[-1][k] for k in ["update", "reward_mean",
+                                            "reward_std", "faults",
+                                            "steps_per_s"]}, file=sys.stderr)
+            return rows
 
 
 if __name__ == "__main__":

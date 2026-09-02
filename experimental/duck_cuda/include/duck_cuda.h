@@ -42,8 +42,26 @@ extern "C" {
 //     latency fields -- struct layouts changed, hence the bump). Absent /
 //     0 / neutral 1.0 is bit-identical to v6 (fingerprint-pinned:
 //     tests/test_duck_fingerprint.py).
-#define DWC1_ABI_VERSION 7
+// v8: generated-header-selected ENVIRONMENT KIND. DW_ENV_KIND in the model
+//     header picks the device policy layer at compile time:
+//       DWC1_ENV_KIND_LOCOMOTION (default when the header omits it): the
+//         duck/humanoid 3*J+16 gait contract -- today's exact code path,
+//         byte-identical (fingerprint-pinned);
+//       DWC1_ENV_KIND_REACH: the fixed-base arm reach contract
+//         (walk/env/arm_reach.py + arm_reward.py): OBS 27, host-drawn
+//         target sequence, in-kernel acquisition/reward/termination and
+//         judge-shadow counters for the frozen arm judge's clauses.
+//     New exports: dwc1_env_kind, dwc1_obs_width, dwc1_reach_set_targets,
+//     dwc1_reach_get (+ dwc1_reach_state). dwc1_reset_policy keeps its
+//     signature; its two f64 slots carry per-kind semantics (below).
+#define DWC1_ABI_VERSION 8
 int dwc1_abi_version(void);
+
+// Which policy layer this build compiled (DW_ENV_KIND of its model header)
+// and the observation width it writes (DW_ENV_OBS).
+enum { DWC1_ENV_KIND_LOCOMOTION = 0, DWC1_ENV_KIND_REACH = 1 };
+int dwc1_env_kind(void);
+int dwc1_obs_width(void);
 
 enum {
   DWC1_OK = 0,
@@ -175,7 +193,8 @@ int dwc1_read(const dwc1_scene*, float* qpos, float* velocity, float* warm,
               uint32_t* contact_ticks);
 
 // ---- device-side policy path (obs + reward + termination in-kernel) -------
-// One policy step entirely on device: clip(actions,+-1) -> targets =
+// One policy step entirely on device. LOCOMOTION kind: clip(actions,+-1)
+// -> targets =
 // clip(HOME + DW_ENV_ACTION_SCALE*a, previous targets +-
 // DW_ENV_MAX_TARGET_INCREMENT) (persistent per-env slew reference, frozen
 // while done) -> joint-limit clip -> n_ticks physics -> reward (tracker
@@ -186,7 +205,13 @@ int dwc1_read(const dwc1_scene*, float* qpos, float* velocity, float* warm,
 // DW_ENV_* contract block: duck builds mirror walk/env/flat.py +
 // walk/env/reward.py (OBS 58 / ACT 14), humanoid builds mirror
 // walk/env/humanoid_flat.py + walk/env/humanoid_reward.py (OBS 52 /
-// ACT 12); the selected header's python env pair is the contract. The
+// ACT 12); the selected header's python env pair is the contract.
+// REACH kind (v8): targets = clip(lower + (a+1)/2*(upper-lower), previous
+// +- per-joint DW_ENV_MAX_TARGET_INCREMENT_F64) -> n_ticks physics ->
+// tip/wrist/elbow FK -> acquisition hold -> arm_reward.py (DW_RW_* block)
+// -> termination (judge proxy clause, nonfinite, horizon) -> OBS 27 =
+// [q, QDOT_SCALE*qd, target, tip, target-tip, prev action] mirroring
+// walk/env/arm_reach.py. The
 // policy chain runs in f64 mirroring the python env exactly. Done
 // environments keep stepping physics with frozen targets, return reward 0
 // and stay done until reset (no auto-reset), like the python envs. A solver
@@ -204,7 +229,7 @@ int dwc1_step_policy(dwc1_scene*, const float* actions, uint32_t n_ticks,
 int dwc1_observe(const dwc1_scene*, float* obs /* [E,DW_ENV_OBS] */);
 
 // Commanded forward velocity (m/s) for every env, f64 to match the python
-// command values exactly.
+// command values exactly. LOCOMOTION kind only (REACH: DWC1_INVALID).
 int dwc1_set_command(dwc1_scene*, const double* commands /* [E] */);
 
 // gate_proxy_* judge-shadow gait counters (METRICS ONLY; additive export,
@@ -221,8 +246,17 @@ int dwc1_set_command(dwc1_scene*, const double* commands /* [E] */);
 // never a substitute for the frozen CPU judge. Counters never feed reward
 // or termination; certified paths are bit-identical (fingerprint-proven).
 // Why an env last became done (gate-proxy readback; metrics only).
+// REACH kind (v8): DWC1_TERM_FELL = proxy crash / non-finite state (the
+// arm env's `crashed`), DWC1_TERM_REACH_STARVED = acquisition with no
+// queued target (host contract violation, see dwc1_reach_set_targets).
 enum { DWC1_TERM_NONE = 0, DWC1_TERM_FELL = 1, DWC1_TERM_GATE_DEADLINE = 2,
-       DWC1_TERM_ALTERNATION = 3, DWC1_TERM_HORIZON = 4, DWC1_TERM_FAULT = 5 };
+       DWC1_TERM_ALTERNATION = 3, DWC1_TERM_HORIZON = 4, DWC1_TERM_FAULT = 5,
+       DWC1_TERM_REACH_STARVED = 6 };
+// REACH kind mapping of this struct (so chain fitness / curriculum code
+// reading gate_proxy works unchanged): qualified_left = targets acquired
+// this episode (target_index), qualified_right = 0, alternation_violations
+// = judge-clause violating ticks (limit + speed + proxy); episode_* the
+// same for the last completed episode. dwc1_reach_get has the detail.
 typedef struct dwc1_gate_proxy {
   uint32_t qualified_left, qualified_right, alternation_violations;
   uint32_t episode_qualified_left, episode_qualified_right;
@@ -243,6 +277,11 @@ int dwc1_gate_proxy_get(const dwc1_scene*, dwc1_gate_proxy* out /* [E] */);
 // clause as a pruning rule). max_alternation_violations: terminate when
 // the cumulative same-foot consecutive qualified-touchdown count reaches
 // this value. Reasons surface as dwc1_gate_proxy.termination_reason.
+// REACH kind (v8): the same two knobs read the reach counters --
+// first_deadline_ticks = no target acquired within that many accepted
+// ticks; max_alternation_violations = judge-clause violating ticks
+// (limit + speed + proxy) reaching that count -- so a tech-tree ladder
+// authored against gate_proxy semantics drives the arm unchanged.
 int dwc1_set_gate_termination(dwc1_scene*, uint32_t first_deadline_ticks,
                               uint32_t max_alternation_violations);
 
@@ -255,6 +294,7 @@ int dwc1_set_gate_termination(dwc1_scene*, uint32_t first_deadline_ticks,
 // pose) -- so the imitation reward term is consistent at t = 0. The
 // scene-level draw stream is deterministic (fixed seed at creation). An
 // all-zero reference table makes enabled RSI a no-op by construction.
+// LOCOMOTION kind only (REACH accepts 0.0, rejects any other fraction).
 int dwc1_set_rsi(dwc1_scene*, double fraction);
 
 // Training-lane throughput switch (default OFF; additive export, ABI
@@ -271,13 +311,64 @@ int dwc1_set_rsi(dwc1_scene*, double fraction);
 int dwc1_set_fast_termination(dwc1_scene*, uint32_t enable);
 
 // Masked policy reset: physics AND policy/tracker state back to the creation
-// state; commands[e] and phase_offsets[e] (f64, [E]) are applied to selected
-// envs -- the caller resamples them like flat.py's _episode_rng (counter-based
-// numpy PCG64, not reproducible in-kernel; per episode the command is drawn
-// FIRST, then phase0 = 2*pi*rng.random() -- walk/env/cuda_lane.py implements
-// the exact stream). NULL keeps each selected env's previous value.
+// state; the two f64 [E] slots are applied to selected envs, NULL keeps each
+// selected env's previous value. Their meaning is per ENV KIND (v8):
+//   LOCOMOTION: commands[e] (m/s) and phase_offsets[e] -- the caller
+//     resamples them like flat.py's _episode_rng (counter-based numpy PCG64,
+//     not reproducible in-kernel; per episode the command is drawn FIRST,
+//     then phase0 = 2*pi*rng.random() -- walk/env/cuda_lane.py implements
+//     the exact stream). Unchanged from v3/v4.
+//   REACH: slot a = the episode's difficulty TIER (integer-valued f64, the
+//     judge's tier index) and slot b = the TARGET-SEQUENCE KEY (the host's
+//     per-episode stream index, i.e. arm_reach._episode_rng(seed, env,
+//     episode)'s `episode`), both stored for readback/forensics only; the
+//     targets themselves are host-drawn from that stream (the numpy PCG64
+//     rejection sampler is not reproducible in-kernel) and pushed with
+//     dwc1_reach_set_targets. A reach reset CLEARS the env's target slots:
+//     the host must push the active AND the queued target before stepping
+//     (walk/env/arm_cuda_lane.py implements the exact arm_reach.py stream:
+//     tier draw, then targets in acquisition order).
 int dwc1_reset_policy(dwc1_scene*, const uint8_t* mask,
                       const double* commands, const double* phase_offsets);
+
+// ---- REACH kind (v8; every entry returns DWC1_INVALID on other kinds) ----
+// Per-env target queue: the ACTIVE target and ONE queued NEXT target (world
+// xyz, f64, exactly the host's draws). On acquisition (tip within
+// DW_ENV_ACQ_RADIUS_M at DW_ENV_ACQ_HOLD_STEPS consecutive policy
+// boundaries, the frozen judge's rule) the kernel promotes next -> active,
+// bumps target_index and clears next_valid; the host reads target_index
+// (dwc1_reach_get) after each step and pushes the following draw for the
+// envs that advanced, so a queued target is always present (an env whose
+// acquisition finds NO queued target is terminated with
+// DWC1_TERM_REACH_STARVED and counted in `starved` -- a host contract
+// violation made loud rather than a silently repeated target). active /
+// next may be NULL (slot untouched); NULL mask = all envs.
+int dwc1_reach_set_targets(dwc1_scene*, const uint8_t* mask,
+                           const double* active /* [E,3] or NULL */,
+                           const double* next /* [E,3] or NULL */);
+#define DWC1_REACH_TARGETS 5   // judged targets per episode (arm judge N_TARGETS)
+typedef struct dwc1_reach_state {
+  double target[3], next_target[3];   // active / queued (world m)
+  double tier, key;                   // reset slots a / b (host semantics)
+  uint32_t target_index, hold, next_valid, valid;
+  // judge-shadow counters, CURRENT episode (metrics only, never read by
+  // reward or termination -- except the opt-in gate rules, which are
+  // the same knobs the humanoid uses, see dwc1_set_gate_termination):
+  //   acquire_step[k]: 1-based policy step at which target k (k < 5) was
+  //     acquired, 0 = not yet (judge time_s = step * CONTROL_DT);
+  //   *_violation_ticks: accepted ticks violating the judge's joint-limit
+  //     (LIMIT_TOL 0.01 rad), joint-speed (URDF limits) and
+  //     self-collision/floor proxy clauses (clause 5 counts EXACTLY the
+  //     judge's violating_ticks).
+  uint32_t acquire_step[DWC1_REACH_TARGETS];
+  uint32_t limit_violation_ticks, speed_violation_ticks;
+  uint32_t proxy_violation_ticks, starved;
+  // last COMPLETED episode snapshot (taken at policy reset)
+  uint32_t episode_acquired, episode_acquire_step[DWC1_REACH_TARGETS];
+  uint32_t episode_limit_violation_ticks, episode_speed_violation_ticks;
+  uint32_t episode_proxy_violation_ticks, reserved;
+} dwc1_reach_state;
+int dwc1_reach_get(const dwc1_scene*, dwc1_reach_state* out /* [E] */);
 
 // Current-pose contact geometry with zero impulses (mirrors bcv1_query).
 int dwc1_query(const dwc1_scene*, dwc1_manifold* out /* [E,2] */);
