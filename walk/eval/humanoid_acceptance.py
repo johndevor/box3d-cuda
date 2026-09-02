@@ -131,6 +131,13 @@ def run_acceptance(actor_path: str, lane: str = "serial",
             "episodes": results, "accepted": all_pass}
 
 
+def _json_default(o):
+    """numpy scalars/bools -> python (the harness crashed on np.bool_)."""
+    if hasattr(o, "item"):
+        return o.item()
+    return str(o)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--actor", required=True)
@@ -149,7 +156,8 @@ def main():
     if a.out:
         out = Path(a.out)
         out.mkdir(parents=True, exist_ok=True)
-        (out / "acceptance.json").write_text(json.dumps(result, indent=1))
+        (out / "acceptance.json").write_text(
+            json.dumps(result, indent=1, default=_json_default))
     return 0 if result["accepted"] else 1
 
 
