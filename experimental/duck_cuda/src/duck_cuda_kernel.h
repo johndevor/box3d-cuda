@@ -394,6 +394,9 @@ typedef struct DwWork {
   float eff[DW_J];                        // effective PD targets (policy)
   double a64[DW_J], eff64[DW_J];          // policy-layer f64 chain (lane 0)
   double app64[DW_J];                     // APPLIED (latency-delayed) targets
+#if DW_ENV_KIND == DW_ENV_KIND_REACH
+  double cmd64[DW_J];                     // commanded speed fraction (reach)
+#endif
   dwc1_manifold manifolds[DW_PAIRS];
   float bodies13[DW_B][13];               // policy-layer FK (lane 0)
   // dw_evaluate cooperative workspace
@@ -2295,23 +2298,43 @@ static DW_HD bool dw_policy_fell(const DwState* s) {
   return dw_reach_proxy(tip, wrist, elbow);
 }
 
-// arm_reward.reward(), numpy operation for operation (sequential sums over
-// the J joints, as numpy's small-n reductions are): d = |tip - target|,
-// `a` the clipped f64 action, `app` the APPLIED f64 targets (the torque
-// estimate), kp carries the per-env DR scale like the locomotion reward.
-static DW_HD double dw_reach_reward(const DwState* s, double d, bool acquired,
-                                    const double* a, const double* app,
+// arm_reward.reward() v5, numpy operation for operation (sequential sums
+// over the J joints and the distance-scale ladder in table order, as
+// numpy's small-n reductions are): d = |tip - target|, `hold` the
+// consecutive in-radius boundary count AFTER this step's update (0
+// outside), `a` the clipped f64 action, `cmd` the slew-clamped commanded
+// speed fraction (target increment / max increment, 0 for done envs),
+// `app` the APPLIED f64 targets (the torque estimate), kp carries the
+// per-env DR scale like the locomotion reward. Terms and sizing:
+// arm_reward.py docstring.
+static_assert(DW_RW_VERSION == 5, "kernel ports arm_reward v5");
+static_assert(DW_RW_N_W_COMMAND_SPEED_J == DW_J && DW_RW_N_W_ACTION_RATE_J == DW_J,
+              "per-joint reward tables");
+static DW_HD double dw_reach_reward(const DwState* s, double d, uint32_t hold,
+                                    bool acquired, const double* a,
+                                    const double* cmd, const double* app,
                                     bool proxy) {
   const double sigma = DW_RW_DIST_SIGMA_FRAC * DW_ENV_REACH_M;
   const double x = d / sigma;
   double r = DW_RW_W_DIST * exp(-(x * x)) - DW_RW_W_LIN * d / DW_ENV_REACH_M;
+  r = r + DW_RW_W_ALIVE;
+  for (int k = 0; k < DW_RW_N_DIST_SCALE_RADII; k++) {   // gaussian ladder
+    const double xs = d / (DW_RW_DIST_SCALE_RADII[k] * DW_ENV_ACQ_RADIUS_M);
+    r = r + DW_RW_W_SCALE * exp(-(xs * xs));
+  }
+  const uint32_t h = hold < (uint32_t)DW_ENV_ACQ_HOLD_STEPS
+                   ? hold : (uint32_t)DW_ENV_ACQ_HOLD_STEPS;
+  r = r + DW_RW_W_HOLD * (double)h / (double)DW_ENV_ACQ_HOLD_STEPS;
   r = r + DW_RW_W_ACQUIRE * (acquired ? 1.0 : 0.0);
+  double cs = 0;
+  for (int j = 0; j < DW_J; j++) cs += DW_RW_W_COMMAND_SPEED_J[j] * (cmd[j] * cmd[j]);
+  r = r - cs;
   double ar = 0;
   for (int j = 0; j < DW_J; j++) {
     const double dd = a[j] - (double)s->prev_action[j];
-    ar += dd * dd;
+    ar += DW_RW_W_ACTION_RATE_J[j] * (dd * dd);
   }
-  r = r - DW_RW_W_ACTION_RATE * ar;
+  r = r - ar;
   double tq = 0;
   for (int j = 0; j < DW_J; j++) {
     double m = ((double)DW_KP_TABLE[j] * s->kp_scale)
@@ -2359,6 +2382,7 @@ static DW_HD void dw_step_policy_env(DwState* s, const float* action,
   DW_LANE0 {
     for (int j = 0; j < DW_J; j++)
       w->a64[j] = fmin(1.0, fmax(-1.0, (double)action[j]));
+    for (int j = 0; j < DW_J; j++) w->cmd64[j] = 0.0;   // done: frozen
     if (live)
       for (int j = 0; j < DW_J; j++) {
         // requested = lower + (a + 1)/2 * (upper - lower), slew-limited to
@@ -2368,7 +2392,11 @@ static DW_HD void dw_step_policy_env(DwState* s, const float* action,
         const double requested = lo_j + (0.5 * (w->a64[j] + 1.0)) * (hi_j - lo_j);
         const double lo = s->targets[j] - DW_ENV_MAX_TARGET_INCREMENT_F64[j];
         const double hi = s->targets[j] + DW_ENV_MAX_TARGET_INCREMENT_F64[j];
+        const double previous = s->targets[j];
         s->targets[j] = fmin(hi, fmax(lo, requested));
+        // commanded speed fraction (reward v3): (new - previous) / max inc
+        w->cmd64[j] = (s->targets[j] - previous)
+                    / DW_ENV_MAX_TARGET_INCREMENT_F64[j];
       }
     for (int j = 0; j < DW_J; j++)
       w->eff64[j] = fmin(DW_ENV_LIMIT_UPPER_F64[j],
@@ -2405,7 +2433,8 @@ static DW_HD void dw_step_policy_env(DwState* s, const float* action,
     s->rt_hold = inside ? s->rt_hold + 1 : 0;        // all envs, like numpy
     const bool acquired = live && s->rt_hold >= DW_ENV_ACQ_HOLD_STEPS;
     const bool proxy = dw_reach_proxy(tip, wrist, elbow);
-    const double r = dw_reach_reward(s, d, acquired, w->a64, w->app64, proxy);
+    const double r = dw_reach_reward(s, d, s->rt_hold, acquired, w->a64,
+                                     w->cmd64, w->app64, proxy);
     bool starved = false;
     if (acquired) {                     // advance to the queued target
       s->rt_index += 1;

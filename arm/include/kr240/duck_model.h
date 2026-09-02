@@ -101,16 +101,25 @@ DW_MODEL_CONST double DW_ENV_LIMIT_LOWER_F64[DW_J] = {-3.2288591,-2.7052601,-2.2
 DW_MODEL_CONST double DW_ENV_LIMIT_UPPER_F64[DW_J] = {3.2288591,0.6108652,2.687807,6.1086524,2.268928,6.1086524};
 DW_MODEL_CONST double DW_ENV_VELOCITY_LIMIT_F64[DW_J] = {1.797689,1.64061,1.745329,2.96706,2.251475,3.595378};
 DW_MODEL_CONST double DW_ENV_MAX_TARGET_INCREMENT_F64[DW_J] = {0.035953780000000005,0.0328122,0.03490658,0.059341200000000004,0.0450295,0.07190756000000001};
-// reward v1 (walk/env/arm_reward.py) -- the kernel's DW_RW_* block
+// reward v5 (walk/env/arm_reward.py) -- the kernel's DW_RW_* block
+#define DW_RW_VERSION 5
+#define DW_RW_W_ALIVE 1.0
 #define DW_RW_W_DIST 1.0
 #define DW_RW_DIST_SIGMA_FRAC 0.1
+#define DW_RW_W_SCALE 1.0
 #define DW_RW_W_LIN 0.5
+#define DW_RW_W_HOLD 1.0
 #define DW_RW_W_ACQUIRE 10.0
-#define DW_RW_W_ACTION_RATE 0.05
 #define DW_RW_W_TORQUE 0.05
-#define DW_RW_W_SPEED 0.5
-#define DW_RW_SPEED_FRAC 0.9
-#define DW_RW_W_PROXY 5.0
+#define DW_RW_W_SPEED 11.0
+#define DW_RW_SPEED_FRAC 1.0
+#define DW_RW_W_PROXY 10.0
+#define DW_RW_N_DIST_SCALE_RADII 4
+DW_MODEL_CONST double DW_RW_DIST_SCALE_RADII[4] = {1.0,2.0,4.0,8.0};
+#define DW_RW_N_W_COMMAND_SPEED_J 6
+DW_MODEL_CONST double DW_RW_W_COMMAND_SPEED_J[6] = {0.1,0.1,0.1,0.25,0.25,0.25};
+#define DW_RW_N_W_ACTION_RATE_J 6
+DW_MODEL_CONST double DW_RW_W_ACTION_RATE_J[6] = {0.05,0.05,0.05,0.2,0.2,0.2};
 // FROZEN judge clause thresholds (walk/eval/arm_reach_judge.py) for the
 // in-kernel judge-shadow counters and the proxy termination
 #define DW_GATE_LIMIT_TOL_RAD 0.01

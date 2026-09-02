@@ -210,9 +210,14 @@ def emit(al, variant: str) -> str:
         "DW_MODEL_CONST double DW_ENV_VELOCITY_LIMIT_F64[DW_J] = {" + f64row(vlim) + "};",
         "DW_MODEL_CONST double DW_ENV_MAX_TARGET_INCREMENT_F64[DW_J] = {"
         + f64row(vlim * al.CONTROL_DT) + "};",
-        "// reward v1 (walk/env/arm_reward.py) -- the kernel's DW_RW_* block",
+        f"// reward v{int(reward_mod.VERSION)} (walk/env/arm_reward.py) -- the kernel's DW_RW_* block",
+        f"#define DW_RW_VERSION {int(reward_mod.VERSION)}",
         *[f"#define DW_RW_{name} {float(getattr(reward_mod, name))!r}"
           for name in reward_mod.CONSTANT_NAMES],
+        *[f"#define DW_RW_N_{name} {len(getattr(reward_mod, name))}\n"
+          f"DW_MODEL_CONST double DW_RW_{name}[{len(getattr(reward_mod, name))}] = {{"
+          + f64row(getattr(reward_mod, name)) + "};"
+          for name in reward_mod.TABLE_NAMES],
         "// FROZEN judge clause thresholds (walk/eval/arm_reach_judge.py) for the",
         "// in-kernel judge-shadow counters and the proxy termination",
         f"#define DW_GATE_LIMIT_TOL_RAD {float(judge.LIMIT_TOL_RAD)!r}",

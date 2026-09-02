@@ -258,7 +258,11 @@ class ArmReachEnv(DuckEnvBatch):
         new_targets = np.clip(requested,
                               self._targets - self.max_target_increment,
                               self._targets + self.max_target_increment)
+        previous_targets = self._targets
         self._targets = np.where(live[:, None], new_targets, self._targets)
+        # commanded speed as a fraction of the URDF limit (reward v3; 0 for
+        # done envs whose targets are frozen)
+        command_speed = (self._targets - previous_targets) / self.max_target_increment
         self._applied = self._clip_limits(self._targets)
 
         iterations = np.zeros(self.E, np.int32)
@@ -290,10 +294,11 @@ class ArmReachEnv(DuckEnvBatch):
         proxy = judge.proxy_violation(self.variant, tip, wrist, elbow)
         torque = self._torque(state)
         r = reward_mod.reward(
-            {"tip_dist": dist, "acquired": acquired, "torque": torque,
+            {"tip_dist": dist, "hold": self._hold, "acquired": acquired,
+             "command_speed": command_speed, "torque": torque,
              "qd": state.v[:, 6:], "proxy_violation": proxy},
             a, self._prev_action, self.reach, self._lane.effort_cap,
-            self.velocity_limits)
+            self.velocity_limits, self.acq_radius, ACQ_HOLD_STEPS)
         # advance acquired envs to their next target (fresh episode rng draw)
         for e in np.flatnonzero(acquired):
             self._acquired_total[e] += 1

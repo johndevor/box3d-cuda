@@ -28,7 +28,10 @@ The controller is intentionally dumb and auditable:
 - never advances past the terminal stage; never de-escalates below the
   first.
 
-Ship ladder: "humanoid-walk" (HUMANOID_WALK_STAGES below, robot-guarded).
+Ship ladders: "humanoid-walk" (HUMANOID_WALK_STAGES below) and
+"arm-reach" (ARM_REACH_STAGES: the same two lane knobs in their reach
+semantics -- first-acquisition deadline / judge-clause violating-tick
+cap -- over the reach mapping of gate_proxy), both robot-guarded.
 No duck ladder is authored -- requesting a curriculum for the duck is an
 explicit error, and gpu_train without --curriculum is byte-identical to
 the pre-curriculum trainer (fingerprint-proven).
@@ -143,7 +146,95 @@ HUMANOID_WALK_STAGES = (
              "CPU judge remains the only acceptance authority."),
 )
 
-BUILTIN_LADDERS = {"humanoid-walk": ("humanoid", HUMANOID_WALK_STAGES)}
+# ---------------------------------------------------------------------------
+# The ARM reach ladder (kernel ABI v8 REACH kind). The two lane knobs carry
+# reach semantics (duck_cuda.h): first_deadline_ticks = no target ACQUIRED
+# within that many accepted ticks; max_alternation_violations = the
+# frozen judge's clause 3/4/5 VIOLATING TICKS (joint limit / joint speed /
+# floor-column proxy, counted per accepted tick) reaching that count. The
+# metrics are the same gate_proxy_* rows: qualified_total = targets
+# acquired per episode (qualified_right is 0 on the reach mapping),
+# alt_violations = violating ticks per episode. Judge anchors
+# (walk/eval/arm_reach_judge.py, FROZEN): 5 targets in 8 s = 4000 ticks,
+# every tick inside the limits/speeds/proxy, i.e. ZERO violating ticks.
+# Thresholds are set from MEASURED CPU runs of reward v5 (runs/arm-local-
+# v5-long, 128 envs x 1200 s = 25.8M steps): the TRAINING-TIME (stochastic)
+# gate_proxy median of acquisitions/episode is 0.02-0.12 while the
+# deterministic actor already acquires 1-5 targets per judged episode, so
+# the first gate must fire on "acquisitions exist" at that scale, not at
+# 1/episode; and the violating-tick baseline of a still-noisy policy is
+# ~2300 of 4000 ticks (intra-step wrist speed peaks), so the first cap must
+# sit ABOVE it (an unreachable cap kills the whole population at step ~70,
+# the controller de-escalates, and the run ping-pongs without learning).
+ARM_REACH_STAGES = (
+    Stage(
+        name="free",
+        advance_metric="qualified_total", advance_threshold=0.05,
+        collapse_ep_len=100.0,
+        note="No enforcement. Advance when acquisitions EXIST at all "
+             "(median >= 0.05 target/episode over 8 updates): the "
+             "acquisition counter IS the judge's clause-2 rule (14 "
+             "consecutive in-radius boundaries), so any nonzero median "
+             "means the hold behavior appeared under exploration noise."),
+    Stage(
+        name="violations_cap_2000",
+        max_alternation_violations=2000,  # 50 % of the 4000 ticks
+        advance_metric="qualified_total", advance_threshold=0.25,
+        collapse_ep_len=100.0,
+        note="First enforcement, just under the measured noisy-policy "
+             "baseline (~2300 violating ticks/episode): episodes that "
+             "spend more than half their ticks outside the judge's "
+             "limit/speed/proxy clauses terminate. Advance at median "
+             ">= 0.25 acquisitions."),
+    Stage(
+        name="violations_cap_800",
+        max_alternation_violations=800,   # 20 %
+        advance_metric="qualified_total", advance_threshold=0.5,
+        collapse_ep_len=100.0,
+        note="Halve the tolerated violating ticks again. Advance at median "
+             ">= 0.5 acquisitions."),
+    Stage(
+        name="violations_cap_200",
+        max_alternation_violations=200,   # 5 %
+        advance_metric="qualified_total", advance_threshold=1.0,
+        collapse_ep_len=100.0,
+        note="5 % violating ticks (0.4 s of overspeed per episode). "
+             "Advance at median >= 1 acquisition/episode."),
+    Stage(
+        name="deadline_cap_40",
+        first_deadline_ticks=1500,        # 3 s to the FIRST acquisition
+        max_alternation_violations=40,    # 1 %
+        advance_metric="qualified_total", advance_threshold=2.0,
+        collapse_ep_len=100.0,
+        note="Tighten to 1 % violating ticks (a single 80 ms overspeed) "
+             "and prune never-acquirers: the judge needs 5 acquisitions in "
+             "8 s (1.6 s each on average; the IK baseline's first lands at "
+             "~1.1 s, the v5 actor's at 1.1-4.6 s), so 3 s without a first "
+             "acquisition is a lost episode. Advance at median >= 2."),
+    Stage(
+        name="judge_tight",
+        first_deadline_ticks=1000,        # 2 s
+        max_alternation_violations=1,     # ZERO violating ticks tolerated
+        advance_metric="qualified_total", advance_threshold=4.0,
+        collapse_ep_len=100.0,
+        note="Judge-tight: the first violating tick of any clause "
+             "terminates (the judge fails the episode on one), first "
+             "acquisition within 2 s. Advance at median >= 4 acquisitions "
+             "-- one short of the judge's 5."),
+    Stage(
+        name="full",
+        first_deadline_ticks=1000,
+        max_alternation_violations=1,
+        advance_metric=None,              # terminal node
+        collapse_ep_len=100.0,
+        note="Same judge-tight knobs, terminal. Surviving 8 s here with "
+             ">= 5 acquisitions is, by construction, a judge-passing "
+             "episode; the frozen CPU judge remains the only acceptance "
+             "authority."),
+)
+
+BUILTIN_LADDERS = {"humanoid-walk": ("humanoid", HUMANOID_WALK_STAGES),
+                   "arm-reach": ("arm", ARM_REACH_STAGES)}
 
 
 def load_ladder(spec: str, robot: str):

@@ -32,7 +32,7 @@
     },
     {
       "name": "train",
-      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --robot arm --variant kr240 --envs 4096 --horizon 64 --updates 99999 --seed 917 --device cuda --library experimental/duck_cuda/build-arm-kr240/libarm_kr240_cuda.so --lane-env --policy ff --out gpu-train-out --lr 3e-4 --max-wall-s 900 2>&1 | tee gpu-train.log",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --robot arm --variant kr240 --envs 4096 --horizon 64 --updates 99999 --seed 917 --device cuda --library experimental/duck_cuda/build-arm-kr240/libarm_kr240_cuda.so --lane-env --curriculum arm-reach --policy ff --out gpu-train-out --lr 3e-4 --max-wall-s 900 2>&1 | tee gpu-train.log",
       "timeout_s": 1200,
       "artifacts": [
         "gpu-train.log",
@@ -66,5 +66,5 @@
     "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
   },
   "use_snapshot": true,
-  "notes": "Arm on the kernel's DEVICE POLICY PATH (--lane-env; kernel ABI v8, DW_ENV_KIND_REACH selected by arm/include/<variant>/duck_model.h): obs 27 / arm_reward v1 / acquisition / termination in-kernel, one dwc1_step_policy launch + obs/reward/done readback per policy step plus a dwc1_reach_get readback and a masked dwc1_reach_set_targets push for envs that acquired (host-drawn targets, arm_reach.py's exact stream). preflight-abi exercises dwc1 on the arm CUDA build before training, as the humanoid specs do. Parity/judge cross-check: arm/tests/test_arm_device_policy.py. Acceptance stays on the serial build via ArmReachEnv (the frozen judge consumes per-tick traces)."
+  "notes": "Arm on the kernel's DEVICE POLICY PATH (--lane-env; kernel ABI v8, DW_ENV_KIND_REACH selected by arm/include/<variant>/duck_model.h): obs 27 / arm_reward v1 / acquisition / termination in-kernel, one dwc1_step_policy launch + obs/reward/done readback per policy step plus a dwc1_reach_get readback and a masked dwc1_reach_set_targets push for envs that acquired (host-drawn targets, arm_reach.py's exact stream). preflight-abi exercises dwc1 on the arm CUDA build before training, as the humanoid specs do. Parity/judge cross-check: arm/tests/test_arm_device_policy.py. Acceptance stays on the serial build via ArmReachEnv (the frozen judge consumes per-tick traces). Reward v5 (arm_reward.py: alive + gaussian ladder at rho/2rho/4rho/8rho + hold bonus + commanded-speed and boundary speed-excess penalties) and the arm-reach tech-tree ladder (--curriculum arm-reach: acquisitions appear -> violating-tick caps 2000/800/200/40 -> 3 s first-acquisition deadline -> judge-tight). CPU validation before GPU spend: runs/arm-local-v5-long (128 envs x 1200 s, 25.8M steps) acquires under the frozen judge in 12/12 episodes (1-5 targets each, one episode all 5 in order), failing only the speed clause; the 64-env x 420 s command (7M steps) does not reach the first acquisition."
 }
