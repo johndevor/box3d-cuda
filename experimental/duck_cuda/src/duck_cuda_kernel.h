@@ -248,6 +248,11 @@ typedef struct DwState {
   double friction_scale;          // scales contact-pair mu
   double kp_scale;                // scales PD stiffness (physics + reward est)
   double damping_scale;           // scales passive joint damping
+  // ABI v7: scales the authored gravity magnitude, ONE-SIDED in
+  // [1 - r_gravity, 1] (authored = maximum; see duck_cuda.h). Consumed at
+  // exactly one point, dw_tick's gravity vector, as
+  // (float)((double)DW_GRAVITY_Z * gravity_scale): identity at 1.0.
+  double gravity_scale;
   double eff_ring[DWC1_MAX_LATENCY + 1][DW_J];  // effective-target history
   uint32_t latency_steps, rand_pad;  // PD consumes eff[t - latency_steps]
   // ---- gate_proxy_* judge-shadow gait counters (METRICS ONLY) ----------
@@ -1246,7 +1251,10 @@ static DW_HD int dw_tick(DwState* s, const float* target,
     diag->maximum_normal_impulse = 0;
     diag->maximum_penetration = 0;
   }
-  if (!dw_evaluate(s->q, s->v, DW_GRAVITY_Z, s->mass_scale, w))
+  // domain randomization: per-env gravity magnitude (v7), identity at the
+  // neutral 1.0 scale -- (float)((double)DW_GRAVITY_Z * 1.0) == DW_GRAVITY_Z.
+  const float gz = (float)((double)DW_GRAVITY_Z * s->gravity_scale);
+  if (!dw_evaluate(s->q, s->v, gz, s->mass_scale, w))
     return DWC1_DYNAMICS;
   DW_LANE0 w->iflag = dw_chol(w->e.M, w->L) ? 0 : 1;
   DW_SYNC();
@@ -1543,6 +1551,7 @@ static DW_HD void dw_init_state(DwState* s, const float* joint_offsets) {
   s->last_foot = -1;
   s->gp_last_qual_foot = -1;
   s->mass_scale = s->friction_scale = s->kp_scale = s->damping_scale = 1.0;
+  s->gravity_scale = 1.0;
   for (int k = 0; k <= DWC1_MAX_LATENCY; k++)   // ring = reset targets
     for (int j = 0; j < DW_J; j++)
       s->eff_ring[k][j] = fmin((double)DW_LIMIT_UPPER[j],
@@ -1557,12 +1566,47 @@ static DW_HD void dw_policy_set_random(DwState* s, const dwc1_env_random* r) {
   s->friction_scale = r->friction_scale;
   s->kp_scale = r->kp_scale;
   s->damping_scale = r->damping_scale;
+  s->gravity_scale = r->gravity_scale;
   s->latency_steps = r->latency_steps;
   for (int k = 0; k <= DWC1_MAX_LATENCY; k++)
     for (int j = 0; j < DW_J; j++)
       s->eff_ring[k][j] = fmin((double)DW_LIMIT_UPPER[j],
                                fmax((double)DW_LIMIT_LOWER[j],
                                     DW_HOME_TARGETS_F64[j]));
+}
+
+// Randomization VALIDATORS shared by both drivers (single source; host-side
+// at the ABI boundary). Creation-time ranges: the four symmetric scales in
+// [0, 0.5], r_gravity in [0, DWC1_MAX_R_GRAVITY], latency <= DWC1_MAX_LATENCY,
+// reserved 0. A NULL config is "feature off".
+static DW_HD bool dw_rand_config_valid(const dwc1_randomization* r) {
+  if (!r) return true;
+  const double ranges[4] = {r->r_mass, r->r_friction, r->r_kp, r->r_damping};
+  for (int k = 0; k < 4; k++)
+    if (!(ranges[k] == ranges[k]) || ranges[k] < 0.0 || ranges[k] > 0.5)
+      return false;
+  if (!(r->r_gravity == r->r_gravity) || r->r_gravity < 0.0
+      || r->r_gravity > DWC1_MAX_R_GRAVITY)
+    return false;
+  return r->max_latency_steps <= DWC1_MAX_LATENCY && r->reserved == 0;
+}
+// Per-env values must lie inside the creation config's ranges (a strict-off
+// config accepts only neutral values; tiny slack for the host's f64 draw
+// arithmetic). gravity_scale is ONE-SIDED: [1 - r_gravity, 1].
+static DW_HD bool dw_env_random_valid(const dwc1_randomization* cfg,
+                                      const dwc1_env_random* v) {
+  const double scales[4] = {v->mass_scale, v->friction_scale, v->kp_scale,
+                            v->damping_scale};
+  const double ranges[4] = {cfg->r_mass, cfg->r_friction, cfg->r_kp,
+                            cfg->r_damping};
+  for (int k = 0; k < 4; k++) {
+    if (!(scales[k] == scales[k])) return false;
+    if (fabs(scales[k] - 1.0) > ranges[k] + 1e-12) return false;
+  }
+  if (!(v->gravity_scale == v->gravity_scale)) return false;
+  if (v->gravity_scale > 1.0 + 1e-12) return false;
+  if (v->gravity_scale < 1.0 - cfg->r_gravity - 1e-12) return false;
+  return v->latency_steps <= cfg->max_latency_steps;
 }
 
 // Light FK for reads: body poses and velocities only (no mass/bias/jacobian).

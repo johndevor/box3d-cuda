@@ -30,26 +30,6 @@ double rsi_draw(uint64_t* st) {
   *st = x;
   return (double)(x >> 11) * 0x1p-53;
 }
-bool rand_config_valid(const dwc1_randomization* r) {
-  if (!r) return true;
-  const double ranges[4] = {r->r_mass, r->r_friction, r->r_kp, r->r_damping};
-  for (double x : ranges)
-    if (!(x == x) || x < 0.0 || x > 0.5) return false;
-  return r->max_latency_steps <= DWC1_MAX_LATENCY && r->reserved == 0;
-}
-bool env_random_valid(const dwc1_randomization& cfg, const dwc1_env_random& v) {
-  const double scales[4] = {v.mass_scale, v.friction_scale, v.kp_scale,
-                            v.damping_scale};
-  const double ranges[4] = {cfg.r_mass, cfg.r_friction, cfg.r_kp,
-                            cfg.r_damping};
-  for (int k = 0; k < 4; k++) {
-    if (!(scales[k] == scales[k])) return false;
-    // strict-off configs accept only neutral values; otherwise stay inside
-    // the configured range (tiny slack for the host's f64 draw arithmetic).
-    if (fabs(scales[k] - 1.0) > ranges[k] + 1e-12) return false;
-  }
-  return v.latency_steps <= cfg.max_latency_steps;
-}
 }  // namespace
 
 extern "C" {
@@ -62,7 +42,7 @@ int dwc1_create(uint32_t environments, const float* joint_offsets,
   *out = nullptr;
   if (joint_offsets && !dw_finite(joint_offsets, (int)environments * DW_J))
     return DWC1_INVALID;
-  if (!rand_config_valid(randomization)) return DWC1_INVALID;
+  if (!dw_rand_config_valid(randomization)) return DWC1_INVALID;
   try {
     auto s = new dwc1_scene;
     s->E = environments;
@@ -199,7 +179,7 @@ int dwc1_set_randomization(dwc1_scene* s, const uint8_t* mask,
                            const dwc1_env_random* randoms) {
   if (!s || !randoms) return DWC1_INVALID;
   for (uint32_t e = 0; e < s->E; e++)
-    if ((!mask || mask[e]) && !env_random_valid(s->rand, randoms[e]))
+    if ((!mask || mask[e]) && !dw_env_random_valid(&s->rand, &randoms[e]))
       return DWC1_INVALID;
   for (uint32_t e = 0; e < s->E; e++)
     if (!mask || mask[e]) dw_policy_set_random(&s->state[e], &randoms[e]);
@@ -287,7 +267,7 @@ int dwc1_set_state(dwc1_scene* s, uint32_t environment, const float* qpos21,
     return DWC1_INVALID;
   DwState next{};
   {  // neutral randomization + reset latency ring (new fields must not be 0)
-    dwc1_env_random neutral{1.0, 1.0, 1.0, 1.0, 0, 0};
+    dwc1_env_random neutral{1.0, 1.0, 1.0, 1.0, 1.0, 0, 0};
     dw_policy_set_random(&next, &neutral);
   }
   for (int k = 0; k < DW_Q; k++) next.q[k] = qpos21[k];

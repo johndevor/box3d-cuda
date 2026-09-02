@@ -121,7 +121,8 @@ class HumanoidSerialParityTests(unittest.TestCase):
             self.assertTrue(bool(qc.foot_contact.all()), "oracle feet")
             self.assertTrue(bool(qg.foot_contact.all()), "serial feet")
             # (c) scalar-cap validity: min authored tier never approached
-            self.assertLess(worst_torque, 0.01 * gpu.effort_cap)
+            # (effort_cap is the per-joint table since H1.1; compare the MIN)
+            self.assertLess(worst_torque, 0.01 * float(np.min(gpu.effort_cap)))
             print(f"home_hold_parity root_drift={root_mm:.2e} mm "
                   f"tilt_diff={tilt:.2e} deg torque<={worst_torque:.2e}",
                   file=sys.stderr)

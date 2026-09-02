@@ -361,13 +361,14 @@ class TestAcceptProbe(unittest.TestCase):
             self.assertEqual(len(accept_lines), 1)
             self.assertTrue(accept_lines[0]["accepted"])
             self.assertTrue(accept_lines[0]["stage1_passed"])
-            # 6 stage-1 episodes (2 seeds x 3 commands, 8 s) then 3
+            # stage-1 episodes (PROBE_SEEDS x 3 commands, 8 s) then 3
             # confirmation episodes (seed 4242, 11 s), in order
-            self.assertEqual(calls[:6], [(c, 8.0, s) for s in (4242, 7)
-                                         for c in (0.10, 0.15, 0.20)])
-            self.assertEqual(calls[6:], [(c, 11.0, 4242)
-                                         for c in (0.10, 0.15, 0.20)])
-            self.assertEqual(evals, [4000] * 9)      # all judged on 8 s ticks
+            n1 = 3 * len(gpu_train.PROBE_SEEDS)
+            self.assertEqual(calls[:n1], [(c, 8.0, s) for s in gpu_train.PROBE_SEEDS
+                                          for c in (0.10, 0.15, 0.20)])
+            self.assertEqual(calls[n1:], [(c, 11.0, 4242)
+                                          for c in (0.10, 0.15, 0.20)])
+            self.assertEqual(evals, [4000] * (n1 + 3))  # all judged on 8 s ticks
             # acceptance artifacts + accounting fields
             acc = json.loads((out / "accepted" / "acceptance.json").read_text())
             self.assertTrue(acc["accepted"])
@@ -376,7 +377,7 @@ class TestAcceptProbe(unittest.TestCase):
             self.assertEqual(acc["policy"], "ff")
             self.assertGreaterEqual(acc["train_wall_s"], 0.0)
             self.assertGreater(acc["probe_wall_s"], 0.0)
-            self.assertEqual(len(acc["episodes"]), 6)
+            self.assertEqual(len(acc["episodes"]), n1)
             self.assertEqual(len(acc["confirmation"]), 3)
             arch, sd = ppo.unpack_actor_file(torch.load(
                 out / "accepted" / "actor_accepted.pt", map_location="cpu",

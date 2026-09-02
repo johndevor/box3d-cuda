@@ -116,19 +116,66 @@ def make_nets(obs_dim: int, act_dim: int, cfg: PPOConfig) -> tuple[Actor, Critic
 # ---------------------------------------------------------------------------
 
 
+def trunk_hidden_from_state_dict(sd, prefix: str = "ff."):
+    """Hidden sizes of an _mlp saved under `prefix` (e.g. (256, 256) from
+    ff.0.weight [256, obs], ff.2.weight [256, 256], ff.4.weight [act, 256]);
+    None when no such trunk is present in the state dict."""
+    layers = sorted(int(k[len(prefix):].split(".")[0]) for k in sd
+                    if k.startswith(prefix) and k.endswith(".weight"))
+    if not layers:
+        return None
+    return tuple(int(sd[f"{prefix}{i}.weight"].shape[0]) for i in layers[:-1])
+
+
+def _lazy_trunk_hook(module, state_dict, prefix, *_args):
+    """load_state_dict pre-hook (nn.Module.register_load_state_dict_pre_hook,
+    signature (module, state_dict, prefix, ...)): a RecurrentActor/RecurrentCritic built
+    WITHOUT a feed-forward trunk grows one when the incoming state dict
+    carries `ff.*` keys (sizes inferred), so generic loaders that construct
+    `RecurrentActor(OBS, ACT)` (acceptance harness, probes) load a
+    warm-started residual policy unchanged. Runs before the module's own
+    keys are consumed and before children are recursed into, so the new
+    child is loaded normally by the same call."""
+    if getattr(module, "ff", None) is None:
+        hidden = trunk_hidden_from_state_dict(state_dict, prefix + "ff.")
+        if hidden is not None:
+            module.ff = module._make_trunk(hidden).to(module.log_std.device
+                                                     if hasattr(module, "log_std")
+                                                     else next(module.parameters()).device)
+
+
 class RecurrentActor(nn.Module):
     """GRU(obs->H) -> Linear(H->head)+Tanh -> mu; state-independent log-std,
-    tanh squash to [-1,1]. Same distribution math as Actor."""
+    tanh squash to [-1,1]. Same distribution math as Actor.
+
+    Optional RESIDUAL feed-forward trunk (`ff_hidden`, e.g. (256, 256)):
+    mu = ff(obs) + head(GRU(obs, h)). This is the distillation-free warm
+    start from an accepted feed-forward Actor (warm_start_recurrent_from_ff):
+    the trunk receives the FF weights and the GRU head's output layer is
+    ZEROED, so at init the recurrent correction is exactly 0 and the policy
+    (deterministic action AND sampling distribution, log_std copied) is
+    bit-identical to the FF specialist; PPO then learns the history-dependent
+    correction (implicit system ID under domain randomization) on top of a
+    walker that already walks. ff_hidden=None is the original plain GRU
+    policy (byte-identical state dict and behavior)."""
 
     arch = "gru"
 
     def __init__(self, obs_dim: int, act_dim: int, gru_hidden: int = 128,
-                 head_hidden: int = 64, log_std_init: float = -0.5):
+                 head_hidden: int = 64, log_std_init: float = -0.5,
+                 ff_hidden=None):
         super().__init__()
+        self.obs_dim, self.act_dim = int(obs_dim), int(act_dim)
         self.gru_hidden = int(gru_hidden)
         self.gru = nn.GRU(obs_dim, self.gru_hidden, num_layers=1)
         self.mu_net = _mlp(self.gru_hidden, (int(head_hidden),), act_dim, out_gain=0.01)
         self.log_std = nn.Parameter(torch.full((act_dim,), float(log_std_init)))
+        self.ff = self._make_trunk(ff_hidden) if ff_hidden else None
+        self.register_load_state_dict_pre_hook(_lazy_trunk_hook)
+
+    def _make_trunk(self, hidden) -> nn.Sequential:
+        return _mlp(self.obs_dim, tuple(int(h) for h in hidden), self.act_dim,
+                    out_gain=0.01)
 
     def initial_state(self, batch: int, device=None) -> torch.Tensor:
         return torch.zeros(batch, self.gru_hidden, device=device)
@@ -136,10 +183,14 @@ class RecurrentActor(nn.Module):
     def _std(self) -> torch.Tensor:
         return torch.exp(self.log_std.clamp(-5.0, 2.0))
 
+    def _mu(self, feats: torch.Tensor, obs: torch.Tensor) -> torch.Tensor:
+        mu = self.mu_net(feats)
+        return mu + self.ff(obs) if self.ff is not None else mu
+
     def dist(self, obs: torch.Tensor, h: torch.Tensor):
         """One step. obs [B, OBS], h [B, H] -> (mu [B, A], std [A], h_next [B, H])."""
         y, h1 = self.gru(obs.unsqueeze(0), h.unsqueeze(0))
-        return self.mu_net(y.squeeze(0)), self._std(), h1.squeeze(0)
+        return self._mu(y.squeeze(0), obs), self._std(), h1.squeeze(0)
 
     def dist_seq(self, obs_seq: torch.Tensor, h0: torch.Tensor,
                  done_seq: torch.Tensor | None = None):
@@ -153,7 +204,7 @@ class RecurrentActor(nn.Module):
             feats.append(y.squeeze(0))
             if done_seq is not None:
                 h = h * (1.0 - done_seq[t]).view(1, -1, 1)
-        return self.mu_net(torch.stack(feats)), self._std(), h.squeeze(0)
+        return self._mu(torch.stack(feats), obs_seq), self._std(), h.squeeze(0)
 
     def sample(self, obs: torch.Tensor, h: torch.Tensor, generator: torch.Generator):
         """Return (raw u, squashed a, log-prob, h_next)."""
@@ -169,21 +220,36 @@ class RecurrentActor(nn.Module):
 
 
 class RecurrentCritic(nn.Module):
+    """GRU value net; optional residual feed-forward trunk (ff_hidden) so a
+    warm start can carry the FF checkpoint's critic too: v = ff(obs) +
+    head(GRU(obs, h)), head output zeroed at warm start."""
+
     arch = "gru"
 
-    def __init__(self, obs_dim: int, gru_hidden: int = 128, head_hidden: int = 64):
+    def __init__(self, obs_dim: int, gru_hidden: int = 128, head_hidden: int = 64,
+                 ff_hidden=None):
         super().__init__()
+        self.obs_dim = int(obs_dim)
         self.gru_hidden = int(gru_hidden)
         self.gru = nn.GRU(obs_dim, self.gru_hidden, num_layers=1)
         self.v_net = _mlp(self.gru_hidden, (int(head_hidden),), 1, out_gain=1.0)
+        self.ff = self._make_trunk(ff_hidden) if ff_hidden else None
+        self.register_load_state_dict_pre_hook(_lazy_trunk_hook)
+
+    def _make_trunk(self, hidden) -> nn.Sequential:
+        return _mlp(self.obs_dim, tuple(int(h) for h in hidden), 1, out_gain=1.0)
 
     def initial_state(self, batch: int, device=None) -> torch.Tensor:
         return torch.zeros(batch, self.gru_hidden, device=device)
 
+    def _v(self, feats: torch.Tensor, obs: torch.Tensor) -> torch.Tensor:
+        v = self.v_net(feats)
+        return (v + self.ff(obs) if self.ff is not None else v).squeeze(-1)
+
     def forward(self, obs: torch.Tensor, h: torch.Tensor):
         """One step. obs [B, OBS], h [B, H] -> (v [B], h_next [B, H])."""
         y, h1 = self.gru(obs.unsqueeze(0), h.unsqueeze(0))
-        return self.v_net(y.squeeze(0)).squeeze(-1), h1.squeeze(0)
+        return self._v(y.squeeze(0), obs), h1.squeeze(0)
 
     def value_seq(self, obs_seq: torch.Tensor, h0: torch.Tensor,
                   done_seq: torch.Tensor | None = None):
@@ -195,15 +261,54 @@ class RecurrentCritic(nn.Module):
             feats.append(y.squeeze(0))
             if done_seq is not None:
                 h = h * (1.0 - done_seq[t]).view(1, -1, 1)
-        return self.v_net(torch.stack(feats)).squeeze(-1), h.squeeze(0)
+        return self._v(torch.stack(feats), obs_seq), h.squeeze(0)
 
 
-def make_recurrent_nets(obs_dim: int, act_dim: int,
-                        cfg: PPOConfig) -> tuple[RecurrentActor, RecurrentCritic]:
+def make_recurrent_nets(obs_dim: int, act_dim: int, cfg: PPOConfig,
+                        ff_hidden=None) -> tuple[RecurrentActor, RecurrentCritic]:
+    """ff_hidden=None: the original plain GRU nets (unchanged). A tuple
+    (e.g. cfg.hidden) adds the residual feed-forward trunks used by the
+    FF -> GRU warm start."""
     actor = RecurrentActor(obs_dim, act_dim, cfg.gru_hidden, cfg.gru_head,
-                           cfg.log_std_init)
-    critic = RecurrentCritic(obs_dim, cfg.gru_hidden, cfg.gru_head)
+                           cfg.log_std_init, ff_hidden=ff_hidden)
+    critic = RecurrentCritic(obs_dim, cfg.gru_hidden, cfg.gru_head,
+                             ff_hidden=ff_hidden)
     return actor, critic
+
+
+@torch.no_grad()
+def warm_start_recurrent_from_ff(actor: RecurrentActor, ff_actor_sd: dict,
+                                 critic: RecurrentCritic | None = None,
+                                 ff_critic_sd: dict | None = None) -> None:
+    """Distillation-free FF -> residual-GRU warm start.
+
+    actor: a RecurrentActor built with ff_hidden == the FF Actor's hidden
+    sizes (trunk_hidden_from_state_dict(ff_actor_sd, "mu_net.")). Copies
+    mu_net.* -> ff.* and log_std, then ZEROES the GRU head's output layer
+    (mu_net[-1]) so mu == ff(obs) exactly: the warm-started policy is
+    bit-identical to the FF specialist at step 0 and the GRU pathway starts
+    as a pure zero correction (its gradient enters through the zeroed layer
+    first -- standard residual-policy init). The GRU's own weights keep
+    torch's default init: with the output layer at zero they are
+    irrelevant to the initial behavior and only shape how fast the
+    correction can be learned. Same for the critic when both are given:
+    v_net.* -> ff.*, v_net[-1] zeroed, so the value baseline starts at the
+    FF critic's estimate instead of noise."""
+    if actor.ff is None:
+        raise ValueError("warm start needs a RecurrentActor with an ff trunk")
+    trunk = {k[len("mu_net."):]: v for k, v in ff_actor_sd.items()
+             if k.startswith("mu_net.")}
+    actor.ff.load_state_dict(trunk)            # strict: shapes must match
+    actor.log_std.copy_(ff_actor_sd["log_std"].to(actor.log_std.device))
+    nn.init.zeros_(actor.mu_net[-1].weight)
+    nn.init.zeros_(actor.mu_net[-1].bias)
+    if critic is not None and ff_critic_sd is not None:
+        if critic.ff is None:
+            raise ValueError("warm start needs a RecurrentCritic with an ff trunk")
+        critic.ff.load_state_dict({k[len("v_net."):]: v for k, v in
+                                   ff_critic_sd.items() if k.startswith("v_net.")})
+        nn.init.zeros_(critic.v_net[-1].weight)
+        nn.init.zeros_(critic.v_net[-1].bias)
 
 
 def unpack_actor_file(obj):

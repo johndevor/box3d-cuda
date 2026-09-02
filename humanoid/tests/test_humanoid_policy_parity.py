@@ -217,6 +217,137 @@ class HumanoidPolicyParityTests(unittest.TestCase):
             dev.close()
 
 
+class RandomizedDynamicsParityTests(unittest.TestCase):
+    """Domain randomization parity (the duck's test_randomized_parity_vs_
+    python_env, humanoid twin): FlatFloorHumanoidEnv(randomization=cfg)
+    over a randomized CudaHumanoidLane vs the lane's own reset_policy /
+    step_policy path with the same config -- per-episode mass/friction/kp/
+    damping scales, command latency ring AND the ABI-v7 one-sided gravity
+    scale (r_gravity 0.5095: authored 20 m/s^2 down to 9.81). obs/reward
+    must agree far inside the duck gates (measured: bit-identical), done
+    flags identical, and the draws must genuinely move the dynamics.
+    """
+
+    # the proposed humanoid-generalist ranges (gpu/specs/humanoid-generalist)
+    CFG = {"r_mass": 0.15, "r_friction": 0.3, "r_kp": 0.15, "r_damping": 0.3,
+           "max_latency_steps": 2, "r_gravity": 0.5095}
+
+    def setUp(self):
+        import tempfile
+        self._fault_dir = hf.FAULT_DIR
+        hf.FAULT_DIR = Path(tempfile.mkdtemp(prefix="humanoid_dr_faults"))
+
+    def tearDown(self):
+        hf.FAULT_DIR = self._fault_dir
+
+    def test_randomized_parity_vs_python_env(self):
+        cfg = dict(self.CFG)
+        env = hf.FlatFloorHumanoidEnv(
+            environments=E, seed=0, randomization=cfg,
+            lane_factory=lambda n, off: hc.CudaHumanoidLane(
+                n, joint_offsets=off, randomization=cfg))
+        dev = hc.CudaHumanoidLane(E, randomization=cfg)
+        try:
+            obs_py = env.reset()                 # episode-2 draws
+            dev.reset_policy(seed=0)             # episode 1
+            obs_dev = dev.reset_policy()         # episode 2
+            np.testing.assert_array_equal(obs_py, obs_dev, "reset obs")
+            vals = env.randomization_values
+            # the stream really drew: gravity one-sided below 1, latency > 0
+            self.assertTrue((vals["gravity_scale"] < 1.0).all())
+            self.assertTrue((vals["gravity_scale"] >= 1.0 - cfg["r_gravity"]).all())
+            self.assertTrue((vals["latency_steps"] > 0).any())
+            self.assertTrue((np.abs(vals["mass_scale"] - 1.0) > 1e-3).any())
+            rng = np.random.default_rng(0)
+            worst_obs = worst_rew = 0.0
+            resets = fault_pairs = 0
+            for t in range(200):
+                a = np.clip(rng.normal(0, 0.4, (E, ACT)), -1, 1).astype(np.float32)
+                try:
+                    o_py, r_py, d_py, _ = env.step(a)
+                except hf.SolverFault as fault:
+                    o_dev, r_dev, d_dev, diag = dev.step_policy(a)
+                    e = int(fault.env_index)
+                    self.assertNotEqual(int(diag["status"][e]), 0, t)
+                    fault_pairs += 1
+                    o_py, o_dev = env.reset(), dev.reset_policy()
+                    np.testing.assert_array_equal(o_py, o_dev)
+                    continue
+                o_dev, r_dev, d_dev, diag = dev.step_policy(a)
+                self.assertEqual((diag["status"] != 0).sum(), 0, t)
+                worst_obs = max(worst_obs, float(np.abs(o_py - o_dev).max()))
+                worst_rew = max(worst_rew, float(np.abs(r_py - r_dev).max()))
+                np.testing.assert_array_equal(d_py, d_dev, f"done @ {t}")
+                if d_py.any():
+                    resets += 1
+                    o_py, o_dev = env.reset(mask=d_py), dev.reset_policy(mask=d_dev)
+                    np.testing.assert_array_equal(o_py, o_dev, f"post-reset @ {t}")
+            self.assertGreater(resets + fault_pairs, 0)
+            self.assertLess(worst_obs, 1e-4, "obs parity gate")
+            self.assertLess(worst_rew, 1e-3, "reward parity gate")
+            print(f"humanoid randomized parity obs={worst_obs:.3e} "
+                  f"reward={worst_rew:.3e} resets={resets} "
+                  f"fault_pairs={fault_pairs}", file=sys.stderr)
+        finally:
+            env.close()
+            dev.close()
+
+    def test_randomization_off_is_bit_identical_and_on_is_effective(self):
+        # explicit all-zero config == no config (byte-equal trajectories);
+        # the proposed ranges change the trajectory of the same actions.
+        zero = {k: 0 for k in self.CFG}
+        a, b, c = (hc.CudaHumanoidLane(3), hc.CudaHumanoidLane(3, randomization=zero),
+                   hc.CudaHumanoidLane(3, randomization=dict(self.CFG)))
+        try:
+            for lane in (a, b, c):
+                lane.reset_policy(seed=11)
+            rng = np.random.default_rng(4)
+            diverged = False
+            for t in range(30):
+                act = np.clip(rng.normal(0, 0.1, (3, ACT)), -0.2, 0.2).astype(np.float32)
+                ra, rb, rc_ = a.step_policy(act), b.step_policy(act), c.step_policy(act)
+                for x, y in zip(ra[:3], rb[:3]):
+                    self.assertEqual(x.tobytes(), y.tobytes(), t)
+                diverged |= not np.array_equal(ra[0], rc_[0])
+            self.assertEqual(a.read().q.tobytes(), b.read().q.tobytes())
+            self.assertTrue(diverged, "randomization had no effect")
+        finally:
+            a.close(); b.close(); c.close()
+
+    def test_zero_action_hold_at_earth_gravity(self):
+        """Pinned dynamics: at gravity_scale 9.81/20 (Earth) the humanoid
+        must still stand for 100 policy steps under HOME targets on the
+        python mirror and the kernel path, in parity."""
+        cfg = {"r_gravity": 0.5095}
+        env = hf.FlatFloorHumanoidEnv(
+            environments=2, seed=0, randomization=cfg,
+            lane_factory=lambda n, off: hc.CudaHumanoidLane(
+                n, joint_offsets=off, randomization=cfg))
+        dev = hc.CudaHumanoidLane(2, randomization=cfg)
+        try:
+            env.pin_randomization(gravity_scale=9.81 / 20.0)
+            obs_py = env.reset()
+            np.testing.assert_allclose(env.randomization_values["gravity_scale"],
+                                       9.81 / 20.0)
+            dev.reset_policy(seed=0, commands=env.command,
+                             phase_offsets=env._phase0)
+            dev.set_randomization(None, 1.0, 1.0, 1.0, 1.0, 0,
+                                  gravity_scale=9.81 / 20.0)
+            np.testing.assert_array_equal(obs_py, dev.observe())
+            zeros = np.zeros((2, ACT), np.float32)
+            worst = 0.0
+            for t in range(100):
+                o_py, r_py, d_py, _ = env.step(zeros)
+                o_dev, r_dev, d_dev, diag = dev.step_policy(zeros)
+                self.assertFalse(d_py.any() or d_dev.any(), f"fell @ {t}")
+                worst = max(worst, float(np.abs(o_py - o_dev).max()),
+                            float(np.abs(r_py - r_dev).max()))
+            self.assertLess(worst, 1e-4)
+        finally:
+            env.close()
+            dev.close()
+
+
 class FastTerminationTests(unittest.TestCase):
     """dwc1_set_fast_termination (training throughput switch, default OFF).
 

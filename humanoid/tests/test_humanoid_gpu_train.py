@@ -15,8 +15,9 @@ Gates:
 - gpu_train.train(robot="humanoid", lane_env=True) runs 2 envs x 2 updates
   zero-fault with finite losses, and actor_final.pt round-trips through
   ppo.unpack_actor_file into a 52->...->12 feed-forward actor;
-- duck-only surfaces (--accept-every, --randomization) are rejected for
-  --robot humanoid.
+- the duck-only surface (--accept-every) is rejected for --robot humanoid;
+  --randomization (shared dwc1 DR contract since ABI v7) is accepted on the
+  device policy path (--lane-env) and rejected without it.
 """
 from __future__ import annotations
 
@@ -80,14 +81,34 @@ class RobotSwitchTests(unittest.TestCase):
 
     def test_duck_only_surfaces_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
-            for bad in (dict(accept_every=5),
-                        dict(randomization={"r_mass": 0.1})):
+            for bad in (dict(accept_every=5, lane_env=True),
+                        dict(randomization={"r_mass": 0.1}, lane_env=False)):
                 cfg = gt.GpuTrainConfig(robot="humanoid", envs=1,
-                                        lane_env=True, updates=1, horizon=2,
+                                        updates=1, horizon=2,
                                         out=str(Path(tmp) / "x"),
                                         preflight_steps=0, **bad)
                 with self.assertRaises(SystemExit):
                     gt.train(cfg)
+
+    def test_randomized_humanoid_lane_env_trains(self):
+        """--randomization (incl. the v7 gravity scale) on --robot humanoid
+        --lane-env: 2 envs x 2 updates run clean with finite losses."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = gt.GpuTrainConfig(
+                robot="humanoid", envs=2, lane_env=True, horizon=8,
+                updates=2, seed=3, device="cpu", out=str(Path(tmp) / "dr"),
+                randomization={"r_mass": 0.15, "r_friction": 0.3,
+                               "r_kp": 0.15, "r_damping": 0.3,
+                               "max_latency_steps": 2, "r_gravity": 0.5095},
+                preflight_steps=0, checkpoint_every=1000, torch_threads=1,
+                quiet=True)
+            rows = [m for m in gt.train(cfg) if m.get("kind") == "train"]
+            self.assertEqual(len(rows), 2)
+            for row in rows:
+                self.assertEqual(row["faults"], 0, row)
+                self.assertTrue(np.isfinite(row["pi_loss"]), row)
+            saved = json.loads((Path(cfg.out) / "config.json").read_text())
+            self.assertEqual(saved["randomization"]["r_gravity"], 0.5095)
 
 
 class EnvVsKernelPolicyParity(unittest.TestCase):

@@ -4,10 +4,14 @@ The humanoid twin of walk/env/cuda_lane.py's CudaDuckLane: physics path
 (tick / tick_block / read / restore / state_dump / set_state / query) AND,
 since the kernel went robot-generic via the DW_ENV_* contract block, the
 device policy path (step_policy / observe / set_command / reset_policy):
-obs (52) + humanoid_reward v1 + termination in-kernel, bit-exact vs
-FlatFloorHumanoidEnv running over this same lane build. No domain
-randomization surface yet (the humanoid env v1 has none); reset_policy
-draws command + phase0 with humanoid_flat's exact counter-based stream.
+obs (3*J+16) + humanoid reward + termination in-kernel, bit-exact vs
+FlatFloorHumanoidEnv running over this same lane build. Domain
+randomization (ABI v6/v7 -- mass/inertia, friction, kp, passive damping,
+command latency, and the v7 one-sided GRAVITY scale) uses the SAME dict,
+stream and kernel surface as the duck: see the normative contract at the
+top of walk/env/cuda_lane.py; reset_policy draws command + phase0 +
+(when enabled) the DR values with humanoid_flat's exact counter-based
+stream and applies them via dwc1_set_randomization.
 
 Build: the UNCHANGED kernel sources (src/duck_cuda_serial.cpp ->
 src/duck_cuda_kernel.h) compiled with -Ihumanoid/include ahead of
@@ -46,10 +50,18 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "humanoid") not in sys.path:
     sys.path.insert(0, str(ROOT / "humanoid"))
 import h1_lowering as h0  # noqa: E402  (ACTIVE lowering: H1)
+import h1_family  # noqa: E402  (family variants; load_lowering("h1") is h0)
 
 DUCK_CUDA = ROOT / "experimental" / "duck_cuda"
 HUMANOID_INCLUDE = ROOT / "humanoid" / "include"
 BUILD_DIR = ROOT / "build"
+
+
+def header_dir(variant: str | None = None) -> Path:
+    """Shadow-header directory for a family member: humanoid/include for
+    the base, humanoid/variants/<name>/include otherwise."""
+    return HUMANOID_INCLUDE if h1_family.is_base(variant) \
+        else h1_family.header_dir(variant)
 
 # Identical flags AND identical fp32 certificates to the duck build
 # (DW_SOLVE_TOLERANCE 5e-6 / DW_MOMENTUM_TOLERANCE 2e-4 defaults): the
@@ -68,6 +80,10 @@ _SOURCES = [
     HUMANOID_INCLUDE / "duck_model.h",          # the humanoid shadow header
 ]
 
+
+def _sources(variant: str | None = None) -> list[Path]:
+    return _SOURCES[:-1] + [header_dir(variant) / "duck_model.h"]
+
 J, B, P, Q, N, JROWS = h0.J, h0.B, 2, 7 + h0.J, 6 + h0.J, 3 * h0.J
 OBS = 3 * J + 16                       # 52; pinned as DW_ENV_OBS in the header
 SIM_DT = h0.SIM_DT
@@ -80,20 +96,21 @@ U64P = cuda_lane.U64P
 DP = cuda_lane.DP
 
 
-def _source_digest() -> str:
+def _source_digest(variant: str | None = None) -> str:
     h = hashlib.sha256()
     h.update(" ".join(_FLAGS).encode())      # tolerance flags are part of it
-    for p in _SOURCES:
-        h.update(str(p.relative_to(ROOT)).encode())
+    for p in _sources(variant):
+        h.update(str(p.relative_to(ROOT)).encode())   # header PATH is part of it
         h.update(p.read_bytes())
     return h.hexdigest()[:16]
 
 
-def build_library() -> Path:
-    """Build (or reuse the cached) serial HUMANOID dwc1 dylib under build/."""
+def build_library(variant: str | None = None) -> Path:
+    """Build (or reuse the cached) serial HUMANOID dwc1 dylib under build/
+    against the family member's shadow header (base: humanoid/include)."""
     suffix = ".dylib" if sys.platform == "darwin" else ".so"
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
-    out = BUILD_DIR / f"libhumanoid_cuda_serial-{_source_digest()}{suffix}"
+    out = BUILD_DIR / f"libhumanoid_cuda_serial-{_source_digest(variant)}{suffix}"
     if out.is_file():
         return out
     compiler = shutil.which("clang++")
@@ -102,7 +119,7 @@ def build_library() -> Path:
             "clang++ toolchain required to build the serial humanoid lane")
     tmp = out.with_suffix(out.suffix + ".tmp")
     cmd = [compiler, *_FLAGS,
-           "-I", str(HUMANOID_INCLUDE),        # MUST precede the duck include
+           "-I", str(header_dir(variant)),    # MUST precede the duck include
            "-I", str(DUCK_CUDA / "include"),
            "-fPIC", "-shared", str(_SOURCES[0]), "-o", str(tmp)]
     subprocess.run(cmd, cwd=ROOT, check=True, capture_output=True)
@@ -116,9 +133,20 @@ class CudaHumanoidLane:
     def __init__(self, environments: int,
                  joint_offsets: np.ndarray | None = None,
                  library_path: str | Path | None = None,
-                 fast_termination: bool = False):
-        path = library_path or os.environ.get("HUMANOID_CUDA_LIBRARY")
-        self.library_path = Path(path) if path else build_library()
+                 fast_termination: bool = False,
+                 randomization: dict | None = None,
+                 variant: str | None = None):
+        # variant: family member (humanoid/h1_family.py); None/"h1" is the
+        # base and this constructor is unchanged. A variant builds/loads the
+        # dylib compiled against ITS header and is cross-checked below
+        # against the lowering's reset height (a base library handed to a
+        # variant lane, or vice versa, is refused).
+        lw = h1_family.load_lowering(variant)
+        self.variant = h1_family.canonical(variant)
+        self.lowering = lw
+        path = library_path or (os.environ.get("HUMANOID_CUDA_LIBRARY")
+                                if self.variant == "h1" else None)
+        self.library_path = Path(path) if path else build_library(variant)
         self._lib = load_library(self.library_path)
         abi = int(self._lib.dwc1_abi_version())
         if abi != cuda_lane.ABI_VERSION:
@@ -134,9 +162,13 @@ class CudaHumanoidLane:
             if offsets.shape != (self.E, J):
                 raise ValueError("joint_offsets requires shape [E, J]")
         self._h = C.c_void_p()
+        # domain randomization ranges (None = off = bit-identical physics);
+        # the dict/ABI contract is the duck's (walk/env/cuda_lane.py).
+        self.randomization = dict(randomization) if randomization else None
+        cfg = cuda_lane.rand_config(self.randomization)
         rc = self._lib.dwc1_create(
-            self.E, _fp(offsets) if offsets is not None else None, None,
-            C.byref(self._h))
+            self.E, _fp(offsets) if offsets is not None else None,
+            C.byref(cfg) if cfg is not None else None, C.byref(self._h))
         if rc:
             raise ValueError(f"dwc1_create status={rc}")
         info = Info()
@@ -160,20 +192,26 @@ class CudaHumanoidLane:
                                         info.joint_upper[:J])])
         self.home_joint_q = np.array(info.home_qpos[7:Q], dtype=np.float64)
         self.home_root_height = float(info.home_root_height)
+        expected_h = float(lw.reset_qpos()[2])
+        if abs(self.home_root_height - expected_h) > 1e-4:
+            raise RuntimeError(
+                f"{self.library_path} was built for a different family member "
+                f"(home root height {self.home_root_height:.4f} vs "
+                f"{expected_h:.4f} for variant {self.variant!r})")
         # PD gains are PER-JOINT (H1.1: hip-roll kp 500 / kv 60, the rest
         # 90 / 8): the kernel consumes DW_KP_TABLE / DW_KV_TABLE, and the
         # env's torque estimate must use the SAME tables for exact reward
         # parity. dwc1_info's kp/kv stay the scalar base values; expose
         # them separately.
-        self.kp = np.array(h0.KP_TABLE, dtype=np.float64)
-        self.kv = np.array(h0.KV_TABLE, dtype=np.float64)
+        self.kp = np.array(lw.KP_TABLE, dtype=np.float64)
+        self.kv = np.array(lw.KV_TABLE, dtype=np.float64)
         self.kp_scalar = float(info.kp)
         self.kv_scalar = float(info.kv)
         # dwc1_info's effort_cap is a scalar summary (the MIN tier); the
         # kernel's PD clamp and reward estimate consume the per-joint
         # DW_EFFORT_CAP_TABLE (authored tiers 180/140/70). The env clips
         # with the per-joint table.
-        self.effort_cap = np.array(h0.EFFORT, dtype=np.float64)
+        self.effort_cap = np.array(lw.EFFORT, dtype=np.float64)
         self.effort_cap_scalar = float(info.effort_cap)
         self.effort_cap_per_joint = self.effort_cap
         # device policy path bookkeeping (mirrors FlatFloorHumanoidEnv seeding)
@@ -272,9 +310,13 @@ class CudaHumanoidLane:
         counter-based (seed, env, episode) stream -- draw = rng.random()
         picks the command with the duck's slowest-oversampling split
         (0.50 if draw < 0.5 else 0.75 if draw < 0.75 else 1.00), then
-        phase0 = 2*pi*rng.random(). No randomization draws (the humanoid
-        env v1 has no DR surface). Pass `commands`/`phase_offsets` [E] to
-        override the drawn values. Returns fresh observations."""
+        phase0 = 2*pi*rng.random(), then -- ONLY when the lane was created
+        with a randomization config -- the DR draws of the duck contract
+        (cuda_lane.draw_randomization: 4 symmetric scales, latency, and the
+        one-sided gravity scale last, only if r_gravity > 0), applied via
+        set_randomization right after the reset. Pass `commands`/
+        `phase_offsets` [E] to override the drawn values. Returns fresh
+        observations."""
         from .humanoid_flat import COMMANDS_MPS, _episode_rng  # noqa: PLC0415
         if seed is not None:
             self._seed = int(seed)
@@ -282,6 +324,9 @@ class CudaHumanoidLane:
             else np.asarray(mask, bool).reshape(self.E)
         cmd = np.zeros(self.E, np.float64)
         ph0 = np.zeros(self.E, np.float64)
+        rnd = np.ones((self.E, 5), np.float64)
+        lat = np.zeros(self.E, np.int64)
+        cfg = self.randomization
         for e in np.flatnonzero(m):
             rng = _episode_rng(self._seed, int(e), int(self._episode[e]) + 1)
             draw = rng.random()
@@ -289,6 +334,8 @@ class CudaHumanoidLane:
                       else COMMANDS_MPS[1] if draw < 0.75
                       else COMMANDS_MPS[2])
             ph0[e] = 2.0 * math.pi * rng.random()
+            if cfg is not None:
+                rnd[e], lat[e] = cuda_lane.draw_randomization(rng, cfg)
             self._episode[e] += 1
         if commands is not None:
             cmd[:] = np.broadcast_to(np.asarray(commands, np.float64),
@@ -301,7 +348,14 @@ class CudaHumanoidLane:
                                          ph0.ctypes.data_as(DP))
         if rc:
             raise RuntimeError(f"dwc1_reset_policy status={rc}")
+        if cfg is not None:
+            self.set_randomization(m, rnd[:, 0], rnd[:, 1], rnd[:, 2],
+                                   rnd[:, 3], lat, gravity_scale=rnd[:, 4])
         return self.observe()
+
+    # dwc1_set_randomization is model-size independent: reuse the duck
+    # wrapper's method verbatim (it touches only E, _lib and _h).
+    set_randomization = cuda_lane.CudaDuckLane.set_randomization
 
     # -- reads --------------------------------------------------------------
     def read(self) -> CudaLaneState:

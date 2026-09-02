@@ -44,6 +44,16 @@ Termination: root height < 0.7 * home height (duck MIN_HEIGHT_FRACTION) or
 tilt > 45 deg -- tilt is the HUMANOID formula (body +Y vs world +Z,
 humanoid_native_lane.tilt), not the duck's body-Z one -- or non-finite
 state, or the 400-step (8 s) horizon.
+
+Domain randomization (`randomization=` dict, the duck's exact contract in
+walk/env/cuda_lane.py): per-episode mass/inertia, friction, kp, passive
+damping scales, command latency ring and the ABI-v7 one-sided GRAVITY scale
+(authored -20 m/s^2 is the maximum; r_gravity = 1 - 9.81/20 = 0.5095 spans
+Earth..2g). Applied INSIDE the lane physics via set_randomization (requires
+the dwc1 lanes); this env mirrors the duck's f64 chain exactly -- same
+counter-based draw order after command/phase0, same latency ring, same
+kp-scaled torque estimate -- so the in-kernel policy path stays bit-exact
+(humanoid/tests/test_humanoid_policy_parity.py, randomized leg).
 """
 from __future__ import annotations
 
@@ -63,6 +73,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "humanoid") not in sys.path:
     sys.path.insert(0, str(ROOT / "humanoid"))
 import h1_lowering as h0  # noqa: E402  (ACTIVE lowering: H1)
+import h1_family  # noqa: E402  (family variants; base path unchanged)
 
 FAULT_DIR = ROOT / "runs" / "faults"
 
@@ -108,6 +119,12 @@ def _episode_rng(seed: int, env: int, episode: int) -> np.random.Generator:
     return np.random.default_rng([int(seed) & 0xFFFFFFFF, int(env), int(episode)])
 
 
+def _draw_randomization(rng, cfg):
+    """The lane contract's DR draw stream (cuda_lane.draw_randomization)."""
+    from .cuda_lane import draw_randomization  # noqa: PLC0415
+    return draw_randomization(rng, cfg)
+
+
 class FlatFloorHumanoidEnv(DuckEnvBatch):
     """E parallel flat-floor H0 humanoids; obs layout in the module docstring."""
 
@@ -116,7 +133,9 @@ class FlatFloorHumanoidEnv(DuckEnvBatch):
 
     def __init__(self, environments: int = 16, seed: int = 0,
                  perturbation_rad: float = 0.0,
-                 library_path=None, lane_factory=None):
+                 library_path=None, lane_factory=None,
+                 randomization: dict | None = None,
+                 variant: str | None = None):
         if not 0.0 <= float(perturbation_rad) <= MAX_PERTURBATION_RAD:
             raise ValueError(
                 f"perturbation_rad must be in [0, {MAX_PERTURBATION_RAD}]")
@@ -124,10 +143,47 @@ class FlatFloorHumanoidEnv(DuckEnvBatch):
         self._perturbation = float(perturbation_rad)
         self._seed = int(seed)
         self._library_path = library_path
+        # Family variant (humanoid/h1_family.py): selects the lowering the
+        # default lane is built from and the self-imitation reference table
+        # (humanoid/variants/<name>/reference_gait.json). None/"h1" leaves
+        # every default byte-identical (module REF_GAIT, h1 lane).
+        self.variant = h1_family.canonical(variant)
+        self._ref_gait = (None if self.variant == "h1" else
+                          reward_mod.load_reference(
+                              h1_family.reference_gait_path(self.variant)))
+        # Domain randomization: flat.py's exact recipe (walk/env/cuda_lane.py
+        # normative contract). Scales apply INSIDE the lane physics; this env
+        # only draws them, keeps the latency ring and scales its torque
+        # estimate's kp. Requires a lane with set_randomization (dwc1 lanes).
+        rz = dict(randomization or {})
+        self._rz = {k: float(rz.pop(k, 0.0)) for k in
+                    ("r_mass", "r_friction", "r_kp", "r_damping")}
+        self._rz_latency = int(rz.pop("max_latency_steps", 0))
+        self._rz["r_gravity"] = float(rz.pop("r_gravity", 0.0))
+        if rz:
+            raise ValueError(f"unknown randomization keys: {sorted(rz)}")
+        self._rz_on = (any(v > 0 for v in self._rz.values())
+                       or self._rz_latency > 0)
+        self._rz_pin = None            # pin_randomization() override (eval)
         self._lane_factory = lane_factory or (
             lambda E, offsets: humanoid_native_lane.NativeHumanoidLane(
-                E, joint_offsets=offsets, library_path=self._library_path))
+                E, joint_offsets=offsets, library_path=self._library_path,
+                variant=variant))
         self._build_lane()
+        lane_variant = getattr(self._lane, "variant", None)
+        if lane_variant is not None and lane_variant != self.variant:
+            raise ValueError(f"lane is family member {lane_variant!r} but the "
+                             f"env was asked for {self.variant!r}")
+        if lane_variant is None and self.variant != "h1":
+            raise ValueError("a variant env needs a lane_factory that builds "
+                             f"the {self.variant!r} lane (variant=...)")
+        if self._rz_on and not hasattr(self._lane, "set_randomization"):
+            raise ValueError(
+                "randomization requires a lane with set_randomization")
+        self._rand_scales = np.ones((self.E, 5))   # mass, mu, kp, damping, g
+        self._latency = np.zeros(self.E, np.int64)
+        self._ring_P = self._rz_latency + 1
+        self._ring = np.zeros((self.E, self._ring_P, ACT))
         self._tracker = reward_mod.GaitTracker(self.E)
         self._episode = np.zeros(self.E, np.int64)
         self._command = np.zeros(self.E)
@@ -177,6 +233,16 @@ class FlatFloorHumanoidEnv(DuckEnvBatch):
                                     else COMMANDS_MPS[1] if draw < 0.75
                                     else COMMANDS_MPS[2])
                 self._phase0[e] = 2.0 * math.pi * rng.random()
+                if self._rz_on:
+                    # draws 3-6 scales, 7 latency, 8 gravity (if r_gravity>0)
+                    # -- the duck contract's exact order and arithmetic
+                    self._rand_scales[e], self._latency[e] = \
+                        _draw_randomization(rng, {
+                            **self._rz,
+                            "max_latency_steps": self._rz_latency})
+                    if self._rz_pin is not None:   # evaluation override
+                        self._rand_scales[e] = self._rz_pin[0]
+                        self._latency[e] = self._rz_pin[1]
                 self._episode[e] += 1
             self._t[m] = 0
             self._done[m] = False
@@ -184,6 +250,12 @@ class FlatFloorHumanoidEnv(DuckEnvBatch):
             self._targets[m] = HOME
             self._effective = self._clip_limits(self._targets)
             self._applied = self._effective
+            if self._rz_on:
+                self._lane.set_randomization(
+                    m, self._rand_scales[:, 0], self._rand_scales[:, 1],
+                    self._rand_scales[:, 2], self._rand_scales[:, 3],
+                    self._latency, gravity_scale=self._rand_scales[:, 4])
+                self._ring[m] = self._effective[m][:, None, :]
             self._tracker.reset(m)
         state = self._lane.read()
         self._prev = self._reward_state(state, self._prev_action,
@@ -199,6 +271,31 @@ class FlatFloorHumanoidEnv(DuckEnvBatch):
     @property
     def command(self) -> np.ndarray:
         return self._command.copy()
+
+    def pin_randomization(self, mass_scale=1.0, friction_scale=1.0,
+                          kp_scale=1.0, damping_scale=1.0, latency_steps=0,
+                          gravity_scale=1.0) -> None:
+        """Evaluation hook: FIX the per-episode randomization values for
+        every subsequent reset (the stream is still consumed identically,
+        so command/phase0 draws match an unpinned run). Values must lie
+        inside this env's creation-time ranges (the lane validates). Used
+        by humanoid/dr_brittleness.py to score a policy at chosen
+        dynamics; never used in training."""
+        if not self._rz_on:
+            raise ValueError("pin_randomization requires randomization=")
+        self._rz_pin = (np.array([mass_scale, friction_scale, kp_scale,
+                                  damping_scale, gravity_scale], np.float64),
+                        int(latency_steps))
+
+    @property
+    def randomization_values(self) -> dict:
+        """Per-env applied DR values (arrays), for logging/forensics."""
+        return {"mass_scale": self._rand_scales[:, 0].copy(),
+                "friction_scale": self._rand_scales[:, 1].copy(),
+                "kp_scale": self._rand_scales[:, 2].copy(),
+                "damping_scale": self._rand_scales[:, 3].copy(),
+                "gravity_scale": self._rand_scales[:, 4].copy(),
+                "latency_steps": self._latency.copy()}
 
     def pin_phase(self, phase0) -> np.ndarray:
         """Evaluation/dataset hook: pin per-env gait-phase offsets (rad).
@@ -222,7 +319,16 @@ class FlatFloorHumanoidEnv(DuckEnvBatch):
                               self._targets + MAX_TARGET_INCREMENT)
         self._targets = np.where(live[:, None], new_targets, self._targets)
         self._effective = self._clip_limits(self._targets)
-        self._applied = self._effective
+        if self._rz_on:
+            # latency ring: write eff[t], physics consumes eff[t - latency]
+            # (flat.py / kernel-identical; done envs keep t frozen)
+            rows = np.arange(self.E)
+            t = self._t
+            self._ring[rows, t % self._ring_P] = self._effective
+            idx = (t + self._ring_P - self._latency) % self._ring_P
+            self._applied = self._ring[rows, idx]
+        else:
+            self._applied = self._effective
 
         iterations = np.zeros(self.E, np.int32)
         if on_tick is None and hasattr(self._lane, "tick_block"):
@@ -254,7 +360,8 @@ class FlatFloorHumanoidEnv(DuckEnvBatch):
         cur = self._reward_state(state, a, self._torque(state))
         cur["contact_ticks"] = contact_ticks.copy()
         r = reward_mod.reward(self._prev, cur, a, self._command,
-                              self._tracker, dt=CONTROL_DT)
+                              self._tracker, dt=CONTROL_DT,
+                              ref_gait=self._ref_gait)
         self._prev = cur
 
         self._t[live] += 1
@@ -275,8 +382,11 @@ class FlatFloorHumanoidEnv(DuckEnvBatch):
 
     # ------------------------------------------------------------------
     def _torque(self, state) -> np.ndarray:
-        """Boundary PD estimate; effort caps are PER-JOINT (H0 tiers)."""
-        raw = self._lane.kp * (self._applied - state.q[:, 7:]) \
+        """Boundary PD estimate; effort caps are PER-JOINT (H0 tiers); kp
+        carries the per-env DR scale with the kernel's f64 association
+        ((kp * kp_scale) * (applied - q)), applied = latency-delayed."""
+        raw = (self._lane.kp * self._rand_scales[:, 2:3]) \
+            * (self._applied - state.q[:, 7:]) \
             - self._lane.kv * state.v[:, 6:]
         return np.clip(raw, -self._lane.effort_cap, self._lane.effort_cap)
 

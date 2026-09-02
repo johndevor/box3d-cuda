@@ -1,0 +1,9 @@
+{
+ "schema": "duckgridwalk.trajectory_fingerprints/1",
+ "fingerprints": {
+  "duck_tick_path": "2f9741ce0170e5b4cbd960e098db82b84a30498c448a1404f52a004a5d0aae21",
+  "duck_policy_off": "f75d23a3eecdd320e40310830787d7625292bcfdaae36ec5e187c11e9c7b147b",
+  "duck_policy_dr_v6": "2bbc934adb46845269ccfecbc16401a57c7246728b2fad7a192481f91236c256",
+  "humanoid_policy_off": "95f0377e3e5206a49f8dc15de7e4bb2f32004cef1e6e0e30dfb1ae6172bedb14"
+ }
+}

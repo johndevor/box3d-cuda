@@ -37,7 +37,12 @@ extern "C" {
 // v6: per-episode domain randomization + actuation latency (off by default):
 //     dwc1_create gained the dwc1_randomization config, new
 //     dwc1_set_randomization applies per-env draws (host-side RNG).
-#define DWC1_ABI_VERSION 6
+// v7: per-episode GRAVITY randomization: dwc1_randomization gained r_gravity
+//     and dwc1_env_random gained gravity_scale (both inserted before the
+//     latency fields -- struct layouts changed, hence the bump). Absent /
+//     0 / neutral 1.0 is bit-identical to v6 (fingerprint-pinned:
+//     tests/test_duck_fingerprint.py).
+#define DWC1_ABI_VERSION 7
 int dwc1_abi_version(void);
 
 enum {
@@ -96,15 +101,31 @@ typedef struct dwc1_device_info {
 // just-written targets). Per-env VALUES are drawn host-side at reset (the
 // counter-based numpy stream is not reproducible in-kernel) and applied via
 // dwc1_set_randomization. Scales affect physics consumption points only
-// (mass AND principal inertia together, pair mu, PD kp, passive damping) --
-// never the model tables, observations or the reference-weight regularizers.
+// (mass AND principal inertia together, pair mu, PD kp, passive damping,
+// gravity) -- never the model tables, observations or the reference-weight
+// regularizers.
+//
+// GRAVITY (v7) is ONE-SIDED: the authored DW_GRAVITY_Z magnitude is the
+// MAXIMUM and gravity_scale in [1 - r_gravity, 1] draws lighter worlds
+// (gravity_scale = 1 - r_gravity * u, u ~ U[0,1)). Rationale: the humanoid
+// is authored at -20 m/s^2 (2 g); with r_gravity = 1 - 9.81/20 = 0.5095 a
+// single binary trains across gravity in (9.81, 20] m/s^2 -- Earth at the
+// light end, the authored 2 g at the top -- so the 2g-vs-Earth question
+// dissolves into the policy's implicit system ID. A symmetric [1-r, 1+r]
+// scale on the authored magnitude cannot express that range (its maximum
+// would exceed the authored value). Applied at the single consumption point
+// (dw_tick -> dw_evaluate's gravity vector) as
+// gz = (float)((double)DW_GRAVITY_Z * gravity_scale): identity at 1.0.
 #define DWC1_MAX_LATENCY 4
+#define DWC1_MAX_R_GRAVITY 0.9   // gravity never below 10% of authored
 typedef struct dwc1_randomization {
   double r_mass, r_friction, r_kp, r_damping;  // each in [0, 0.5]
+  double r_gravity;                            // [0, DWC1_MAX_R_GRAVITY]
   uint32_t max_latency_steps, reserved;        // 0..DWC1_MAX_LATENCY
 } dwc1_randomization;
 typedef struct dwc1_env_random {
   double mass_scale, friction_scale, kp_scale, damping_scale;  // [0.5, 1.5]
+  double gravity_scale;                        // [1 - r_gravity, 1]
   uint32_t latency_steps, reserved;            // <= config max_latency_steps
 } dwc1_env_random;
 

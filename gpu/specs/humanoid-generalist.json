@@ -1,0 +1,62 @@
+{
+  "name": "humanoid-generalist",
+  "_comment": "GENERALIST leg (yacine's sim2real recipe): the ACCEPTED feed-forward humanoid walker warm-started into a residual GRU policy (walk/train/gru_warmstart.py -> runs/warmstart.pt; the trunk IS the accepted specialist at step 0) and trained across a per-env dynamics distribution: mass/inertia +-15%, friction +-30%, kp +-15%, passive damping +-30% (no-op on this robot: authored damping is 0), command latency 0-2 policy steps, and the ABI-v7 ONE-SIDED gravity scale r_gravity = 1 - 9.81/20 = 0.5095 (authored -20 m/s^2 is the maximum -> gravity in (9.81, 20] m/s^2, Earth..2g). Clone of humanoid-tree-continue with --policy gru --randomization; lr 1e-4 (warm-started continuation, below fresh-gru's 1.5e-4). First leg: runs/warmstart.pt = the output of `python -B -m walk.train.gru_warmstart --robot humanoid --source <accepted latest.pt> --out runs/warmstart.pt`; later legs: gpu/chain.py copies the previous leg's latest.pt there as usual (a GRU checkpoint resumes normally; an FF checkpoint would also work via gpu_train's cross-arch warm start). Zero-shot brittleness of the FF specialist across these ranges: runs/dr-brittleness/brittleness.md.",
+  "tar_globs": [],
+  "upload_extra": [
+    "runs/warmstart.pt"
+  ],
+  "jobs": [
+    {
+      "name": "gpu-info",
+      "command": "nvidia-smi | tee gpu-info.txt && nvcc --version | tee -a gpu-info.txt",
+      "timeout_s": 60,
+      "artifacts": [
+        "gpu-info.txt"
+      ],
+      "continue_on_error": false
+    },
+    {
+      "name": "build-humanoid",
+      "command": "set -o pipefail; mkdir -p experimental/duck_cuda/build-humanoid; nvcc -std=c++17 -O3 --fmad=false -gencode arch=compute_89,code=sm_89 -gencode arch=compute_120,code=sm_120 -Ihumanoid/include -Iexperimental/duck_cuda/include -Xcompiler -fPIC -shared experimental/duck_cuda/src/duck_cuda.cu -o experimental/duck_cuda/build-humanoid/libhumanoid_cuda.so 2>&1 | tee build-humanoid.log; nvcc -std=c++17 -O3 --fmad=true -gencode arch=compute_89,code=sm_89 -gencode arch=compute_120,code=sm_120 -Ihumanoid/include -Iexperimental/duck_cuda/include -Xcompiler -fPIC -shared experimental/duck_cuda/src/duck_cuda.cu -o experimental/duck_cuda/build-humanoid/libhumanoid_cuda_fast.so 2>&1 | tee -a build-humanoid.log; g++ -std=c++17 -O2 -Wall -Wextra -ffp-contract=off -Ihumanoid/include -Iexperimental/duck_cuda/include -fPIC -shared experimental/duck_cuda/src/duck_cuda_serial.cpp -o experimental/duck_cuda/build-humanoid/libhumanoid_cuda_serial.so 2>&1 | tee -a build-humanoid.log; ls -la experimental/duck_cuda/build-humanoid | tee -a build-humanoid.log",
+      "timeout_s": 600,
+      "artifacts": [
+        "build-humanoid.log"
+      ],
+      "continue_on_error": false
+    },
+    {
+      "name": "preflight-abi",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -c \"import sys; sys.path.insert(0,'.'); from walk.env.humanoid_cuda_lane import CudaHumanoidLane; l=CudaHumanoidLane(2, library_path='experimental/duck_cuda/build-humanoid/libhumanoid_cuda_fast.so', randomization={'r_mass':0.15,'r_friction':0.3,'r_kp':0.15,'r_damping':0.3,'max_latency_steps':2,'r_gravity':0.5095}); o=l.reset_policy(seed=1); import numpy as np; o2,r,d,diag=l.step_policy(np.zeros((2,l.J),np.float32)); assert (diag['status']==0).all(); print('ABI v7 randomized lane OK', o2.shape); l.close()\" 2>&1 | tee preflight-abi.log",
+      "timeout_s": 120,
+      "artifacts": [
+        "preflight-abi.log"
+      ],
+      "continue_on_error": false
+    },
+    {
+      "name": "train",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --robot humanoid --envs 16384 --horizon 64 --updates 99999 --seed 917 --device cuda --library experimental/duck_cuda/build-humanoid/libhumanoid_cuda_fast.so --lane-env --curriculum humanoid-walk --rsi-fraction 0.5 --policy gru --randomization '{\"r_mass\":0.15,\"r_friction\":0.3,\"r_kp\":0.15,\"r_damping\":0.3,\"max_latency_steps\":2,\"r_gravity\":0.5095}' --resume runs/warmstart.pt --out gpu-train-out --lr 1e-4 --max-wall-s 600 2>&1 | tee gpu-train.log",
+      "timeout_s": 900,
+      "artifacts": [
+        "gpu-train.log",
+        "gpu-train-out/metrics.jsonl",
+        "gpu-train-out/actor_final.pt",
+        "gpu-train-out/latest.pt"
+      ],
+      "continue_on_error": false
+    }
+  ],
+  "resources": {
+    "cpu": 4,
+    "memory_gib": 16,
+    "disk_gib": 20,
+    "gpu": 1,
+    "gpu_types": [
+      "RTX-5090"
+    ],
+    "spot": false,
+    "ttl_minutes": 22,
+    "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
+  },
+  "use_snapshot": true
+}

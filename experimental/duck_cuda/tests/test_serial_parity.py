@@ -463,6 +463,156 @@ class SerialParityTests(unittest.TestCase):
             env.close()
             dev.close()
 
+    # -- ABI v7: per-env GRAVITY randomization (one-sided, off by default) --------
+    GRAV_CFG = {"r_mass": 0.1, "r_friction": 0.2, "r_kp": 0.1, "r_damping": 0.2,
+                "max_latency_steps": 1, "r_gravity": 0.5}
+
+    def test_r_gravity_zero_or_absent_is_bit_identical(self):
+        # r_gravity absent, r_gravity 0.0 and the pre-v7 dict must consume the
+        # SAME draw stream and produce byte-equal trajectories (the gravity
+        # draw happens only when r_gravity > 0, and neutral 1.0 applies as
+        # (float)((double)DW_GRAVITY_Z * 1.0) == DW_GRAVITY_Z).
+        base = {k: v for k, v in self.GRAV_CFG.items() if k != "r_gravity"}
+        zero = dict(base, r_gravity=0.0)
+        a, b = CudaDuckLane(3, randomization=base), CudaDuckLane(3, randomization=zero)
+        try:
+            a.reset_policy(seed=21)
+            b.reset_policy(seed=21)
+            rng = np.random.default_rng(5)
+            for t in range(25):
+                act = np.clip(rng.normal(0, 0.3, (3, 14)), -1, 1).astype(np.float32)
+                ra, rb = a.step_policy(act), b.step_policy(act)
+                for x, y in zip(ra[:3], rb[:3]):
+                    self.assertEqual(x.tobytes(), y.tobytes(), t)
+            self.assertEqual(a.read().q.tobytes(), b.read().q.tobytes())
+        finally:
+            a.close()
+            b.close()
+
+    def test_r_gravity_draws_one_sided_effective_and_deterministic(self):
+        # drawn gravity scales lie in [1 - r, 1] (authored magnitude is the
+        # MAXIMUM), the lane applies them (trajectory differs from the same
+        # config with r_gravity 0), and same seed -> bit-identical.
+        r = self.GRAV_CFG["r_gravity"]
+        for e in range(4):
+            rng = np.random.default_rng([3, e, 1])
+            rng.random(); rng.random()                 # command, phase0
+            scales, lat = cuda_lane.draw_randomization(rng, self.GRAV_CFG)
+            self.assertLessEqual(scales[4], 1.0)
+            self.assertGreaterEqual(scales[4], 1.0 - r)
+            self.assertLess(scales[4], 0.999, "gravity draw was neutral")
+        nog = dict(self.GRAV_CFG, r_gravity=0.0)
+        a = CudaDuckLane(4, randomization=dict(self.GRAV_CFG))
+        b = CudaDuckLane(4, randomization=dict(self.GRAV_CFG))
+        n = CudaDuckLane(4, randomization=nog)
+        try:
+            a.reset_policy(seed=3); b.reset_policy(seed=3); n.reset_policy(seed=3)
+            rng = np.random.default_rng(9)
+            diverged = False
+            for t in range(30):
+                act = np.clip(rng.normal(0, 0.3, (4, 14)), -1, 1).astype(np.float32)
+                ra, rb, rn = a.step_policy(act), b.step_policy(act), n.step_policy(act)
+                for x, y in zip(ra[:3], rb[:3]):
+                    self.assertEqual(x.tobytes(), y.tobytes(), t)
+                diverged |= not np.array_equal(ra[0], rn[0])
+            self.assertTrue(diverged, "gravity scale had no effect on obs")
+        finally:
+            a.close(); b.close(); n.close()
+
+    def test_gravity_scale_changes_free_fall_exactly(self):
+        # Physics check of the ONE consumption point: a duck held in the air
+        # (no contact) falls with acceleration g * gravity_scale. Two lanes,
+        # scales 1.0 and 0.5, same 20 ticks from the same lifted state: the
+        # root drop ratio must be 0.5 within fp32 integration error.
+        cfg = {"r_gravity": 0.5}
+        a, b = CudaDuckLane(1, randomization=cfg), CudaDuckLane(1, randomization=cfg)
+        try:
+            home = a.home_joint_q[None, :]
+            drops = []
+            for lane, g in ((a, 1.0), (b, 0.5)):
+                st = lane.read()
+                q = np.array(st.q[0], np.float32)
+                q[2] += 0.5                                   # 0.5 m in the air
+                lane.set_state(0, q, np.zeros(20, np.float32), np.zeros(42, np.float32))
+                lane.set_randomization(None, 1.0, 1.0, 1.0, 1.0, 0, gravity_scale=g)
+                z0 = float(lane.read().q[0, 2])
+                rc, diag = lane.tick_block(home, 20)
+                self.assertEqual(rc, 0, diag)
+                self.assertEqual(diag[0]["contact_points"], 0)
+                drops.append(z0 - float(lane.read().q[0, 2]))
+            self.assertGreater(drops[0], 1e-3)
+            self.assertAlmostEqual(drops[1] / drops[0], 0.5, places=3)
+            print(f"free_fall drops g1={drops[0]:.5f} g0.5={drops[1]:.5f} "
+                  f"ratio={drops[1]/drops[0]:.4f}", file=sys.stderr)
+        finally:
+            a.close(); b.close()
+
+    def test_gravity_randomized_parity_vs_python_env(self):
+        # 0.0-parity with the FULL v7 randomization (incl. gravity) between
+        # FlatFloorDuckEnv's f64 mirror and dwc1_step_policy.
+        from walk.env.flat import FlatFloorDuckEnv
+        E = 4
+        cfg = dict(self.GRAV_CFG)
+        env = FlatFloorDuckEnv(
+            environments=E, seed=0, randomization=cfg,
+            lane_factory=lambda ne, off: CudaDuckLane(
+                ne, joint_offsets=off, randomization=cfg))
+        dev = CudaDuckLane(E, randomization=cfg)
+        try:
+            obs_py = env.reset()
+            dev.reset_policy(seed=0)
+            obs_dev = dev.reset_policy()
+            np.testing.assert_array_equal(obs_py, obs_dev, "reset observations")
+            self.assertTrue((env._rand_scales[:, 4] < 1.0).all(), "gravity not drawn")
+            rng = np.random.default_rng(0)
+            worst_obs = worst_rew = 0.0
+            resets = 0
+            for t in range(120):
+                a = np.clip(rng.normal(0, 0.4, (E, 14)), -1, 1).astype(np.float32)
+                o_py, r_py, d_py, _ = env.step(a)
+                o_dev, r_dev, d_dev, _ = dev.step_policy(a)
+                worst_obs = max(worst_obs, float(np.abs(o_py - o_dev).max()))
+                worst_rew = max(worst_rew, float(np.abs(r_py - r_dev).max()))
+                np.testing.assert_array_equal(d_py, d_dev, f"done @ {t}")
+                if d_py.any() and resets < 3:
+                    resets += 1
+                    o1, o2 = env.reset(mask=d_py), dev.reset_policy(mask=d_dev)
+                    np.testing.assert_array_equal(o1, o2, f"post-reset obs @ {t}")
+            self.assertLess(worst_obs, 1e-4)
+            self.assertLess(worst_rew, 1e-3)
+            print(f"gravity_randomized_parity obs={worst_obs:.3e} rew={worst_rew:.3e} "
+                  f"resets={resets}", file=sys.stderr)
+        finally:
+            env.close()
+            dev.close()
+
+    def test_randomization_validation_rejects_out_of_range(self):
+        # creation ranges: r_gravity <= DWC1_MAX_R_GRAVITY (0.9); per-env
+        # values: gravity_scale in [1 - r_gravity, 1], never above 1.
+        with self.assertRaises(ValueError):
+            CudaDuckLane(1, randomization={"r_gravity": 0.95})
+        with self.assertRaises(ValueError):
+            CudaDuckLane(1, randomization={"r_gravity": -0.1})
+        with self.assertRaises(ValueError):
+            CudaDuckLane(1, randomization={"r_gravitee": 0.1})   # typo guard
+        lane = CudaDuckLane(1, randomization={"r_gravity": 0.5})
+        try:
+            lane.set_randomization(None, 1.0, 1.0, 1.0, 1.0, 0, gravity_scale=0.5)
+            lane.set_randomization(None, 1.0, 1.0, 1.0, 1.0, 0, gravity_scale=1.0)
+            with self.assertRaises(RuntimeError):
+                lane.set_randomization(None, 1.0, 1.0, 1.0, 1.0, 0, gravity_scale=0.49)
+            with self.assertRaises(RuntimeError):
+                lane.set_randomization(None, 1.0, 1.0, 1.0, 1.0, 0, gravity_scale=1.01)
+        finally:
+            lane.close()
+        off = CudaDuckLane(1)     # feature off: only neutral accepted
+        try:
+            off.set_randomization(None, 1.0, 1.0, 1.0, 1.0, 0)
+            with self.assertRaises(RuntimeError):
+                off.set_randomization(None, 1.0, 1.0, 1.0, 1.0, 0, gravity_scale=0.9)
+        finally:
+            off.close()
+
     # -- determinism -------------------------------------------------------------
     def test_two_runs_bit_identical(self):
         a, b = CudaDuckLane(2), CudaDuckLane(2)

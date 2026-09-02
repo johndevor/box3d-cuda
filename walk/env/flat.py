@@ -67,6 +67,13 @@ def _episode_rng(seed: int, env: int, episode: int) -> np.random.Generator:
     return np.random.default_rng([int(seed) & 0xFFFFFFFF, int(env), int(episode)])
 
 
+def _draw_randomization(rng, cfg):
+    """The lane contract's per-episode DR draw stream (cuda_lane.py draws
+    3-8), imported lazily so this module keeps its import graph."""
+    from .cuda_lane import draw_randomization  # noqa: PLC0415
+    return draw_randomization(rng, cfg)
+
+
 class FlatFloorDuckEnv(DuckEnvBatch):
     """E parallel flat-floor ducks; see walk/env/README.md for the obs layout."""
 
@@ -88,6 +95,10 @@ class FlatFloorDuckEnv(DuckEnvBatch):
         self._rz = {k: float(rz.pop(k, 0.0)) for k in
                     ("r_mass", "r_friction", "r_kp", "r_damping")}
         self._rz_latency = int(rz.pop("max_latency_steps", 0))
+        # ABI v7: one-sided gravity scale (authored magnitude = maximum);
+        # drawn LAST and only when > 0, so pre-v7 configs keep their exact
+        # RNG stream (see walk/env/cuda_lane.py contract, draw 8).
+        self._rz["r_gravity"] = float(rz.pop("r_gravity", 0.0))
         if rz:
             raise ValueError(f"unknown randomization keys: {sorted(rz)}")
         self._rz_on = any(v > 0 for v in self._rz.values()) or self._rz_latency > 0
@@ -97,7 +108,7 @@ class FlatFloorDuckEnv(DuckEnvBatch):
         self._build_lane()
         if self._rz_on and not hasattr(self._lane, "set_randomization"):
             raise ValueError("randomization requires a lane with set_randomization")
-        self._rand_scales = np.ones((self.E, 4))
+        self._rand_scales = np.ones((self.E, 5))   # mass, mu, kp, damping, g
         self._latency = np.zeros(self.E, np.int64)
         self._ring_P = self._rz_latency + 1
         self._ring = np.zeros((self.E, self._ring_P, ACT))
@@ -153,12 +164,12 @@ class FlatFloorDuckEnv(DuckEnvBatch):
                 # the LEFT clock window, training a left-leading bias
                 self._phase0[e] = 2.0 * math.pi * rng.random()
                 if self._rz_on:
-                    # draws 3-6: scales in fixed order; draw 7: latency
-                    for k, key in enumerate(("r_mass", "r_friction",
-                                             "r_kp", "r_damping")):
-                        self._rand_scales[e, k] = \
-                            1.0 + self._rz[key] * (2.0 * rng.random() - 1.0)
-                    self._latency[e] = int(rng.integers(self._rz_latency + 1))
+                    # draws 3-6: scales in fixed order; draw 7: latency;
+                    # draw 8 (only if r_gravity > 0): one-sided gravity
+                    self._rand_scales[e], self._latency[e] = \
+                        _draw_randomization(rng, {
+                            **self._rz,
+                            "max_latency_steps": self._rz_latency})
                 self._episode[e] += 1
             self._t[m] = 0
             self._done[m] = False
@@ -169,7 +180,7 @@ class FlatFloorDuckEnv(DuckEnvBatch):
                 self._lane.set_randomization(
                     m, self._rand_scales[:, 0], self._rand_scales[:, 1],
                     self._rand_scales[:, 2], self._rand_scales[:, 3],
-                    self._latency)
+                    self._latency, gravity_scale=self._rand_scales[:, 4])
                 self._ring[m] = self._effective[m][:, None, :]
             self._tracker.reset(m)
         state = self._lane.read()
