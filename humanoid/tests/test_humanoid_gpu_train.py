@@ -15,9 +15,10 @@ Gates:
 - gpu_train.train(robot="humanoid", lane_env=True) runs 2 envs x 2 updates
   zero-fault with finite losses, and actor_final.pt round-trips through
   ppo.unpack_actor_file into a 52->...->12 feed-forward actor;
-- the duck-only surface (--accept-every) is rejected for --robot humanoid;
-  --randomization (shared dwc1 DR contract since ABI v7) is accepted on the
-  device policy path (--lane-env) and rejected without it.
+- --randomization (shared dwc1 DR contract since ABI v7) is accepted on the
+  device policy path (--lane-env) and rejected without it; --accept-every is
+  accepted for --robot humanoid (the batched frozen-judge probe, gated in
+  humanoid/tests/test_humanoid_accept_probe.py) and passes --validate-only.
 """
 from __future__ import annotations
 
@@ -79,16 +80,27 @@ class RobotSwitchTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_duck_only_surfaces_rejected(self):
+    def test_randomization_without_lane_env_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
-            for bad in (dict(accept_every=5, lane_env=True),
-                        dict(randomization={"r_mass": 0.1}, lane_env=False)):
-                cfg = gt.GpuTrainConfig(robot="humanoid", envs=1,
-                                        updates=1, horizon=2,
-                                        out=str(Path(tmp) / "x"),
-                                        preflight_steps=0, **bad)
-                with self.assertRaises(SystemExit):
-                    gt.train(cfg)
+            cfg = gt.GpuTrainConfig(robot="humanoid", envs=1, updates=1,
+                                    horizon=2, out=str(Path(tmp) / "x"),
+                                    preflight_steps=0,
+                                    randomization={"r_mass": 0.1},
+                                    lane_env=False)
+            with self.assertRaises(SystemExit):
+                gt.train(cfg)
+
+    def test_accept_every_validates_for_humanoid(self):
+        """--accept-every is no longer duck-only: the launcher preflight
+        (--validate-only) must accept the humanoid specs' flag set."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = gt.GpuTrainConfig(robot="humanoid", variant="h1_stocky",
+                                    envs=1, updates=1, horizon=2,
+                                    out=str(Path(tmp) / "x"), lane_env=True,
+                                    curriculum="humanoid-walk",
+                                    rsi_fraction=0.5, accept_every=8,
+                                    preflight_steps=0, validate_only=True)
+            self.assertEqual(gt.train(cfg), [])
 
     def test_randomized_humanoid_lane_env_trains(self):
         """--randomization (incl. the v7 gravity scale) on --robot humanoid

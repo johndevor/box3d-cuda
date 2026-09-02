@@ -21,9 +21,8 @@ build against humanoid/variants/<name>/include. Unset = the accepted H1.1.
 --robot selects the env/lane contract (robot_classes): duck (default) is
 byte-identical to the pre-switch trainer (same classes, same OBS/ACT 58/14,
 same RNG streams); humanoid wires FlatFloorHumanoidEnv / CudaHumanoidLane
-(OBS/ACT 3*J+16 / J) over the robot-generic dwc1 kernel. --accept-every is
-duck-only (strict gait evaluator) and rejected for other robots.
---randomization (the shared dwc1 DR contract, walk/env/cuda_lane.py: mass,
+(OBS/ACT 3*J+16 / J) over the robot-generic dwc1 kernel; arm wires
+ArmReachEnv / CudaArmLane. --randomization (the shared dwc1 DR contract, walk/env/cuda_lane.py: mass,
 friction, kp, damping, command latency and the ABI-v7 one-sided gravity
 scale) is accepted for every robot on the device policy path (--lane-env).
 
@@ -56,14 +55,39 @@ cpu state_dict of the actor) is ALWAYS written at exit for local evaluation.
 --max-wall-s stops the update loop cleanly (checkpoint + actor_final, exit 0).
 
 --accept-every N (0 = off): every N updates (and once at the very end) the
-current deterministic policy is judged by the STRICT gait evaluator on a
-fresh non-randomized E=1 env — seeds (4242, 7) x commands (0.10/0.15/0.20)
-m/s, 8 s each; if all 6 pass, a stability confirmation runs 11 s episodes per
-command at seed 4242 (no fall through 11 s AND the exact-8 s prefix still
-passes). On confirmed pass the trainer writes <out>/accepted/
-{actor_accepted.pt, acceptance.json}, prints the WALKING ACCEPTED line with
-cumulative training wall seconds (probe time tracked and excluded) and exits
-0. Probe time never counts toward the reported training wall.
+current deterministic policy is judged by the robot's STRICT frozen judge.
+  duck (unchanged, byte-identical path): fresh non-randomized E=1 env —
+    PROBE_SEEDS x commands (0.10/0.15/0.20) m/s, 8 s each; if all pass, a
+    stability confirmation runs 11 s episodes per command at seed 4242 (no
+    fall through 11 s AND the exact-8 s prefix still passes). Prints the
+    WALKING ACCEPTED line.
+  humanoid / arm (run_robot_probe): the SAME protocol as the CPU harness
+    (walk/eval/humanoid_acceptance.py: seeds 4242/7/1913/90210 x commands
+    0.50/0.75/1.00 m/s, 8 s; walk/eval/arm_acceptance.py: the same 4 seeds
+    x 3 tiers), judged by walk/eval/humanoid_gait.py / arm_reach_judge.py
+    (FROZEN), executed as ONE E=12 batch on the TRAINING LANE CLASS
+    (robot_classes: the CUDA build named by --library on the sandbox, the
+    serial build locally) in a FRESH lane instance with every training-only
+    knob at its factory default -- randomization off, fast termination off,
+    gate terminations off, RSI off, perturbation 0 -- so the trainer's own
+    lane (its DR, curriculum knobs, RSI, episode counters, physics state)
+    is never touched and needs no restoration (proven by
+    humanoid/tests/test_humanoid_accept_probe.py: a probing run's train
+    metrics stream equals a no-probe run's). Per-tick traces come from the
+    harnesses' own capture code (walk/eval/capture.py / capture_arm_episodes)
+    through BatchedCellEnv adapters that pin each cell's harness initial
+    conditions; on a cpu device the policy is evaluated row by row, so
+    locally the probe's traces and verdict are bit-identical to the CPU
+    harness's (measured: a batched matmul's 5e-7 action difference flipped a
+    marginal cell). On the CUDA lane the physics is the fp32 device build --
+    parity with the serial judge lane holds at the certificate level, not
+    bitwise -- and the CPU harness stays the acceptance authority (gpu/
+    chain.py re-judges every leg's actor locally). All 12 cells pass ->
+    <out>/accepted/{actor_accepted.pt, acceptance.json} is written and the
+    trainer prints HUMANOID WALKING ACCEPTED / ARM REACH ACCEPTED and exits 0.
+    No 11 s confirmation stage (none exists in those harnesses).
+Every probe logs a "kind": "accept" metrics row with per-cell records and
+its wall cost; probe time never counts toward the reported training wall.
 """
 from __future__ import annotations
 
@@ -620,6 +644,113 @@ def run_acceptance_probe(cfg: GpuTrainConfig, actor, device: torch.device) -> di
             "probe_wall_s": time.perf_counter() - t0}
 
 
+# ---------------------------------------------------------------------------
+# --accept-every for --robot humanoid / arm: the CPU harness's protocol as one
+# batch on the training lane class. See the module docstring; the entry points
+# (run_batched_probe, BatchedCellEnv, harness_phase0 / BatchedCellArmEnv) live
+# next to the harnesses in walk/eval/{humanoid,arm}_acceptance.py so the probe
+# and the harness can never drift apart on cells, capture or record shape.
+# ---------------------------------------------------------------------------
+
+ACCEPTED_LINE = {"duck": "WALKING ACCEPTED",
+                 "humanoid": "HUMANOID WALKING ACCEPTED",
+                 "arm": "ARM REACH ACCEPTED"}
+
+
+def _make_robot_probe_env(cfg: GpuTrainConfig, n_envs: int, seed: int):
+    """Judging env for --robot humanoid / arm: n_envs (one per protocol
+    cell) over the TRAINING LANE CLASS (robot_classes + cfg.library: the
+    CUDA build on the sandbox, the serial build locally) in a FRESH lane
+    instance with every training-only knob at its constructor default --
+    randomization None, fast_termination False, gate termination off, RSI
+    0, perturbation 0 -- exactly what the CPU harness's make_env builds.
+    The trainer's lane is a different object and is never touched."""
+    _, _, lane_cls, env_cls = robot_classes(cfg.robot,
+                                            getattr(cfg, "variant", None))
+    return env_cls(
+        environments=int(n_envs), seed=int(seed), perturbation_rad=0.0,
+        lane_factory=lambda E, offsets: lane_cls(
+            E, joint_offsets=offsets, library_path=cfg.library))
+
+
+def _probe_policy_exact(actor, arch: str, device: torch.device):
+    """Deterministic policy for the batched probe. On a cpu device every env
+    row is evaluated as its own batch of 1 (the E=1 harness's shape): a
+    batched CPU matmul is not bitwise equal to the row product (5e-7 on the
+    accepted humanoid actor) and that alone flipped a marginal stocky cell,
+    so harness equality needs the row shape. On cuda the batch goes through
+    in one call (the device physics is not bitwise the serial lane anyway)."""
+    if device.type != "cpu":
+        return _probe_policy(actor, arch, device)
+    if arch == "ff":
+        @torch.no_grad()
+        def policy(obs):
+            o = torch.from_numpy(np.ascontiguousarray(obs))
+            return torch.cat([actor.deterministic(o[i:i + 1])
+                              for i in range(o.shape[0])]).numpy()
+        return policy
+    state = {"h": None}
+
+    @torch.no_grad()
+    def policy(obs):
+        o = torch.from_numpy(np.ascontiguousarray(obs))
+        if state["h"] is None:
+            state["h"] = [actor.initial_state(1, device)
+                          for _ in range(o.shape[0])]
+        acts = []
+        for i in range(o.shape[0]):
+            a, state["h"][i] = actor.deterministic(o[i:i + 1], state["h"][i])
+            acts.append(a)
+        return torch.cat(acts).numpy()
+    return policy
+
+
+def run_robot_probe(cfg: GpuTrainConfig, actor, device: torch.device) -> dict:
+    """--robot humanoid / arm acceptance probe: all protocol cells in one
+    batch on the training lane class, judged by the robot's frozen judge.
+    Returns the duck probe's result shape (stage1_passed / confirmed /
+    episodes / confirmation / probe_wall_s) plus cells_passed, cells_total,
+    failed_cells and protocol. A SolverFault is a failed probe, never a
+    crash (the captures record faults into the traces; construction-time
+    faults are caught here)."""
+    t0 = time.perf_counter()
+    variant = getattr(cfg, "variant", None)
+    env_factory = lambda n, seed: _make_robot_probe_env(cfg, n, seed)  # noqa: E731
+    policy_factory = lambda: _probe_policy_exact(actor, cfg.policy, device)  # noqa: E731
+    try:
+        if cfg.robot == "humanoid":
+            from walk.eval import humanoid_acceptance as ha  # noqa: PLC0415
+            res = ha.run_batched_probe(env_factory, policy_factory,
+                                       variant=variant, quiet=True)
+            protocol = {"seeds": res["seeds"], "commands": res["commands"],
+                        "variant": res["variant"], "seconds": 8.0,
+                        "judge": "walk/eval/humanoid_gait.py"}
+        elif cfg.robot == "arm":
+            from walk.eval import arm_acceptance as aa  # noqa: PLC0415
+            res = aa.run_batched_probe(variant or "kr240", env_factory,
+                                       policy_factory, quiet=True)
+            protocol = {"seeds": res["seeds"], "tiers": res["tiers"],
+                        "variant": res["variant"], "seconds": 8.0,
+                        "judge": "walk/eval/arm_reach_judge.py"}
+        else:
+            raise SystemExit(f"no acceptance probe for --robot {cfg.robot!r}")
+        episodes = res["episodes"]
+        passed = bool(res["accepted"])
+    except SolverFault as fault:
+        episodes = {"solver_fault": {"passed": False, "detail": str(fault),
+                                     "saved_problem_path": fault.saved_problem_path}}
+        passed = False
+        protocol = {"variant": variant}
+    n_pass = sum(1 for v in episodes.values() if v.get("passed"))
+    return {"stage1_passed": passed, "confirmed": passed,
+            "episodes": episodes, "confirmation": {},
+            "cells_passed": n_pass, "cells_total": len(episodes),
+            "failed_cells": [k for k, v in episodes.items()
+                             if not v.get("passed")],
+            "protocol": protocol,
+            "probe_wall_s": time.perf_counter() - t0}
+
+
 def write_acceptance(out: Path, cfg: GpuTrainConfig, actor, update: int,
                      env_steps: int, train_wall_s: float, probe_wall_s: float,
                      probe: dict) -> Path:
@@ -630,6 +761,27 @@ def write_acceptance(out: Path, cfg: GpuTrainConfig, actor, update: int,
          "state_dict": {k: v.detach().cpu()
                         for k, v in actor.state_dict().items()}},
         acc / "actor_accepted.pt")
+    if cfg.robot != "duck":
+        # humanoid / arm: the harness protocol record (no confirmation stage)
+        (acc / "acceptance.json").write_text(json.dumps({
+            "schema": "duckgridwalk.training_acceptance/2",
+            "accepted": True,
+            "robot": cfg.robot,
+            "variant": probe.get("protocol", {}).get("variant"),
+            "update": int(update),
+            "env_steps": int(env_steps),
+            "train_wall_s": round(float(train_wall_s), 3),   # excludes probe time
+            "probe_wall_s": round(float(probe_wall_s), 3),   # cumulative probing
+            "probe_wall_last_s": round(float(probe["probe_wall_s"]), 3),
+            "policy": cfg.policy,
+            "protocol": probe.get("protocol", {}),
+            "lane": "training lane class, fresh instance, DR/gates/RSI off",
+            "library": cfg.library,
+            "cells_passed": probe.get("cells_passed"),
+            "cells_total": probe.get("cells_total"),
+            "episodes": probe["episodes"],
+        }, indent=1, default=str) + "\n")
+        return acc
     (acc / "acceptance.json").write_text(json.dumps({
         "schema": "duckgridwalk.training_acceptance/1",
         "accepted": True,
@@ -718,9 +870,6 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
     obs_dim, act_dim, _, _ = robot_classes(
         cfg.robot, getattr(cfg, "variant", None))   # duck: exactly OBS, ACT
     if cfg.robot != "duck":
-        if cfg.accept_every > 0:
-            raise SystemExit("--accept-every uses the duck-only strict gait "
-                             "evaluator; not available for --robot humanoid")
         if cfg.randomization and not cfg.lane_env:
             raise SystemExit("--randomization for --robot humanoid runs on "
                              "the device policy path; add --lane-env")
@@ -877,7 +1026,10 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                 """Acceptance probe at update u; returns True on CONFIRMED
                 pass (training must stop). Time is booked as probe wall."""
                 nonlocal probe_wall_proc, last_probe_update, accepted
-                probe = run_acceptance_probe(cfg, actor, device)
+                if cfg.robot == "duck":
+                    probe = run_acceptance_probe(cfg, actor, device)
+                else:
+                    probe = run_robot_probe(cfg, actor, device)
                 probe_wall_proc += probe["probe_wall_s"]
                 last_probe_update = u
                 line = {
@@ -890,16 +1042,27 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                     "episodes": probe["episodes"],
                     "confirmation": probe["confirmation"],
                 }
-                mf.write(json.dumps(line) + "\n")
+                if cfg.robot != "duck":
+                    line.update({"robot": cfg.robot,
+                                 "variant": probe["protocol"].get("variant"),
+                                 "cells_passed": probe["cells_passed"],
+                                 "cells_total": probe["cells_total"],
+                                 "failed_cells": probe["failed_cells"]})
+                mf.write(json.dumps(line, default=str) + "\n")
                 mf.flush()
                 metrics.append(line)
                 if not cfg.quiet:
                     n_pass = sum(1 for v in probe["episodes"].values()
                                  if v.get("passed"))
+                    # the "[accept uN] ..." prefix is gpu/chain.py's PROBE
+                    # regex for every robot; the failed-cell tail is extra
+                    tail = ""
+                    if cfg.robot != "duck" and probe["failed_cells"]:
+                        tail = f" failed={probe['failed_cells']}"
                     print(f"[accept u{u}] stage1={probe['stage1_passed']} "
                           f"({n_pass}/{len(probe['episodes'])} episodes) "
                           f"confirmed={probe['confirmed']} "
-                          f"probe_wall={probe['probe_wall_s']:.1f}s")
+                          f"probe_wall={probe['probe_wall_s']:.1f}s" + tail)
                 if not probe["confirmed"]:
                     return False
                 accepted = True
@@ -908,7 +1071,7 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                 save_checkpoint(out / "latest.pt", u, actor, critic, optimizer,
                                 sample_gen, perm_gen, env_steps, faults_total,
                                 cfg, train_wall(), probe_wall())
-                print(f"WALKING ACCEPTED at update {u} after "
+                print(f"{ACCEPTED_LINE[cfg.robot]} at update {u} after "
                       f"{train_wall():.1f} s ({probe_wall():.1f} s probing)")
                 return True
 
@@ -1141,8 +1304,10 @@ def build_argparser() -> argparse.ArgumentParser:
                    help="per-env joint perturbation bound in rad (<= 0.02)")
     p.add_argument("--accept-every", type=int, default=d.accept_every, metavar="N",
                    help="0 = off; every N updates run the strict-acceptance "
-                        "probe (6 x 8 s episodes + 3 x 11 s stability "
-                        "confirmation) and STOP with exit 0 on confirmed pass")
+                        "probe with the robot's FROZEN judge (duck: 12 x 8 s "
+                        "episodes + 3 x 11 s stability confirmation; humanoid/"
+                        "arm: the CPU harness's 12 cells as one batch on the "
+                        "training lane class) and STOP with exit 0 on a pass")
     p.add_argument("--checkpoint-every", type=int, default=d.checkpoint_every)
     p.add_argument("--preflight-steps", type=int, default=d.preflight_steps,
                    help="random-action reward-sensitivity steps; 0 skips")

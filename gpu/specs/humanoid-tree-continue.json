@@ -25,13 +25,15 @@
     },
     {
       "name": "train",
-      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --robot humanoid --envs 16384 --horizon 64 --updates 99999 --seed 917 --device cuda --library experimental/duck_cuda/build-humanoid/libhumanoid_cuda_fast.so --lane-env --curriculum humanoid-walk --rsi-fraction 0.5 --policy ff --resume runs/warmstart.pt --out gpu-train-out --lr 3e-4 --max-wall-s 600 2>&1 | tee gpu-train.log",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --robot humanoid --envs 16384 --horizon 64 --updates 99999 --seed 917 --device cuda --library experimental/duck_cuda/build-humanoid/libhumanoid_cuda_fast.so --lane-env --curriculum humanoid-walk --rsi-fraction 0.5 --policy ff --resume runs/warmstart.pt --accept-every 8 --out gpu-train-out --lr 3e-4 --max-wall-s 600 2>&1 | tee gpu-train.log",
       "timeout_s": 900,
       "artifacts": [
         "gpu-train.log",
         "gpu-train-out/metrics.jsonl",
         "gpu-train-out/actor_final.pt",
-        "gpu-train-out/latest.pt"
+        "gpu-train-out/latest.pt",
+        "gpu-train-out/accepted/acceptance.json",
+        "gpu-train-out/accepted/actor_accepted.pt"
       ],
       "continue_on_error": false
     }
@@ -48,5 +50,6 @@
     "ttl_minutes": 22,
     "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
   },
-  "use_snapshot": true
+  "use_snapshot": true,
+  "accept_probe_note": "--accept-every 8: every 8 updates (~60 s at the measured ~7.4 s/update for 16384 envs x 64) the in-run probe judges the current policy on the FROZEN humanoid judge over the CPU harness's exact 12 cells (seeds 4242/7/1913/90210 x 0.50/0.75/1.00 m/s, 8 s) as one E=12 batch on a fresh CUDA-lane instance (DR/gate-termination/RSI off); 12/12 -> writes gpu-train-out/accepted/ (listed as artifacts) and stops the leg, gpu/chain.py stops the chain. Cost: 12 x 4000 ticks with per-tick readback; measured 3.2 s per probe on the local serial lane (12 humanoid envs), estimated <= 5 s on the CUDA lane (4000 one-tick launches + small D2H reads + the same per-tick python), i.e. ~10 probes x <= 5 s <= 50 s of a 600 s leg (< 8.3 %; at the measured serial cost 5.3 %). Every probe prints probe_wall=..s so the first leg verifies the estimate. Motivation: H1-STOCKY sat at 11/12 for three consecutive legs failing a DIFFERENT single cell each time -- a stochastic tail an end-of-leg judgment cannot catch but an in-run probe every 8 updates can."
 }
