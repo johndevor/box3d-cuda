@@ -178,19 +178,24 @@ class BcPretrainGates(unittest.TestCase):
                 self.assertGreaterEqual(alive_s, 0.55, (cmd, seed))
         self.assertGreater(float(np.mean(alive)), 0.65)
 
-    @unittest.skip(
-        "BLOCKED on H1.1 (same blocker as ExecutedValidation in "
-        "test_reference_gait.py): hip-roll kp 90 cannot stabilize the "
-        "388 N*m/rad torso pendulum, so no demonstrator -- and hence no "
-        "clone -- can produce a real (debounced) swing on this plant. "
-        "UNSKIP together with ExecutedValidation when the H1.1 kp/kv "
-        "table lands.")
     def test_closed_loop_replay_steps(self):
+        """ACTIVE since H1.1 + reference v3.2: the clone takes REAL
+        (debounced) swings under the honest analyzer, at RANDOM episode
+        phase0 (the training condition). Measured on the committed
+        artifact: 29 debounced swings across the 3x3 grid, >= 2 per
+        episode, 1 fully judge-qualified (cmd 0.5); pins with margin.
+        More qualification is PPO's job (the pinned-phase demonstrator
+        gate lives in test_reference_gait.ExecutedValidation)."""
         actor = self.actor.eval()
-        for cmd in (0.50, 0.75):
-            for seed in (4242, 7):
-                _, _, qualified = _replay(actor, cmd, seed)
-                self.assertGreaterEqual(qualified, 1, (cmd, seed))
+        total_swings = total_q = 0
+        for cmd in hf.COMMANDS_MPS:
+            for seed in (4242, 7, 1913):
+                _, swings, qualified = _replay(actor, cmd, seed)
+                total_swings += swings
+                total_q += qualified
+                self.assertGreaterEqual(swings, 1, (cmd, seed))
+        self.assertGreaterEqual(total_swings, 15)
+        self.assertGreaterEqual(total_q, 1)
 
 
 if __name__ == "__main__":

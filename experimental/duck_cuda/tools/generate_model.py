@@ -130,6 +130,13 @@ def emit(native, fixture, cm) -> str:
         f"#define DW_FRICTION_LOSS {f32(shared['loss'])}",
         f"#define DW_KP {f32(shared['kp'])}",
         f"#define DW_KV {f32(shared['kv'])}",
+        "// per-joint PD gain tables (H1.1 spec: gains differ per joint on",
+        "// the humanoid); the duck's are uniform broadcasts of the scalar",
+        "// gains above, so duck kernel behavior is BIT-IDENTICAL.",
+        "DW_MODEL_CONST float DW_KP_TABLE[DW_J] = "
+        + row([shared['kp']] * J) + ";",
+        "DW_MODEL_CONST float DW_KV_TABLE[DW_J] = "
+        + row([shared['kv']] * J) + ";",
         f"#define DW_EFFORT_CAP {f32(shared['cap'])}",
         "// per-joint effort caps: the duck's are uniform, so the table is a",
         "// broadcast of DW_EFFORT_CAP and kernel behavior is BIT-IDENTICAL;",

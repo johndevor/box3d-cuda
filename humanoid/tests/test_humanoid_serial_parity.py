@@ -249,9 +249,14 @@ class HumanoidSerialParityTests(unittest.TestCase):
         try:
             self.assertEqual((lane.B, lane.J, lane.P), (16, 14, 2))
             self.assertAlmostEqual(lane.home_root_height, 1.15, places=6)
-            self.assertEqual(lane.kp, 90.0)
-            self.assertEqual(lane.kv, 8.0)
-            self.assertEqual(lane.effort_cap, 70.0)   # scalar MIN tier
+            # per-joint gain/cap tables (H1.1); scalars kept as *_scalar
+            np.testing.assert_array_equal(lane.kp, np.array(h0.KP_TABLE))
+            np.testing.assert_array_equal(lane.kv, np.array(h0.KV_TABLE))
+            self.assertEqual(lane.kp_scalar, 90.0)
+            self.assertEqual(lane.kv_scalar, 8.0)
+            np.testing.assert_array_equal(lane.effort_cap,
+                                          np.array(h0.EFFORT))
+            self.assertEqual(lane.effort_cap_scalar, 70.0)  # MIN tier
             np.testing.assert_allclose(
                 lane.joint_limits,
                 np.array([(j[4], j[5]) for j in h0.JOINTS]), atol=1e-6)

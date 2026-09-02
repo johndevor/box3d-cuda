@@ -60,7 +60,12 @@ class NativeHumanoidLane:
     """Batched flat-floor H0 humanoid scene over the idv1 native lane."""
 
     def __init__(self, environments: int, joint_offsets: np.ndarray | None = None,
-                 library_path: str | Path | None = None):
+                 library_path: str | Path | None = None,
+                 h11_gains: bool | None = None):
+        # h11_gains: per-joint kp/kv tables (h1_lowering.KP_TABLE/KV_TABLE).
+        # None follows h1_lowering.H11_GAINS_ENABLED (False until the fp32
+        # kernel's DW_KP_TABLE lands, to keep oracle<->serial parity); the
+        # executed-validation gate passes True explicitly.
         native = self._native = native_lane._native()
         self.library_path = Path(library_path) if library_path else build_library()
         lib = self._lib = native.library(self.library_path)
@@ -68,7 +73,8 @@ class NativeHumanoidLane:
         self.J = h0.J
         self.B = h0.B
         self.P = 2
-        self._scene, fixture = h0.scene(lib, self.E, joint_offsets=joint_offsets)
+        self._scene, fixture = h0.scene(lib, self.E, joint_offsets=joint_offsets,
+                                        h11_gains=h11_gains)
         self.joint_limits = np.array([(j[4], j[5]) for j in h0.JOINTS])
         self.home_joint_q = np.array(h0.HOME_TARGETS)
         self.home_root_height = float(h0.reset_qpos()[2])

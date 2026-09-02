@@ -34,6 +34,11 @@
 #define DW_FRICTION_LOSS 0.0680000037f
 #define DW_KP 13.3699999f
 #define DW_KV 0.0f
+// per-joint PD gain tables (H1.1 spec: gains differ per joint on
+// the humanoid); the duck's are uniform broadcasts of the scalar
+// gains above, so duck kernel behavior is BIT-IDENTICAL.
+DW_MODEL_CONST float DW_KP_TABLE[DW_J] = {13.3699999f,13.3699999f,13.3699999f,13.3699999f,13.3699999f,13.3699999f,13.3699999f,13.3699999f,13.3699999f,13.3699999f,13.3699999f,13.3699999f,13.3699999f,13.3699999f};
+DW_MODEL_CONST float DW_KV_TABLE[DW_J] = {0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f};
 #define DW_EFFORT_CAP 3.23000002f
 // per-joint effort caps: the duck's are uniform, so the table is a
 // broadcast of DW_EFFORT_CAP and kernel behavior is BIT-IDENTICAL;

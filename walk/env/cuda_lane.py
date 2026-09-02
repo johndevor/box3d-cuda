@@ -297,6 +297,7 @@ def load_library(path: Path):
         "dwc1_gate_proxy_get": [C.c_void_p, C.POINTER(GateProxy)],
         "dwc1_set_fast_termination": [C.c_void_p, C.c_uint32],
         "dwc1_set_gate_termination": [C.c_void_p, C.c_uint32, C.c_uint32],
+        "dwc1_set_rsi": [C.c_void_p, C.c_double],
     }
     for name, args in specs.items():
         fn = getattr(lib, name)
@@ -457,6 +458,17 @@ class CudaDuckLane:
             int(max_alternation_violations))
         if rc:
             raise RuntimeError(f"dwc1_set_gate_termination status={rc}")
+
+    def set_rsi(self, fraction: float) -> None:
+        """Reference State Initialization (DeepMimic-style, default OFF):
+        with this probability each policy-reset env starts ON the
+        DW_REF_GAIT reference cycle at the bin aligned with its fresh
+        phase offset (joint q from the table, qdot from its finite
+        difference at the clock rate) so the imitation term is consistent
+        at t=0. fraction 0.0 keeps resets bit-identical to today."""
+        rc = self._lib.dwc1_set_rsi(self._h, float(fraction))
+        if rc:
+            raise RuntimeError(f"dwc1_set_rsi status={rc}")
 
     def observe(self) -> np.ndarray:
         """Current 58-dim observations (no stepping); reset()-style read."""

@@ -49,9 +49,10 @@ U8P = C.POINTER(C.c_uint8)
 
 
 def _tiered_lane(n, offsets):
-    lane = hc.CudaHumanoidLane(n, joint_offsets=offsets)
-    lane.effort_cap = np.array(h0.EFFORT, np.float64)  # per-joint tiers
-    return lane
+    # The wrapper now publishes the authored per-joint gain/cap tables
+    # (kp/kv/effort_cap), which is exactly what the env's torque estimate
+    # needs for bit-exact reward parity with the kernel.
+    return hc.CudaHumanoidLane(n, joint_offsets=offsets)
 
 
 class _DevPolicy:

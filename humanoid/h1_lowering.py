@@ -95,6 +95,22 @@ HIP_ROLL_LIMIT = 0.4           # rad, symmetric (docstring rationale)
 HIP_ROLL_EFFORT = 180.0        # authored hip tier (humanoid.rs:778-784)
 ROLL_AXIS = (1.0, 0.0, 0.0)    # parent-local forward axis (docstring)
 
+# ---- H1.1: per-joint PD gains (PHASE2.md sections 15/16) --------------------
+# The body above a hip-roll joint is a lateral inverted pendulum with
+# destabilizing stiffness g*sum(m_i*h_i) ~= 388 N*m/rad (56 kg above the
+# pivot minus the hanging swing leg below it). kp_roll = 500 = 388 + 29%
+# margin: locally stable holds (net stiffness 112 N*m/rad), roll bandwidth
+# sqrt(500/1.74) ~= 2.7 Hz >= the 1.67 Hz/mps gait clock, and with the
+# authored 180 N*m effort cap the max-restoring stabilizable lean rises to
+# 180/388 ~= 0.46 rad >> the 0.175 rad transfer requirement (kp 90 managed
+# only 0.116 -- the measured runaway). kv_roll = 60: zeta = kv/(2*sqrt(
+# kp*I)) ~= 0.30 on the ~20 kg*m^2 upper-body pendulum, ~1.0 on the 1.74
+# kg*m^2 double-support joint inertia; discrete-stability margin
+# kv*dt/I_eff = 0.069 << 2. All OTHER joints keep the authored uniform
+# 90/8 (sagittal single-support balance runs through the ankle CoP on the
+# 0.46 m foot, which kp 90 serves -- minimal-change principle).
+# (KP_TABLE/KV_TABLE/H11_GAINS_ENABLED defined after JOINT_NAMES below)
+
 # H0 hip anchor on the pelvis (h0.JOINTS left/right hip parent anchors)
 _H0 = {name: j for j, name in enumerate(h0.JOINT_NAMES)}
 _L_HIP_ANCHOR = h0.JOINTS[_H0["left_hip"]][2]        # (0, -0.15, +0.15)
@@ -182,6 +198,33 @@ JOINTS = (
 REFERENCE_XYZW = h0.REFERENCE_XYZW      # identity for every joint
 EFFORT = tuple(j[6] for j in JOINTS)
 HOME_TARGETS = tuple(0.0 for _ in range(J))
+# v3.2 executed-sweep finding (PHASE2.md section 16): the SAME static-
+# instability class recurs down the leg -- mass-above-joint x g x CoM
+# height exceeds kp 90 at the knee too (~62 kg x 20 x 0.55 ~= 680 N*m/rad
+# buckling stiffness; the measured single-support pelvis sink ate the
+# swing clearance), and the stance hip pitch / ankle need matching
+# authority to hold posture through the transfer. The unlocking set,
+# validated by the first executed QUALIFIED swing: knee 800/30 (> 680 +
+# margin), hip pitch and ankle 300/20 (support roles; empirically
+# sufficient, larger values not needed), hip roll 500/60 (the section-15
+# pendulum spec), everything else authored 90/8.
+def _gain(name, roll, knee, hip_ankle, other):
+    if "hip_roll" in name:
+        return roll
+    if "knee" in name:
+        return knee
+    if "hip" in name or "ankle" in name:
+        return hip_ankle
+    return other
+
+
+KP_TABLE = tuple(_gain(n, 500.0, 800.0, 300.0, h0.KP) for n in JOINT_NAMES)
+KV_TABLE = tuple(_gain(n, 60.0, 30.0, 20.0, h0.KV) for n in JOINT_NAMES)
+# ACTIVE since the kernel's DW_KP_TABLE/DW_KV_TABLE consumption landed
+# (the generator emits these tables straight from KP_TABLE/KV_TABLE, so
+# the fp32 lane and the f64 oracle apply identical per-joint gains --
+# parity preserved).
+H11_GAINS_ENABLED = True
 
 
 def foot_vertices(half=None):
@@ -200,10 +243,11 @@ def reset_vel() -> np.ndarray:
     return np.zeros(N)
 
 
-def fixture():
+def fixture(h11_gains: bool | None = None):
     """H1 as an articulated_v2 fixture (same lowering rules as h0.fixture)."""
     import api as av  # noqa: PLC0415  (path set up by h0_lowering import)
     from articulated_v1 import Body as _Body  # noqa: PLC0415
+    use_tables = H11_GAINS_ENABLED if h11_gains is None else bool(h11_gains)
     f = av.Fixture(J)
     for b, (_, _, half, mass) in enumerate(BODIES):
         if b == 0:
@@ -211,7 +255,7 @@ def fixture():
         else:
             f.body[b] = _Body(mass, (np.ctypeslib.ctypes.c_double * 3)(
                 *box_inertia(mass, half)))
-    for jt, hinge in zip(JOINTS, f.hinge):
+    for j, (jt, hinge) in enumerate(zip(JOINTS, f.hinge)):
         name, parent, ap, ac, lower, upper, effort, axis = jt
         hinge.parent = parent
         hinge.ap[:] = ap
@@ -221,8 +265,8 @@ def fixture():
         hinge.armature = ARMATURE
         hinge.damping = PASSIVE_DAMPING
         hinge.loss = FRICTION_LOSS
-        hinge.kp = KP
-        hinge.kv = KV
+        hinge.kp = KP_TABLE[j] if use_tables else KP
+        hinge.kv = KV_TABLE[j] if use_tables else KV
         hinge.cap = effort
         hinge.motor_enabled = 1
     f.model.root_inertia[:] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
@@ -260,13 +304,13 @@ def limits(f=None):
 
 
 def scene(lib, environments: int = 1, joint_offsets=None,
-          root_lift: float = 0.0):
+          root_lift: float = 0.0, h11_gains: bool | None = None):
     """Registered idv1 Scene at the H1 floor-clear reset (h0.scene twin)."""
     lane = _HERE.parent / "experimental" / "integrated_duck_v1"
     if str(lane) not in sys.path:
         sys.path.insert(0, str(lane))
     import native  # noqa: PLC0415
-    f = fixture()
+    f = fixture(h11_gains=h11_gains)
     q = np.tile(reset_qpos(), (environments, 1))
     q[:, 2] += float(root_lift)
     if joint_offsets is not None:
@@ -280,3 +324,44 @@ def scene(lib, environments: int = 1, joint_offsets=None,
     return native.Scene(
         lib, f, q, v, shapes, pairs, np.tile(mu, (environments, 1)),
         gravity=[[0.0, 0.0, -GRAVITY]] * environments, limits=limits(f)), f
+
+
+# ---- L/R mirror symmetry spec (PPO symmetry augmentation) -------------------
+# Mirror about the sagittal (x-z world) plane, y -> -y. Joint mapping:
+# left_* <-> right_*; SAGITTAL (pitch, local-z axis) joints keep sign;
+# ROLL (local-x axis) joints FLIP sign (a left lean mirrors to a right
+# lean). Body-frame obs vectors under the mirror (body x=fwd, y=up,
+# z=world -y): true vectors (gravity, linear velocity) flip their z
+# component; pseudo-vectors (angular velocity) flip x and y components.
+# The phase clock's left/right semantics swap under mirror = phase + pi:
+# (sin, cos) -> (-sin, -cos). Contacts swap L/R; command/zeros unchanged.
+def symmetry_spec():
+    """{'obs_perm','obs_sign','act_perm','act_sign'} numpy arrays for the
+    walk/env/humanoid_flat.py observation layout (3J + 16). Verified by
+    humanoid/tests/test_symmetry.py: involution + mirrored-physics."""
+    names = list(JOINT_NAMES)
+
+    def mirror_joint(n):
+        if n.startswith("left_"):
+            return names.index("right_" + n[5:])
+        if n.startswith("right_"):
+            return names.index("left_" + n[6:])
+        return names.index(n)                     # waist / neck
+    act_perm = np.array([mirror_joint(n) for n in names])
+    act_sign = np.array([-1.0 if "roll" in n else 1.0 for n in names])
+    T = 3 * J
+    obs_perm = np.arange(T + 16)
+    obs_sign = np.ones(T + 16)
+    for block in range(3):                        # q, qdot, prev action
+        base = block * J
+        obs_perm[base:base + J] = base + act_perm
+        obs_sign[base:base + J] = act_sign
+    obs_sign[T + 2] = -1.0                        # gravity body-z
+    obs_sign[T + 3] = -1.0                        # omega body-x
+    obs_sign[T + 4] = -1.0                        # omega body-y
+    obs_sign[T + 8] = -1.0                        # linear velocity body-z
+    obs_perm[[T + 12, T + 13]] = [T + 13, T + 12]  # contacts swap L/R
+    obs_sign[T + 14] = -1.0                       # sin(phase + pi)
+    obs_sign[T + 15] = -1.0                       # cos(phase + pi)
+    return {"obs_perm": obs_perm, "obs_sign": obs_sign,
+            "act_perm": act_perm, "act_sign": act_sign}

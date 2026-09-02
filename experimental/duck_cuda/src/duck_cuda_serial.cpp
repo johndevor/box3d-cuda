@@ -16,12 +16,20 @@
 struct dwc1_scene {
   uint32_t E = 0;
   DwParams params{};
+  uint64_t rsi_rng = 0x9E3779B97F4A7C15ull;  // dwc1_set_rsi draw stream
   dwc1_randomization rand{};  // creation-time ranges (all zero = off)
   std::vector<DwState> state, initial;
   std::vector<DwWork> work;  // [E] per-env cooperative workspaces
 };
 
 namespace {
+// deterministic scene-level uniform [0,1) for the RSI draw (xorshift64)
+double rsi_draw(uint64_t* st) {
+  uint64_t x = *st;
+  x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+  *st = x;
+  return (double)(x >> 11) * 0x1p-53;
+}
 bool rand_config_valid(const dwc1_randomization* r) {
   if (!r) return true;
   const double ranges[4] = {r->r_mass, r->r_friction, r->r_kp, r->r_damping};
@@ -70,6 +78,7 @@ int dwc1_create(uint32_t environments, const float* joint_offsets,
     s->params.fast_termination = 0;
     s->params.gate_first_deadline_ticks = 0;
     s->params.gate_max_alt_violations = 0;
+    s->params.rsi_fraction = 0.0;
     for (uint32_t e = 0; e < environments; e++)
       dw_init_state(&s->state[e],
                     joint_offsets ? joint_offsets + (size_t)e * DW_J : nullptr);
@@ -170,10 +179,15 @@ int dwc1_reset_policy(dwc1_scene* s, const uint8_t* mask,
   };
   if (!finite_all(commands) || !finite_all(phase_offsets)) return DWC1_INVALID;
   for (uint32_t e = 0; e < s->E; e++)
-    if (!mask || mask[e])
+    if (!mask || mask[e]) {
       dw_policy_reset_env(&s->state[e], &s->initial[e],
                           commands ? commands + e : nullptr,
                           phase_offsets ? phase_offsets + e : nullptr);
+      // RSI (default 0.0 = OFF: no draw, resets bit-identical to today)
+      if (s->params.rsi_fraction > 0.0
+          && rsi_draw(&s->rsi_rng) < s->params.rsi_fraction)
+        dw_policy_rsi_init(&s->state[e]);
+    }
   return DWC1_OK;
 }
 
@@ -237,6 +251,13 @@ int dwc1_set_gate_termination(dwc1_scene* s, uint32_t first_deadline_ticks,
   if (!s) return DWC1_INVALID;
   s->params.gate_first_deadline_ticks = first_deadline_ticks;
   s->params.gate_max_alt_violations = max_alternation_violations;
+  return DWC1_OK;
+}
+
+int dwc1_set_rsi(dwc1_scene* s, double fraction) {
+  if (!s || !(fraction == fraction) || fraction < 0.0 || fraction > 1.0)
+    return DWC1_INVALID;
+  s->params.rsi_fraction = fraction;
   return DWC1_OK;
 }
 
@@ -311,7 +332,8 @@ int dwc1_debug_eval(const float* q, const float* v, float* mass /*[N,N]*/,
     for (int n = 0; n < DW_N; n++) smooth[n] = -e.bias[n];
     for (int j = 0; j < DW_J; j++) {
       float tj = dw_clampf(target[j], DW_LIMIT_LOWER[j], DW_LIMIT_UPPER[j]);
-      float motor = DW_KP * (tj - q[7 + j]) + DW_KV * (0.0f - v[6 + j]);
+      float motor = DW_KP_TABLE[j] * (tj - q[7 + j])
+                  + DW_KV_TABLE[j] * (0.0f - v[6 + j]);
       smooth[6 + j] += dw_clampf(motor, -DW_EFFORT_CAP_TABLE[j],
                                  DW_EFFORT_CAP_TABLE[j])
                      - DW_DAMPING * v[6 + j];

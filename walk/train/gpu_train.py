@@ -92,6 +92,7 @@ class GpuTrainConfig:
     out: str = "runs/gpu-train"
     resume: str | None = None
     init_actor: str | None = None    # actor-only warm start (e.g. BC pretrain)
+    rsi_fraction: float = 0.0        # reference-state-init reset fraction
     max_wall_s: float = 0.0          # 0 disables the wall-clock stop
     policy: str = "ff"               # "ff" (feed-forward) or "gru" (recurrent)
     lr: float = 3e-4
@@ -154,6 +155,12 @@ class LanePolicyEnv:
         else:                        # training lane: freeze fallen envs
             kwargs["fast_termination"] = True
         self._lane = lane_cls(self.E, **kwargs)
+        rsi = float(getattr(cfg, "rsi_fraction", 0.0) or 0.0)
+        if rsi > 0.0:
+            if not hasattr(self._lane, "set_rsi"):
+                raise SystemExit("--rsi-fraction requires a lane with RSI "
+                                 "support (humanoid)")
+            self._lane.set_rsi(rsi)
         self._seed = cfg.seed
         self.fault_count = 0
         # curriculum hook: a stage may pin resets to a command pool. None
@@ -982,6 +989,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--init-actor", default=None,
                    help="actor file for weights-only init (BC pretrain); "
                         "critic/optimizer start fresh")
+    p.add_argument("--rsi-fraction", type=float, default=0.0,
+                   help="fraction of resets initialized from reference-gait "
+                        "states (DeepMimic RSI); requires a lane with set_rsi")
     p.add_argument("--max-wall-s", type=float, default=0.0,
                    help="stop cleanly (checkpoint + actor_final.pt) after this many seconds")
     p.add_argument("--policy", choices=("ff", "gru"), default=d.policy,
@@ -1009,7 +1019,7 @@ def config_from_args(args: argparse.Namespace) -> GpuTrainConfig:
         robot=args.robot,
         curriculum=args.curriculum,
         envs=args.envs, horizon=args.horizon, updates=args.updates, seed=args.seed,
-        device=args.device, library=args.library, lane_env=args.lane_env, randomization=(json.loads(args.randomization) if args.randomization else None), out=args.out, resume=args.resume, init_actor=args.init_actor,
+        device=args.device, library=args.library, lane_env=args.lane_env, randomization=(json.loads(args.randomization) if args.randomization else None), out=args.out, resume=args.resume, init_actor=args.init_actor, rsi_fraction=args.rsi_fraction,
         max_wall_s=args.max_wall_s, policy=args.policy, lr=args.lr,
         gamma=args.gamma, gae_lambda=args.gae_lambda, perturbation=args.perturbation,
         accept_every=args.accept_every,

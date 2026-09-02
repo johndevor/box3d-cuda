@@ -86,6 +86,7 @@ dw_step_policy_kernel(DwState* states, const float* actions,
 struct dwc1_scene {
   uint32_t E = 0;
   DwParams params{};
+  uint64_t rsi_rng = 0x9E3779B97F4A7C15ull;  // dwc1_set_rsi draw stream
   dwc1_randomization rand{};  // creation-time ranges (all zero = off)
   DwState* device_state = nullptr;      // [E], authoritative
   float* device_targets = nullptr;      // [E, J] targets or actions
@@ -107,6 +108,14 @@ struct dwc1_scene {
 };
 
 namespace {
+// deterministic scene-level uniform [0,1) for the RSI draw (xorshift64;
+// identical stream to the serial driver's)
+double rsi_draw(uint64_t* st) {
+  uint64_t x = *st;
+  x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+  *st = x;
+  return (double)(x >> 11) * 0x1p-53;
+}
 int pull_states(const dwc1_scene* s) {
   auto* mutable_scene = const_cast<dwc1_scene*>(s);
   cudaError_t err = cudaMemcpy(mutable_scene->host.data(), s->device_state,
@@ -160,6 +169,7 @@ int dwc1_create(uint32_t environments, const float* joint_offsets,
     s->params.fast_termination = 0;
     s->params.gate_first_deadline_ticks = 0;
     s->params.gate_max_alt_violations = 0;
+    s->params.rsi_fraction = 0.0;
     s->initial.resize(environments);
     s->host.resize(environments);
     for (uint32_t e = 0; e < environments; e++)
@@ -322,9 +332,18 @@ int dwc1_reset_policy(dwc1_scene* s, const uint8_t* mask,
     if (phase_offsets && !(phase_offsets[e] == phase_offsets[e]))
       return DWC1_INVALID;
   }
+  // one bulk device->host pull: the finished episodes' gate-proxy counters
+  // must be snapshotted into the reset state (the serial driver does this
+  // inside dw_policy_reset_env from the live state), and keep-cases read
+  // command/phase0 from the same copy.
+  if (pull_states(s) != DWC1_OK) return DWC1_NUMERIC;
   for (uint32_t e = 0; e < s->E; e++) {
     if (mask && !mask[e]) continue;
     DwState next = s->initial[e];
+    next.gp_ep_qual[0] = s->host[e].gp_qual[0];
+    next.gp_ep_qual[1] = s->host[e].gp_qual[1];
+    next.gp_ep_alt_viol = s->host[e].gp_alt_viol;
+    next.gp_ep_term_reason = s->host[e].gp_term_reason;
     if (commands) {
       next.command = commands[e];
     } else {  // keep the env's previous command (creation default: 0)
@@ -343,6 +362,10 @@ int dwc1_reset_policy(dwc1_scene* s, const uint8_t* mask,
                      sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess)
         return DWC1_NUMERIC;
     }
+    // RSI (default 0.0 = OFF: no draw, resets bit-identical to today)
+    if (s->params.rsi_fraction > 0.0
+        && rsi_draw(&s->rsi_rng) < s->params.rsi_fraction)
+      dw_policy_rsi_init(&next);
     if (cudaMemcpy(s->device_state + e, &next, sizeof(DwState),
                    cudaMemcpyHostToDevice) != cudaSuccess)
       return DWC1_NUMERIC;
@@ -437,6 +460,13 @@ int dwc1_set_gate_termination(dwc1_scene* s, uint32_t first_deadline_ticks,
   if (!s) return DWC1_INVALID;
   s->params.gate_first_deadline_ticks = first_deadline_ticks;
   s->params.gate_max_alt_violations = max_alternation_violations;
+  return DWC1_OK;
+}
+
+int dwc1_set_rsi(dwc1_scene* s, double fraction) {
+  if (!s || !(fraction == fraction) || fraction < 0.0 || fraction > 1.0)
+    return DWC1_INVALID;
+  s->params.rsi_fraction = fraction;
   return DWC1_OK;
 }
 

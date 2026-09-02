@@ -70,8 +70,12 @@ LEAD_STEPS = 2            # PD + slew lag compensation (module docstring)
 ANKLE_KP = 3.0            # ankle pitch vs gravity-x
 ANKLE_KD = 0.0            # ankle pitch vs body-frame pitch rate
 HIP_PITCH_SHARE = 1.2     # hips carry 1.2x the ankle pitch assist
-ROLL_KP = 5.0             # hip roll vs lateral gravity (H1's new authority)
-ROLL_KD = -0.3            # hip roll vs body-frame roll rate
+ROLL_KP = 0.0             # v3.2: OFF. The reference's overdrive/taper roll
+ROLL_KD = 0.0             # owns the weight transfer and kp_roll 500 holds
+#                           it; the crude lateral assist (v2-era 5.0/-0.3,
+#                           swept when the reference could not transfer)
+#                           now actively degrades executed swings --
+#                           measured 23 mm vs 45 mm peak clearance.
 # J-derived obs channel indices (walk/env/humanoid_flat.py layout)
 _T = 3 * hf.ACT
 IDX_GRAV_X = _T           # forward gravity component (pitch lean)

@@ -225,6 +225,17 @@ int dwc1_gate_proxy_get(const dwc1_scene*, dwc1_gate_proxy* out /* [E] */);
 int dwc1_set_gate_termination(dwc1_scene*, uint32_t first_deadline_ticks,
                               uint32_t max_alternation_violations);
 
+// Reference State Initialization (DeepMimic-style; additive export,
+// default OFF/0.0 keeps every reset bit-identical). fraction in [0, 1]:
+// each policy-reset env independently starts, with this probability, ON
+// the DW_REF_GAIT reference cycle at the bin aligned with its freshly
+// drawn phase offset (joint q from the table row, joint qdot from the
+// table's finite difference at the gait clock rate, root at the reset
+// pose) -- so the imitation reward term is consistent at t = 0. The
+// scene-level draw stream is deterministic (fixed seed at creation). An
+// all-zero reference table makes enabled RSI a no-op by construction.
+int dwc1_set_rsi(dwc1_scene*, double fraction);
+
 // Training-lane throughput switch (default OFF; additive export, ABI
 // version unchanged). When enabled, dwc1_step_policy (a) skips physics
 // entirely for envs already done at block entry (frozen state, reward 0,

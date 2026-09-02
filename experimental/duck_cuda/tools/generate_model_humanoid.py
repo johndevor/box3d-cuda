@@ -150,6 +150,17 @@ def emit(h0) -> str:
         "#define DW_TIER_CEILING 2.4e-2f",
         f"#define DW_KP {f32(h0.KP)}",
         f"#define DW_KV {f32(h0.KV)}",
+        "// per-joint PD gain tables consumed by the kernel (H1.1 spec,",
+        "// PHASE2.md section 15: quasi-static single support needs",
+        "// hip-roll kp >> the destabilizing gravitational stiffness).",
+        "// AUTHORED BY THE LOWERING: emitted from KP_TABLE / KV_TABLE",
+        "// when the lowering defines them (tuples of length J), else",
+        "// uniform broadcasts of the scalar KP / KV -- the humanoid agent",
+        "// coordinates gain values through the lowering, never here.",
+        "DW_MODEL_CONST float DW_KP_TABLE[DW_J] = "
+        + row(list(getattr(h0, "KP_TABLE", None) or [h0.KP] * J)) + ";",
+        "DW_MODEL_CONST float DW_KV_TABLE[DW_J] = "
+        + row(list(getattr(h0, "KV_TABLE", None) or [h0.KV] * J)) + ";",
         "// Scalar cap = MIN of the authored per-joint tiers (180/140/70),",
         "// kept for diagnostics/back-compat; the kernel clamps with the",
         "// per-joint DW_EFFORT_CAP_TABLE below.",

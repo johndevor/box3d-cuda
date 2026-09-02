@@ -302,6 +302,12 @@ typedef struct DwParams {
   // tighten them without recompiling; they compose with fast_termination
   // (a gate-terminated env freezes identically).
   uint32_t gate_first_deadline_ticks, gate_max_alt_violations;
+  // Reference State Initialization fraction (dwc1_set_rsi, default 0.0 =
+  // OFF): probability that a policy reset initializes the joints from the
+  // DW_REF_GAIT row aligned with the env's freshly drawn phase offset
+  // (DeepMimic-style exploration fix). 0.0 keeps every reset bit-identical
+  // to today.
+  double rsi_fraction;
 } DwParams;
 
 typedef struct DwEval {
@@ -1250,12 +1256,17 @@ static DW_HD int dw_tick(DwState* s, const float* target,
   bool bad = false;
   DW_FOR(n, DW_N) w->smooth[n] = -w->e.bias[n];
   DW_SYNC();
-  // domain randomization: scaled gains, identity at neutral (1.0) scales
-  const float kpf = (float)((double)DW_KP * s->kp_scale);
+  // domain randomization: scaled gains, identity at neutral (1.0) scales.
+  // PD gains are PER-JOINT tables (H1.1 spec: hip-roll kp >> the rest;
+  // duck emits uniform broadcasts of its scalar gains, so duck builds are
+  // bit-identical -- (float)((double)DW_KP_TABLE[j] * scale) is the exact
+  // arithmetic the scalar path used).
   const float dampf = (float)((double)DW_DAMPING * s->damping_scale);
   DW_FOR(j, DW_J) {
+    const float kpf = (float)((double)DW_KP_TABLE[j] * s->kp_scale);
     float tj = dw_clampf(target[j], DW_LIMIT_LOWER[j], DW_LIMIT_UPPER[j]);
-    float motor = kpf * (tj - s->q[7 + j]) + DW_KV * (0.0f - s->v[6 + j]);
+    float motor = kpf * (tj - s->q[7 + j])
+                + DW_KV_TABLE[j] * (0.0f - s->v[6 + j]);
     if (!isfinite(motor)) bad = true;
     // per-joint effort caps (H0 tiers 180/140/70); the duck table is a
     // uniform broadcast of DW_EFFORT_CAP, keeping duck builds bit-identical
@@ -1815,8 +1826,9 @@ static DW_HD float dw_policy_reward(DwState* s, const double* a,
   // APPLIED, latency-delayed targets, and kp carries the per-env scale)
   double tq = 0;
   for (int j = 0; j < DW_J; j++) {
-    double m = ((double)DW_KP * s->kp_scale) * (eff[j] - (double)s->q[7 + j])
-             - (double)DW_KV * (double)s->v[6 + j];
+    double m = ((double)DW_KP_TABLE[j] * s->kp_scale)
+                 * (eff[j] - (double)s->q[7 + j])
+             - (double)DW_KV_TABLE[j] * (double)s->v[6 + j];
     m = fmin((double)DW_EFFORT_CAP_TABLE[j],
              fmax(-(double)DW_EFFORT_CAP_TABLE[j], m));
     tq += m * m;
@@ -2047,6 +2059,39 @@ static DW_HD void dw_policy_reset_env(DwState* s, const DwState* initial,
   s->gp_ep_qual[1] = eq1;
   s->gp_ep_alt_viol = ev;
   s->gp_ep_term_reason = er;
+}
+
+// Reference State Initialization (DeepMimic-style), applied by the drivers
+// to a freshly reset env when the scene's RSI draw fires: joints start ON
+// the reference cycle at the bin the imitation term will index at t=0.
+//   bin  = the EXACT bin math of reward term 8a at t=0 (phase = phase0),
+//          so the imitation bonus is consistent from the first step;
+//   q    = DW_REF_GAIT[bin], clamped to the joint limits;
+//   qdot = the table's finite difference at the gait clock rate,
+//          (row[bin+1]-row[bin]) * DW_REF_BINS * (BASE + PER_MPS*command);
+//   root pose/velocity: untouched (reset height/orientation, zero rates).
+// An all-zero selected row (placeholder table, e.g. pre-reference-gait
+// humanoid headers) makes this a NO-OP so enabling the switch on such a
+// build cannot perturb resets. Returns whether the state was initialized.
+static DW_HD bool dw_policy_rsi_init(DwState* s) {
+  double frac = fmod(s->phase0 / (2.0 * DWP_PI), 1.0);
+  if (frac < 0.0) frac += 1.0;
+  const int bin = ((int)(frac * (double)DW_REF_BINS)) % DW_REF_BINS;
+  const int nxt = (bin + 1) % DW_REF_BINS;
+  double nz = 0.0;
+  for (int j = 0; j < DW_J; j++) nz += fabs(DW_REF_GAIT[bin][j]);
+  if (!(nz > 0.0)) return false;           // all-zero placeholder row
+  const double hz = DW_PHASE_HZ_BASE + DW_PHASE_HZ_PER_MPS * s->command;
+  for (int j = 0; j < DW_J; j++) {
+    const double qj = fmin((double)DW_LIMIT_UPPER[j],
+                           fmax((double)DW_LIMIT_LOWER[j],
+                                DW_REF_GAIT[bin][j]));
+    const double qd = (DW_REF_GAIT[nxt][j] - DW_REF_GAIT[bin][j])
+                      * (double)DW_REF_BINS * hz;
+    s->q[7 + j] = (float)qj;
+    s->v[6 + j] = (float)qd;
+  }
+  return true;
 }
 
 #endif  // DUCK_CUDA_KERNEL_H

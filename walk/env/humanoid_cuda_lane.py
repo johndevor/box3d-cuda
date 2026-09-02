@@ -160,13 +160,22 @@ class CudaHumanoidLane:
                                         info.joint_upper[:J])])
         self.home_joint_q = np.array(info.home_qpos[7:Q], dtype=np.float64)
         self.home_root_height = float(info.home_root_height)
-        self.kp = float(info.kp)
-        self.kv = float(info.kv)
+        # PD gains are PER-JOINT (H1.1: hip-roll kp 500 / kv 60, the rest
+        # 90 / 8): the kernel consumes DW_KP_TABLE / DW_KV_TABLE, and the
+        # env's torque estimate must use the SAME tables for exact reward
+        # parity. dwc1_info's kp/kv stay the scalar base values; expose
+        # them separately.
+        self.kp = np.array(h0.KP_TABLE, dtype=np.float64)
+        self.kv = np.array(h0.KV_TABLE, dtype=np.float64)
+        self.kp_scalar = float(info.kp)
+        self.kv_scalar = float(info.kv)
         # dwc1_info's effort_cap is a scalar summary (the MIN tier); the
         # kernel's PD clamp and reward estimate consume the per-joint
-        # DW_EFFORT_CAP_TABLE (authored tiers 180/140/70). Expose both.
-        self.effort_cap = float(info.effort_cap)
-        self.effort_cap_per_joint = np.array(h0.EFFORT, dtype=np.float64)
+        # DW_EFFORT_CAP_TABLE (authored tiers 180/140/70). The env clips
+        # with the per-joint table.
+        self.effort_cap = np.array(h0.EFFORT, dtype=np.float64)
+        self.effort_cap_scalar = float(info.effort_cap)
+        self.effort_cap_per_joint = self.effort_cap
         # device policy path bookkeeping (mirrors FlatFloorHumanoidEnv seeding)
         self._seed = 0
         self._episode = np.zeros(self.E, np.int64)
@@ -229,6 +238,13 @@ class CudaHumanoidLane:
             int(max_alternation_violations))
         if rc:
             raise RuntimeError(f"dwc1_set_gate_termination status={rc}")
+
+    def set_rsi(self, fraction: float) -> None:
+        """Reference State Initialization (see CudaDuckLane.set_rsi;
+        default OFF/0.0 = resets bit-identical to today)."""
+        rc = self._lib.dwc1_set_rsi(self._h, float(fraction))
+        if rc:
+            raise RuntimeError(f"dwc1_set_rsi status={rc}")
 
     def observe(self) -> np.ndarray:
         """Current 52-dim observations (no stepping); reset()-style read."""

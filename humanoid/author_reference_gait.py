@@ -73,12 +73,15 @@ JOINTS = ("waist", "neck",
 LEG_LENGTH_M = 0.86            # hip->knee 0.54 + knee->ankle 0.32 (humanoid.rs)
 PHASE_HZ_PER_MPS = 1.67        # MUST match walk/env/humanoid_flat.py (pinned)
 STRIDE_M = 1.0 / PHASE_HZ_PER_MPS      # clock-encoded, command-free
-DS_FRACTION = 0.15             # per-transfer double support (30% total)
+DS_FRACTION = 0.22             # per-transfer double support (44% total --
+#                                the 180 N*m-capped lateral shift needs
+#                                ~0.25 s; fp32-executed-swept vs 0.15/
+#                                0.25/0.28/0.30)
 STANCE_FRACTION = 0.5 + DS_FRACTION    # 0.65 of the cycle per foot
 SWING_FRACTION = 0.5 - DS_FRACTION     # 0.35 of the cycle per foot
 HIP_AMPLITUDE = math.asin(STANCE_FRACTION * STRIDE_M / (2.0 * LEG_LENGTH_M))
 KNEE_PEAK = 0.5                # rad; = the ACTION-BOX ceiling (0.5*1.0)
-HIP_LIFT = 0.3                 # rad; swing-hip flexion bump: the executed
+HIP_LIFT = 0.42                # rad; swing-hip flexion bump: the executed
 #                                lean drops the pelvis by L*(1-cos(lean))
 #                                and a box-capped knee alone cannot out-
 #                                shorten it (measured kiss-drag); the hip
@@ -87,7 +90,15 @@ ACTION_BOX = 0.5               # rad; every table target must be reachable
 #                                through requested = HOME + 0.5*a, a in
 #                                [-1,1] -- an unreachable imitation target
 #                                is a permanent error term (ankle was -0.65)
-ROLL_AMPLITUDE = 0.18          # rad; the STATIC BALANCE POINT asin(0.15/
+ROLL_DRIVE = 0.4               # rad; TRANSFER OVERDRIVE: commanding far
+#                                past the target runs the roll motor at
+#                                its 180 N*m cap during DS (the 0.15 m
+#                                shift physically needs ~0.25 s at full
+#                                torque, a = tau/(m*h); a tracking-scale
+#                                ramp crawls at the 2.4 rad/s closed-loop
+#                                pendulum rate and arrives a swing late
+#                                -- measured, PHASE2.md section 16)
+ROLL_HOLD = 0.18               # rad; the STATIC BALANCE POINT asin(0.15/
 #                                0.86) = 0.175 + a hair: the executed probe
 #                                showed 0.35 holds blow PAST the balance
 #                                point into sideways tipping (achieved
@@ -95,19 +106,32 @@ ROLL_AMPLITUDE = 0.18          # rad; the STATIC BALANCE POINT asin(0.15/
 #                                transfer completes the gravity moment -> 0
 #                                and droop vanishes, so the hold target IS
 #                                the desired lean
+ROLL_TAPER = 0.06              # rad; the hold DECAYS to this across the
+#                                swing (real-gait lean release): the swing
+#                                foot has no ankle-roll dof, so body lean
+#                                tilts it and its low EDGE eats
+#                                0.14*sin(lean) of whole-sole clearance --
+#                                25 mm at a constant 0.18 hold (measured
+#                                29 mm plateau vs the 30 mm bar); tapering
+#                                restored 68 mm executed clearance
+ROLL_ADVANCE = 0.05            # cycle fraction; ramp starts late in the
+#                                preceding swing so slew+lag finish in DS
 OUT = Path(__file__).resolve().parent / "reference_gait.json"
 
 
-def lean(s: float) -> float:
-    """lambda(s): +1 toward the LEFT foot, ramps in DS, holds in swing."""
-    s = s % 1.0
-    if s < DS_FRACTION:                          # DS1: -> left
-        return -math.cos(math.pi * s / DS_FRACTION)
-    if s < 0.5:                                  # right swing: hold left
-        return 1.0
-    if s < 0.5 + DS_FRACTION:                    # DS2: -> right
-        return math.cos(math.pi * (s - 0.5) / DS_FRACTION)
-    return -1.0                                  # left swing: hold right
+def roll_target(s: float) -> float:
+    """v3.2 bang-settle-taper roll: overdrive in DS, tapering hold in swing
+    (+ toward the LEFT foot; phase-advanced by ROLL_ADVANCE)."""
+    s = (s + ROLL_ADVANCE) % 1.0
+    if s < DS_FRACTION:                          # DS1 -> left: overdrive
+        return ROLL_DRIVE
+    if s < 0.5:                                  # right swing: tapering hold
+        u = (s - DS_FRACTION) / (0.5 - DS_FRACTION)
+        return ROLL_HOLD + (ROLL_TAPER - ROLL_HOLD) * u
+    if s < 0.5 + DS_FRACTION:                    # DS2 -> right: overdrive
+        return -ROLL_DRIVE
+    u = (s - 0.5 - DS_FRACTION) / (0.5 - DS_FRACTION)
+    return -(ROLL_HOLD + (ROLL_TAPER - ROLL_HOLD) * u)
 
 
 def leg(s: float) -> tuple[float, float, float]:
@@ -131,7 +155,7 @@ def table() -> list[list[float]]:
         s = (b + 0.5) / BINS
         lh, lk, la = leg(s)                    # left: stance from s=0
         rh, rk, ra = leg(s + 0.5)              # right: half-cycle shift
-        roll = ROLL_AMPLITUDE * lean(s)        # both hips, pelvis -> stance
+        roll = roll_target(s)                  # both hips, pelvis -> stance
         rows.append([0.0, 0.0, roll, lh, lk, la, roll, rh, rk, ra,
                      0.0, 0.0, 0.0, 0.0])
     return rows
@@ -139,7 +163,7 @@ def table() -> list[list[float]]:
 
 def payload() -> dict:
     return {
-        "schema": "duckgridwalk.humanoid_reference_gait/3",
+        "schema": "duckgridwalk.humanoid_reference_gait/3.2",
         "generator": "humanoid/author_reference_gait.py (analytic; rerun "
                      "reproduces byte-identically)",
         "bins": BINS,
@@ -150,7 +174,10 @@ def payload() -> dict:
             "ds_fraction": DS_FRACTION,
             "stance_fraction": STANCE_FRACTION,
             "hip_amplitude_rad": HIP_AMPLITUDE,
-            "roll_amplitude_rad": ROLL_AMPLITUDE,
+            "roll_drive_rad": ROLL_DRIVE,
+            "roll_hold_rad": ROLL_HOLD,
+            "roll_taper_rad": ROLL_TAPER,
+            "roll_advance_cycle": ROLL_ADVANCE,
             "hip_lift_rad": HIP_LIFT,
             "action_box_rad": ACTION_BOX,
             "knee_peak_rad": KNEE_PEAK,
