@@ -31,15 +31,29 @@ PROBE = re.compile(
     r" confirmed=(True|False)")
 
 
-def leg_score(run_dir: Path) -> tuple[int, int, bool]:
-    """(best passed-episodes, probes seen, confirmed?) for one leg's log."""
-    best, probes, confirmed = -1, 0, False
+def leg_score(run_dir: Path) -> tuple[float, int, bool]:
+    """(score, probes seen, confirmed?) for one leg.
+
+    With accept probes (duck) the score is the best passed-episode count.
+    Without probes (humanoid: no gait evaluator yet) fall back to mean
+    ep_len over the last 10 updates of metrics.jsonl — the plateau rule
+    then tracks survival instead of gate progress."""
+    best, probes, confirmed = -1.0, 0, False
     for log in (run_dir / "logs").glob("*.log"):
         for m in PROBE.finditer(log.read_text(errors="replace")):
             probes += 1
-            best = max(best, int(m.group(3)))
+            best = max(best, float(m.group(3)))
             confirmed |= m.group(5) == "True"
-    return best, probes, confirmed
+    if probes:
+        return best, probes, confirmed
+    metrics = sorted(run_dir.glob("artifacts/**/metrics.jsonl"))
+    if metrics:
+        rows = [json.loads(l) for l in
+                metrics[-1].read_text().splitlines() if l.strip()]
+        tail = [r["ep_len_mean"] for r in rows[-10:] if "ep_len_mean" in r]
+        if tail:
+            best = round(sum(tail) / len(tail), 1)
+    return best, 0, False
 
 
 def latest_run_dir(output: str) -> Path | None:
