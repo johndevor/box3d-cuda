@@ -89,6 +89,7 @@ class GpuTrainConfig:
     library: str | None = None
     out: str = "runs/gpu-train"
     resume: str | None = None
+    init_actor: str | None = None    # actor-only warm start (e.g. BC pretrain)
     max_wall_s: float = 0.0          # 0 disables the wall-clock stop
     policy: str = "ff"               # "ff" (feed-forward) or "gru" (recurrent)
     lr: float = 3e-4
@@ -634,6 +635,20 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
 
     start_update, env_steps, faults_total = 0, 0, 0
     prev_train_wall, prev_probe_wall = 0.0, 0.0
+    if getattr(cfg, "init_actor", None):
+        if cfg.resume:
+            raise SystemExit("--init-actor and --resume are mutually exclusive")
+        from walk.train.ppo import unpack_actor_file
+        raw = torch.load(Path(cfg.init_actor), map_location="cpu",
+                         weights_only=False)
+        arch, sd = unpack_actor_file(raw)
+        if arch != cfg.policy:
+            raise SystemExit(f"--init-actor is a {arch} actor but --policy "
+                             f"{cfg.policy} was requested")
+        actor.load_state_dict(sd)
+        if not cfg.quiet:
+            print(f"[gpu_train] actor initialized from {cfg.init_actor} "
+                  "(critic/optimizer fresh)")
     if cfg.resume:
         ck_path = out / "latest.pt" if cfg.resume == "auto" else Path(cfg.resume)
         ck = torch.load(ck_path, map_location="cpu", weights_only=False)
@@ -893,6 +908,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True)
     p.add_argument("--resume", nargs="?", const="auto", default=None,
                    help="checkpoint path, or bare flag for <out>/latest.pt")
+    p.add_argument("--init-actor", default=None,
+                   help="actor file for weights-only init (BC pretrain); "
+                        "critic/optimizer start fresh")
     p.add_argument("--max-wall-s", type=float, default=0.0,
                    help="stop cleanly (checkpoint + actor_final.pt) after this many seconds")
     p.add_argument("--policy", choices=("ff", "gru"), default=d.policy,
@@ -919,7 +937,7 @@ def config_from_args(args: argparse.Namespace) -> GpuTrainConfig:
     return GpuTrainConfig(
         robot=args.robot,
         envs=args.envs, horizon=args.horizon, updates=args.updates, seed=args.seed,
-        device=args.device, library=args.library, lane_env=args.lane_env, randomization=(json.loads(args.randomization) if args.randomization else None), out=args.out, resume=args.resume,
+        device=args.device, library=args.library, lane_env=args.lane_env, randomization=(json.loads(args.randomization) if args.randomization else None), out=args.out, resume=args.resume, init_actor=args.init_actor,
         max_wall_s=args.max_wall_s, policy=args.policy, lr=args.lr,
         gamma=args.gamma, gae_lambda=args.gae_lambda, perturbation=args.perturbation,
         accept_every=args.accept_every,
