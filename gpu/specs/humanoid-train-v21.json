@@ -1,9 +1,7 @@
 {
   "name": "humanoid-train-v21",
   "tar_globs": [],
-  "upload_extra": [
-    "runs/bc_init.pt"
-  ],
+  "upload_extra": [],
   "jobs": [
     {
       "name": "gpu-info",
@@ -25,7 +23,7 @@
     },
     {
       "name": "train",
-      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --robot humanoid --envs 16384 --horizon 64 --updates 99999 --seed 917 --device cuda --library experimental/duck_cuda/build-humanoid/libhumanoid_cuda_fast.so --lane-env --policy ff --init-actor runs/bc_init.pt --out gpu-train-out --lr 3e-4 --max-wall-s 2400 2>&1 | tee gpu-train.log",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --robot humanoid --envs 16384 --horizon 64 --updates 99999 --seed 917 --device cuda --library experimental/duck_cuda/build-humanoid/libhumanoid_cuda_fast.so --lane-env --policy ff --resume humanoid/bc_init_ckpt.pt --out gpu-train-out --lr 3e-4 --max-wall-s 2400 2>&1 | tee gpu-train.log",
       "timeout_s": 2700,
       "artifacts": [
         "gpu-train.log",
