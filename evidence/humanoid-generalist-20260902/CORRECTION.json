@@ -1,0 +1,3 @@
+{
+ "correction": "2026-09-02: generalist r2 (actor-generalist-gru-r2.pt) scores 10/12 on the CPU authority harness (seed1913 cmd1.00, seed90210 cmd0.50 alternation); the r2 commit message claimed nominal 12/12 based only on the 2-seed brittleness nominal row. r1 (actor-generalist-gru-r1.pt) was verified 12/12 on the authority. Brittleness 77/90 (r2) vs 76/90 (r1) stands. Current best generalist by authority: r1."
+}
