@@ -23,7 +23,7 @@ for k in range(120):
     obs, priv, r, done, info = env.step(a)
     if k % 10 == 9:
         T = env.trunk()
-        print(f"knee_q={env._coord()[0,3].item():.4f} theta={env.servo[0, env.jidx[3], 0].item():.4f} tau={env.out[0, 9 + env.jidx[3].item()].item():.3f} ", end=""); print(f"t={env.t[0].item():.2f} h={T['h'][0].item():.4f} tilt={math.degrees(T['tilt'][0].item()):.2f} x={T['p'][0, 0].item():.4f} soles={env.out[0, 7].item():.4f},{env.out[0, 8].item():.4f} "
+        print("   pitch q", " ".join(f"{env._coord()[0, i].item():.3f}" for i in [2, 3, 4, 7, 8, 9])); print(f"knee_q={env._coord()[0,3].item():.4f} theta={env.servo[0, env.jidx[3], 0].item():.4f} tau={env.out[0, 9 + env.jidx[3].item()].item():.3f} ", end=""); print(f"t={env.t[0].item():.2f} h={T['h'][0].item():.4f} tilt={math.degrees(T['tilt'][0].item()):.2f} x={T['p'][0, 0].item():.4f} soles={env.out[0, 7].item():.4f},{env.out[0, 8].item():.4f} "
               f"contact={env.out[0, 0].item():.0f}{env.out[0, 1].item():.0f} F={env.out[0, 2].item():.1f},{env.out[0, 3].item():.1f} gyro={obs[0, 0:3].numpy().round(3)} grav={obs[0, 3:6].numpy().round(3)} q={obs[0, 6:11].numpy().round(3)} done={bool(done[0])}")
 print("wall", round(time.time() - t0, 2), "s for", 120 * 4, "env-steps")
 from rl.duck_walk.env import tq_rot  # noqa: E402
