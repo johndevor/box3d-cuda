@@ -139,7 +139,7 @@ class DuckWalkEnv:
         self.home_steps = torch.round(self.sign * self.home * STEPS_PER_RAD)
         sv = m["servo"]
         self.sp0 = torch.tensor([sv["vin"], sv["kt"], sv["R"], sv["kp_fw"] * sv["error_gain"] * sv["error_gain_ratio"], sv["max_pwm"], sv["armature"], sv["friction_base"],
-                                 sv["friction_viscous"], sv["backlash_rad"], sv["gear_stiffness"], sv["gear_damping"], sv["gear_max_torque"], sv["max_velocity"], 0.0], device=d)
+                                 sv["friction_viscous"], sv["backlash_rad"], sv["gear_stiffness"], sv["gear_damping"], sv["gear_max_torque"], sv["max_velocity"], float(__import__("os").environ.get("DUCK_MOTOR_LATE", "0"))], device=d)
         P = imu["profile"]
         self.imu_prof = P
 

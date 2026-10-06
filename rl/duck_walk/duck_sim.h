@@ -122,6 +122,7 @@ HD void servo_step(float *sv, const float *P, float q, bool on, float dt, float 
   const float tau = tau_m - tau_g - P[7] * sv[1], wtry = sv[1] + dt * tau / P[5], c = P[6] * dt / P[5];
   sv[1] = fabsf(wtry) <= c ? 0.f : wtry - (wtry > 0 ? c : -c);
   sv[0] += dt * sv[1];
+  sv[7] = sv[4] != 0 ? (sv[5] != 0 ? sv[5] : 1e-9f) : 0.f;   // (the motor command of the previous step: P[13] > 0 applies it one step late)
   const float d2 = sv[0] - q;
   sv[4] = fabsf(d2) > hb ? (d2 > 0 ? 1.f : -1.f) : 0.f;
   sv[5] = sv[4] != 0 ? sv[1] + P[9] / P[10] * (d2 - sv[4] * hb) : 0.f;
@@ -242,9 +243,10 @@ HD void step_env(int e, const Model &M, Env &E, int n_outer) {
           const float speed = dot3(wr, g.axis), ka = ang_k(p, iip, g.axis) + ang_k(c, iic, g.axis);
           // the servo's gear as a force-based velocity motor (World2 bamStep 9): damping cg toward vt, |impulse| <= gmax*h
           const float *P = sp + NSP * j; const float *s = sv + NSERVO * j;
-          if (s[4] != 0) {
+          const bool late = P[13] > 0; const float m_on = late ? s[7] : s[4], m_vt = late ? s[7] : s[5];
+          if (m_on != 0) {
             const float hc = h * P[10], old = L[5];
-            float dlm = (hc * (s[5] - speed) - old) / (1.f + hc * ka);
+            float dlm = (hc * (m_vt - speed) - old) / (1.f + hc * ka);
             const float nw = clampf(old + dlm, -P[11] * h, P[11] * h); dlm = nw - old; L[5] = nw;
             float J[3], N[3]; for (int q = 0; q < 3; q++) { J[q] = g.axis[q] * dlm; N[q] = -J[q]; } apply_aimp(p, iip, N); apply_aimp(c, iic, J);
           }
