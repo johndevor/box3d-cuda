@@ -70,6 +70,40 @@ def qyaw(a):
     return torch.stack([torch.zeros_like(a), torch.zeros_like(a), torch.sin(a / 2), torch.cos(a / 2)], -1)
 
 
+def pocket_statics(ax_, ay_, D, ch, yaw):
+    """13 static boxes (mm) of a rectangular pocket, mouth at z = 0, floor at z = -D, half-widths ax_ (x) and ay_ (y),
+    a 45-degree lead-in of ch at the mouth, all turned by yaw about z: per side a lower wall, an upper wall and a funnel
+    box; a floor. Returns pos [m,13,3], half [m,13,3], quat [m,13,4]."""
+    dev, m = ax_.device, len(ax_)
+    T = torch.full_like(ax_, 5.0)
+    W = torch.maximum(ax_, ay_) + ch + T
+    pos = torch.zeros(m, N_STATIC, 3, device=dev)
+    half = torch.zeros(m, N_STATIC, 3, device=dev)
+    quat = torch.zeros(m, N_STATIC, 4, device=dev)
+    quat[..., 3] = 1
+    r2 = math.sqrt(0.5)
+    qy = qyaw(yaw)
+    qc = torch.tensor([0, math.sin(math.pi / 8), 0, math.cos(math.pi / 8)], device=dev).expand(m, 4)
+    for k in range(4):
+        phi = k * math.pi / 2
+        a = ax_ if k % 2 == 0 else ay_
+        qz = qmul(qy, torch.tensor([0, 0, math.sin(phi / 2), math.cos(phi / 2)], device=dev).expand(m, 4))
+        local = [
+            (torch.stack([a + (ch + T) / 2, 0 * a, -(D + ch) / 2], -1), torch.stack([(ch + T) / 2, W, (D - ch) / 2], -1), None),
+            (torch.stack([a + ch + T / 2, 0 * a, -ch / 2], -1), torch.stack([T / 2, W, ch / 2], -1), None),
+            (torch.stack([a + ch, 0 * a, -ch], -1), torch.stack([ch * r2, W, ch * r2], -1), qc),
+        ]
+        for j, (p, hf, q) in enumerate(local):
+            i = 3 * k + j
+            pos[:, i] = qrot(qz, p)
+            half[:, i] = hf
+            quat[:, i] = qmul(qz, q) if q is not None else qz
+    pos[:, 12] = torch.stack([0 * D, 0 * D, -D - T / 2], -1)
+    half[:, 12] = torch.stack([W, W, T / 2], -1)
+    quat[:, 12] = qy
+    return pos, half, quat
+
+
 class ConnectorMateBatch(PegInsertBatch):
     """N independent worlds. step(action[N,9]) -> obs[N,57], reward[N], done[N], info; priv() -> [N, PRIV_SIZE]."""
 
@@ -117,41 +151,38 @@ class ConnectorMateBatch(PegInsertBatch):
         P["qT_b"] = qmul(P["qT_b"], qy)
         yerr = torch.deg2rad(torch.randn(m, generator=g, device=d) * c["yaw_err_deg"] * c["pose_scale"])
         P["q0"] = qmul(P["q0"], qyaw(P["yaw"] + yerr))
+        if c.get("chain_states"):
+            self._chain(P, idx)
         return P
 
+    def _chain(self, P, idx):
+        """Step 2 of the chain test: the socket's true pose is a placed housing's (step 1's end states, restored from the
+        snapshot file): the program believes the nest's layout pose, so the target error is minus the placement's offset
+        and the plug, presented at the believed yaw, is off by the placement's yaw. The stated sigma is the nest's."""
+        c, g, d, m = self.cfg, self.g, self.dev, len(idx)
+        if not hasattr(self, "_chain_db"):
+            db = torch.load(c["chain_states"], map_location="cpu")
+            ok = db["ok"]
+            self._chain_db = (db["off_mm"][ok].to(d) * 1e-3, db["yaw_rad"][ok].to(d))
+        off, yaw = self._chain_db
+        j = torch.randint(0, len(off), (m,), generator=g, device=d)
+        o, dy = off[j], yaw[j]
+        # (the socket at the housing's centre: the world frame is the true socket's; the belief is the layout's)
+        P["terr"] = torch.stack([-o[:, 0], -o[:, 1], P["terr"][:, 2]], -1)
+        sig = c.get("chain_sigma_mm", 0.3) * 1e-3
+        P["tsp"] = torch.full((m,), sig, device=d)
+        # the plug presented over the believed target (the in-hand error and the presentation as sampled, about the belief)
+        ang = uni(g, m, (0, 2 * math.pi), d)
+        r = uni(g, m, c.get("chain_present_mm", (0.0, 0.5)), d) * 1e-3
+        P["tip0"] = torch.stack([-o[:, 0] + r * torch.cos(ang), -o[:, 1] + r * torch.sin(ang), P["tip0"][:, 2]], -1)
+        P["q0"] = qmul(P["q0"], qyaw(-dy))
+        P["qT_b"] = qmul(P["qT_b"], qyaw(-dy))
+
     def _geometry(self, idx):
-        """Static boxes (mm): per side a lower wall, an upper wall and a 45-degree funnel box; a floor; turned by the yaw."""
+        """Static boxes (mm): the socket's pocket (pocket_statics), turned by the yaw."""
         P, mmf = self.p, 1000.0
-        ax_ = (P["w"][idx] / 2 + P["clear"][idx]) * mmf
-        ay_ = (P["t"][idx] / 2 + P["clear"][idx]) * mmf
-        D, ch = P["floor"][idx] * mmf, P["hch"][idx] * mmf
-        T = torch.full_like(ax_, 5.0)
-        W = torch.maximum(ax_, ay_) + ch + T
-        m = len(idx)
-        pos = torch.zeros(m, N_STATIC, 3, device=self.dev)
-        half = torch.zeros(m, N_STATIC, 3, device=self.dev)
-        quat = torch.zeros(m, N_STATIC, 4, device=self.dev)
-        quat[..., 3] = 1
-        r2 = math.sqrt(0.5)
-        qy = qyaw(P["yaw"][idx])
-        qc = torch.tensor([0, math.sin(math.pi / 8), 0, math.cos(math.pi / 8)], device=self.dev).expand(m, 4)
-        for k in range(4):
-            phi = k * math.pi / 2
-            a = ax_ if k % 2 == 0 else ay_
-            qz = qmul(qy, torch.tensor([0, 0, math.sin(phi / 2), math.cos(phi / 2)], device=self.dev).expand(m, 4))
-            local = [
-                (torch.stack([a + (ch + T) / 2, 0 * a, -(D + ch) / 2], -1), torch.stack([(ch + T) / 2, W, (D - ch) / 2], -1), None),
-                (torch.stack([a + ch + T / 2, 0 * a, -ch / 2], -1), torch.stack([T / 2, W, ch / 2], -1), None),
-                (torch.stack([a + ch, 0 * a, -ch], -1), torch.stack([ch * r2, W, ch * r2], -1), qc),
-            ]
-            for j, (p, hf, q) in enumerate(local):
-                i = 3 * k + j
-                pos[:, i] = qrot(qz, p)
-                half[:, i] = hf
-                quat[:, i] = qmul(qz, q) if q is not None else qz
-        pos[:, 12] = torch.stack([0 * D, 0 * D, -D - T / 2], -1)
-        half[:, 12] = torch.stack([W, W, T / 2], -1)
-        quat[:, 12] = qy
+        pos, half, quat = pocket_statics((P["w"][idx] / 2 + P["clear"][idx]) * mmf, (P["t"][idx] / 2 + P["clear"][idx]) * mmf,
+                                         P["floor"][idx] * mmf, P["hch"][idx] * mmf, P["yaw"][idx])
         st = self.state
         st[idx, 1:, 0:3] = pos
         st[idx, 1:, 3:7] = quat
