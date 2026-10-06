@@ -88,7 +88,8 @@ class DuckWalkEnv:
         self.dr = default_dr(**(dr or {})) if dr_on else default_dr(mass_scale=(1, 1), trunk_com_shift_m=0, friction=(0.8, 0.8), damping_lin=(1, 1), damping_ang=(2, 2),
                                                                  kt=(1, 1), R=(1, 1), vin=(7.4, 7.4), gain=(1, 1), armature=(1, 1), friction_base=(1, 1), friction_viscous=(1, 1),
                                                                  backlash_rad=(0.0087, 0.0087), gear_stiffness=(1, 1), gear_damping=(1, 1), max_velocity=(1, 1), goal_extra_delay=(0, 0), imu_delay=(1, 1),
-                                                                 imu_noise=(1, 1), imu_bias=(1, 1), calibration_steps=0, push_p=0.0, init_yaw=0.0, init_vel=0.0, **(dr or {}))
+                                                                 imu_noise=(1, 1), imu_bias=(1, 1), calibration_steps=0, push_p=0.0, init_yaw=0.0, init_vel=0.0)
+        if not dr_on: self.dr.update(dr or {})
         self.g = torch.Generator(device="cpu").manual_seed(seed)
         self.ext = load_ext(self.device)
         self.substeps, self.iterations = substeps, iterations

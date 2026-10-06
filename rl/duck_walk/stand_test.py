@@ -9,7 +9,8 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2]
 from rl.duck_walk.env import DuckWalkEnv, LEGS  # noqa: E402
 
 mode = sys.argv[1] if len(sys.argv) > 1 else "stand"
-env = DuckWalkEnv(4, device="cpu", seed=1, dr_on=False, substeps=int(sys.argv[2]) if len(sys.argv) > 2 else 4, iterations=int(sys.argv[3]) if len(sys.argv) > 3 else 8)
+import json, os
+env = DuckWalkEnv(4, device="cpu", seed=1, dr_on=False, dr=json.loads(os.environ.get("DR", "{}")), substeps=int(sys.argv[2]) if len(sys.argv) > 2 else 4, iterations=int(sys.argv[3]) if len(sys.argv) > 3 else 8)
 y0 = env.trunk()["h"][0].item()
 print("trunk com y0", round(y0, 4), "mass", env.base_mass[0].item())
 t0 = time.time()
