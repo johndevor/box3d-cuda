@@ -157,6 +157,7 @@ class DuckWalkEnv:
         self.prev_action, self.q_obs_prev, self.cmd = z(E, LEGS), z(E, LEGS), z(E, 3)
         self.hist = z(E, HISTORY, FRAME)
         self.t, self.next_push, self.air, self.contact_prev = z(E), z(E), z(E, 2), z(E, 2)
+        self.stance = z(E, 2)
         self.ep_ret, self.ep_len = z(E), z(E)
         self.last_touch_x = z(E, 2)
         self.base_mass, self.fric_now = z(E), z(E)
@@ -215,7 +216,7 @@ class DuckWalkEnv:
         vx = self._u(*dr["cmd_vx"], n)
         vx = torch.where(torch.rand(n, generator=self.g).to(d) < dr["cmd_zero_p"], torch.zeros_like(vx), vx)
         self.cmd[idx] = torch.stack([vx, torch.zeros_like(vx), torch.zeros_like(vx)], -1)
-        self.prev_action[idx] = 0; self.t[idx] = 0; self.air[idx] = 0; self.contact_prev[idx] = 1
+        self.prev_action[idx] = 0; self.t[idx] = 0; self.air[idx] = 0; self.stance[idx] = 0; self.contact_prev[idx] = 1
         self.next_push[idx] = self._u(*dr["push_interval_s"], n)
         self.ep_ret[idx] = 0; self.ep_len[idx] = 0
         # the servos hold the standing pose; the IMU's fusion starts from the true down direction (as after power-on rest)
@@ -337,6 +338,7 @@ class DuckWalkEnv:
         moving = (cmd[:, 0].abs() > 0.02).float()
         r_air = ((self.air - 0.2).clamp(max=0.3) * touch.float()).sum(-1) * moving
         self.air = torch.where(contact > 0.5, torch.zeros_like(self.air), self.air)
+        self.stance = torch.where(contact > 0.5, self.stance + dt, torch.zeros_like(self.stance))
         self.contact_prev = contact.clone()
         single = ((contact > 0.5).float().sum(-1) == 1).float()
         swing_h = torch.where(contact < 0.5, self.out[:, 7:9], torch.zeros_like(self.out[:, 7:9])).clamp(max=0.03)
@@ -349,6 +351,7 @@ class DuckWalkEnv:
             height=-2000.0 * (T["h"] - self.trunk_y0).clamp(max=0) ** 2,
             air=3.0 * r_air,
             single=0.6 * single * moving,
+            stance=-1.0 * (self.stance > 0.5).float().sum(-1) * moving,
             clearance=10.0 * swing_h.sum(-1) * moving,
             still=-0.5 * (1 - moving) * (self.out[:, 4:6].sum(-1) + (contact < 0.5).float().sum(-1) * 0.5),
             action_rate=-0.02 * ((a - self.prev_action) ** 2).sum(-1),
