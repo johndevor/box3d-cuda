@@ -61,8 +61,8 @@ class Actor(nn.Module):
         self.net = mlp(n_in, n_act)
         self.log_std = nn.Parameter(torch.full((n_act,), log_std))
         with torch.no_grad():  # start pushing (~5 N), turning forward (~200 rpm) and never stopping (a[6] > 0 ends the skill)
-            self.net[-1].bias[4] = 0.3
-            self.net[-1].bias[5] = 0.5
+            self.net[-1].bias[4] = 0.8     # ~19 N
+            self.net[-1].bias[5] = 0.3     # ~115 rpm: under the seat-speed limit
             self.net[-1].bias[6] = -3.0
             self.log_std[6] = -2.0
 
@@ -134,6 +134,8 @@ def ppo_phase(env, actor, critic, actor_in, args, out, phase, max_min, log, min_
     best, hist = -1.0, []
     while True:
         env.resample_friction()
+        if phase == "teacher" and args.curriculum_frac > 0:   # pose errors ramp 0.3 -> 1 x over the first part of the teacher phase
+            env.cfg["pose_scale"] = min(1.0, 0.3 + 0.7 * (time.time() - t0) / (args.curriculum_frac * max_min * 60))
 
         def store(t, o, p, a, ex, r, done):
             buf["obs"][t], buf["priv"][t], buf["act"][t] = o, p, a
@@ -191,13 +193,14 @@ def ppo_phase(env, actor, critic, actor_in, args, out, phase, max_min, log, min_
                    kl=round(kl_sum / max(1, n_mb), 4), std=round(actor.log_std.exp().mean().item(), 3), **stats.row())
         log(row)
         hist.append(row["success"])
-        if row["episodes"] >= 2000 and row["success"] > best:
+        row["pose_scale"] = round(env.cfg["pose_scale"], 3)
+        if row["episodes"] >= 2000 and row["success"] > best and env.cfg["pose_scale"] >= 1.0:
             best = row["success"]
             torch.save(dict(actor=actor.state_dict(), critic=critic.state_dict(), row=row), out / f"{phase}_best.pt")
         if it % 10 == 0:
             torch.save(dict(actor=actor.state_dict(), critic=critic.state_dict(), row=row), out / f"{phase}.pt")
         W = args.plateau_iters // 2   # plateau: the last W iterations' mean success no better than the W before (+0.003)
-        plateau = it >= min_iters and len(hist) >= 2 * W and sum(hist[-W:]) / W - sum(hist[-2 * W:-W]) / W < 0.003
+        plateau = it >= min_iters and env.cfg["pose_scale"] >= 1.0 and len(hist) >= 2 * W and sum(hist[-W:]) / W - sum(hist[-2 * W:-W]) / W < 0.003
         if plateau or time.time() - t0 > max_min * 60 or steps >= args.max_steps:
             torch.save(dict(actor=actor.state_dict(), critic=critic.state_dict(), row=row), out / f"{phase}.pt")
             return dict(steps=steps, wall_s=time.time() - t0, final=row, best=best, stop="plateau" if plateau else "budget")
@@ -282,9 +285,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="runs/screw")
     ap.add_argument("--envs", type=int, default=16384)
-    ap.add_argument("--horizon", type=int, default=32)
+    ap.add_argument("--horizon", type=int, default=64)
     ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--gamma", type=float, default=0.99)
+    ap.add_argument("--gamma", type=float, default=0.995)
     ap.add_argument("--lam", type=float, default=0.95)
     ap.add_argument("--clip", type=float, default=0.2)
     ap.add_argument("--ent", type=float, default=0.0)
@@ -297,6 +300,7 @@ def main():
     ap.add_argument("--finetune-max-min", type=float, default=40)
     ap.add_argument("--eval-n", type=int, default=4096)
     ap.add_argument("--eval-ticks", type=int, default=380)
+    ap.add_argument("--curriculum-frac", type=float, default=0.3)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--cfg", default="{}", help="JSON overrides of env.default_cfg")
@@ -330,6 +334,7 @@ def main():
         ck = torch.load(best_or_last(out, "teacher"), map_location=env.dev)
         teacher.load_state_dict(ck["actor"])
         critic.load_state_dict(ck["critic"])
+    env.cfg["pose_scale"] = cfg.get("pose_scale", 1.0)
     summary["teacher_eval"] = evaluate(cfg, teacher, t_in, a.eval_n, 10_000, a.device, a.eval_ticks)
     log(dict(event="teacher_eval", **summary["teacher_eval"]))
     # ---- student by DAgger, its observation normaliser = the teacher's on the 49 shared fields

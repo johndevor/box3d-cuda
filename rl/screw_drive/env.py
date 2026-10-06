@@ -160,6 +160,9 @@ class ScrewDriveBatch:
         tb = torch.tan(torch.deg2rad(uni(g, m, c["flank_deg"], d)))
         mu = uni(g, m, c["flank_mu"], d)
         camc = torch.where(tb > mu + 1e-3, S[:, 4] * (1 + mu * tb) / (tb - mu).clamp_min(1e-3), torch.full((m,), 1e3, device=d))
+        # (a Phillips screw whose set torque needs more axial force than the arm's 60 N limit allows at 0.9 x is driven hex:
+        # an infeasible episode teaches nothing; cam-out stays possible for a light push)
+        P["phil"] = P["phil"] * (P["tset_nom"] <= camc * 54.0).float()
         P["camc"] = torch.where(P["phil"] > 0.5, camc, torch.full((m,), 1e3, device=d))
         P["hexcap"] = torch.where(P["phil"] > 0.5, torch.full((m,), 1e3, device=d), S[:, 5] * uni(g, m, c["hex_fraction"], d))
         P["tmot"] = 1.875 * S[:, 3]
@@ -585,7 +588,7 @@ class ScrewDriveBatch:
         v["lat_last"], v["tilt_last"], v["theta_last"] = lat, tilt, theta * (mode >= 0.5).float()
         done = code > 0
         term = torch.zeros_like(r)
-        for val, rw in ((1, 10.0), (2, -5.0), (3, -5.0), (4, -5.0), (5, -1.0), (6, -5.0), (7, -5.0), (8, -2.0), (9, -3.0), (11, -3.0)):
+        for val, rw in ((1, 10.0), (2, -5.0), (3, -5.0), (4, -5.0), (5, -1.0), (6, -5.0), (7, -5.0), (8, -2.0), (9, -5.0), (11, -3.0)):
             term = torch.where(code == val, torch.full_like(r, rw), term)
         r = r + term
         success = code == 1
