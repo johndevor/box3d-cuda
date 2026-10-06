@@ -71,7 +71,7 @@ def default_dr(**over):
     c = dict(
         mass_scale=(0.85, 1.15), trunk_com_shift_m=0.01, friction=(0.4, 1.2), damping_lin=(0.5, 1.5), damping_ang=(1.0, 3.0),
         kt=(0.85, 1.15), R=(0.85, 1.15), vin=(6.8, 8.2), gain=(0.85, 1.15), armature=(0.75, 1.3), friction_base=(0.5, 1.6),
-        friction_viscous=(0.5, 1.6), backlash_rad=(0.0, 0.02), gear_stiffness=(0.7, 1.3), max_velocity=(0.9, 1.1),
+        friction_viscous=(0.5, 1.6), backlash_rad=(0.0, 0.02), gear_stiffness=(0.4, 1.3), gear_damping=(0.6, 3.0), max_velocity=(0.9, 1.1),
         goal_extra_delay=(0, 1), imu_delay=(0, 1), imu_noise=(0.5, 2.0), imu_bias=(0.0, 2.0), calibration_steps=3,
         push_interval_s=(2.0, 5.0), push_dv=0.25, push_p=1.0, init_yaw=math.pi, init_vel=0.05,
         cmd_vx=(0.0, 0.25), cmd_zero_p=0.15, episode_s=20.0,
@@ -87,7 +87,7 @@ class DuckWalkEnv:
         self.E, self.device = n_envs, torch.device(device)
         self.dr = default_dr(**(dr or {})) if dr_on else default_dr(mass_scale=(1, 1), trunk_com_shift_m=0, friction=(0.8, 0.8), damping_lin=(1, 1), damping_ang=(2, 2),
                                                                  kt=(1, 1), R=(1, 1), vin=(7.4, 7.4), gain=(1, 1), armature=(1, 1), friction_base=(1, 1), friction_viscous=(1, 1),
-                                                                 backlash_rad=(0.0087, 0.0087), gear_stiffness=(1, 1), max_velocity=(1, 1), goal_extra_delay=(0, 0), imu_delay=(1, 1),
+                                                                 backlash_rad=(0.0087, 0.0087), gear_stiffness=(1, 1), gear_damping=(1, 1), max_velocity=(1, 1), goal_extra_delay=(0, 0), imu_delay=(1, 1),
                                                                  imu_noise=(1, 1), imu_bias=(1, 1), calibration_steps=0, push_p=0.0, init_yaw=0.0, init_vel=0.0, **(dr or {}))
         self.g = torch.Generator(device="cpu").manual_seed(seed)
         self.ext = load_ext(self.device)
@@ -192,6 +192,7 @@ class DuckWalkEnv:
             sp[..., k] *= self._u(*dr[key], n * self.NJ).reshape(n, self.NJ)
         sp[..., 0] = self._u(*dr["vin"], n)[:, None]            # one battery per duck
         sp[..., 8] = self._u(*dr["backlash_rad"], n * self.NJ).reshape(n, self.NJ)
+        sp[..., 10] *= self._u(*dr["gear_damping"], n * self.NJ).reshape(n, self.NJ)
         sp[..., 10] = torch.maximum(sp[..., 10], sp[..., 9] * self.dt / 1.25)   # (World2's ring check: k·DT/c <= 1.25)
         self.sp[idx] = sp
         self.servo[idx] = 0; self.jl[idx] = 0; self.cl[idx] = 0
