@@ -139,7 +139,7 @@ def main():
                 v = ac.value(B["obs"][j], B["priv"][j])
                 vl = ((v - R[j]) ** 2).mean()
                 ent = dist.entropy().sum(-1).mean()
-                loss = pg + 1.0 * vl - 0.003 * ent + 0.001 * (mean ** 2).mean()
+                loss = pg + 1.0 * vl - 0.006 * ent + 0.001 * (mean ** 2).mean()
                 opt.zero_grad(); loss.backward(); nn.utils.clip_grad_norm_(ac.parameters(), 1.0); opt.step()
                 with torch.no_grad():
                     kl = (B["logp"][j] - logp).mean().item(); kls.append(kl)
@@ -148,7 +148,7 @@ def main():
             for g in opt.param_groups:
                 if mk > desired_kl * 2: g["lr"] = max(1e-5, g["lr"] / 1.5)
                 elif mk < desired_kl / 2: g["lr"] = min(1e-3, g["lr"] * 1.5)
-        with torch.no_grad(): ac.log_std.clamp_(math.log(0.05), math.log(1.0))
+        with torch.no_grad(): ac.log_std.clamp_(math.log(0.15), math.log(1.0))
         steps += n
         recent = ep_stats[-2000:]
         if recent:

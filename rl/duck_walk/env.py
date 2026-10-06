@@ -335,28 +335,32 @@ class DuckWalkEnv:
         touch = (contact > 0.5) & (self.contact_prev < 0.5)
         self.air += dt
         moving = (cmd[:, 0].abs() > 0.02).float()
-        r_air = ((self.air - 0.25) * touch.float()).sum(-1) * moving
+        r_air = ((self.air - 0.2).clamp(max=0.3) * touch.float()).sum(-1) * moving
         self.air = torch.where(contact > 0.5, torch.zeros_like(self.air), self.air)
         self.contact_prev = contact.clone()
+        single = ((contact > 0.5).float().sum(-1) == 1).float()
+        swing_h = torch.where(contact < 0.5, self.out[:, 7:9], torch.zeros_like(self.out[:, 7:9])).clamp(max=0.03)
         terms = dict(
-            track_vx=1.5 * torch.exp(-(T["vx"] - cmd[:, 0]) ** 2 / 0.005),
-            track_vy=0.5 * torch.exp(-(T["vy"] - cmd[:, 1]) ** 2 / 0.005),
-            track_wz=0.5 * torch.exp(-(T["wz"] - cmd[:, 2]) ** 2 / 0.05),
-            alive=torch.full_like(T["vx"], 0.5),
+            track_vx=2.0 * torch.exp(-(T["vx"] - cmd[:, 0]) ** 2 / 0.01),
+            track_vy=0.5 * torch.exp(-(T["vy"] - cmd[:, 1]) ** 2 / 0.01),
+            track_wz=0.5 * torch.exp(-(T["wz"] - cmd[:, 2]) ** 2 / 0.1),
+            alive=torch.full_like(T["vx"], 0.1),
             upright=-2.0 * (1 - T["up"][:, 1]),
-            height=-20.0 * (T["h"] - self.trunk_y0).clamp(max=0) ** 2 * 100,
-            air=2.0 * r_air,
+            height=-2000.0 * (T["h"] - self.trunk_y0).clamp(max=0) ** 2,
+            air=3.0 * r_air,
+            single=0.6 * single * moving,
+            clearance=10.0 * swing_h.sum(-1) * moving,
             still=-0.5 * (1 - moving) * (self.out[:, 4:6].sum(-1) + (contact < 0.5).float().sum(-1) * 0.5),
             action_rate=-0.02 * ((a - self.prev_action) ** 2).sum(-1),
             power=-0.002 * self.out[:, 6],
             slip=-0.5 * (self.out[:, 4:6] * contact).sum(-1),
             ang_vel=-0.05 * (T["w"][:, 0] ** 2 + T["w"][:, 2] ** 2),
-            hip_pose=-0.5 * (a[:, [0, 1, 5, 6]] ** 2).sum(-1),
+            hip_pose=-0.3 * (a[:, [0, 1, 5, 6]] ** 2).sum(-1),
         )
         reward = sum(terms.values()) * dt * 10
         fell = (T["h"] < 0.7 * self.trunk_y0) | (T["tilt"] > math.radians(40)) | ~torch.isfinite(self.state).all(-1).all(-1)
         timeout = self.t >= self.dr["episode_s"]
-        reward = torch.where(fell, torch.full_like(reward, -5.0), reward)
+        reward = torch.where(fell, torch.full_like(reward, -2.0), reward)
         reward = torch.nan_to_num(reward, nan=-5.0)
         done = fell | timeout
         return reward, terms, done, timeout & ~fell
