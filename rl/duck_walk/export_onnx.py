@@ -34,6 +34,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--id", default="duck-walk-box3d-v1")
     ap.add_argument("--notes", default="")
+    ap.add_argument("--heading-hold", type=float, default=0.0, help="gain of the robot-side heading loop the policy was trained to follow (0: none)")
     a = ap.parse_args()
     ck = torch.load(a.ckpt, map_location="cpu")
     cfg = ck["cfg"]
@@ -55,6 +56,7 @@ def main():
         "observation": ["imu_gyro", "imu_gravity", "leg_joint_pos", "leg_joint_vel", "prev_action", "command"], "history": HISTORY,
         "action": {"kind": "leg-joint-targets", "scale": {"rad": ACTION_SCALE}}, "input": "obs", "output": "action",
         "families": ["open-duck-mini-v2"],
+        **({"heading_hold": {"gain": a.heading_hold, "max": 0.3}} if a.heading_hold > 0 else {}),
         "robot": {"model": "parts/open-duck-mini (World2), exported by parts/open-duck-mini/export-cuda-model.mjs", "legs": ["left_hip_yaw", "left_hip_roll", "left_hip_pitch", "left_knee", "left_ankle", "right_hip_yaw", "right_hip_roll", "right_hip_pitch", "right_knee", "right_ankle"]},
         "training": {
             "engine": "box3d-cuda (MIT, github johndevor/box3d-cuda) rl/duck_walk/duck_sim.h: maximal-coordinate rigid bodies, revolute joints and sole-floor contacts by sequential impulses (float32, one CUDA thread per world), World2's bam-m1 servo step and IMU signal chain step for step at 1/120 s",
