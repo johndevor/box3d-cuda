@@ -129,7 +129,7 @@ def ppo_phase(env, actor, critic, actor_in, args, out, phase, max_min, log, min_
     buf = {k: torch.zeros(H, N, s, device=dev) for k, s in (("obs", OBS_SIZE), ("priv", PRIV_SIZE), ("act", 9))}
     buf.update({k: torch.zeros(H, N, device=dev) for k in ("logp", "val", "rew", "done")})
     t0, steps, it = time.time(), 0, 0
-    best, best_it = -1.0, 0
+    best, hist = -1.0, []
     while True:
         env.resample_friction()
 
@@ -188,12 +188,14 @@ def ppo_phase(env, actor, critic, actor_in, args, out, phase, max_min, log, min_
         row = dict(phase=phase, it=it, steps=steps, wall_s=round(time.time() - t0, 1), sps=round(steps / (time.time() - t0)),
                    kl=round(kl_sum / max(1, n_mb), 4), std=round(actor.log_std.exp().mean().item(), 3), **stats.row())
         log(row)
-        if row["success"] > best + 0.01:
-            best, best_it = row["success"], it
+        hist.append(row["success"])
+        if row["episodes"] >= 2000 and row["success"] > best:
+            best = row["success"]
             torch.save(dict(actor=actor.state_dict(), critic=critic.state_dict(), row=row), out / f"{phase}_best.pt")
         if it % 10 == 0:
             torch.save(dict(actor=actor.state_dict(), critic=critic.state_dict(), row=row), out / f"{phase}.pt")
-        plateau = it >= min_iters and it - best_it >= args.plateau_iters
+        W = args.plateau_iters // 2   # plateau: the last W iterations' mean success no better than the W before (+0.003)
+        plateau = it >= min_iters and len(hist) >= 2 * W and sum(hist[-W:]) / W - sum(hist[-2 * W:-W]) / W < 0.003
         if plateau or time.time() - t0 > max_min * 60 or steps >= args.max_steps:
             torch.save(dict(actor=actor.state_dict(), critic=critic.state_dict(), row=row), out / f"{phase}.pt")
             return dict(steps=steps, wall_s=time.time() - t0, final=row, best=best, stop="plateau" if plateau else "budget")
