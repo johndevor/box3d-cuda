@@ -65,6 +65,7 @@ class Actor(nn.Module):
             self.net[-1].bias[5] = 0.3     # ~115 rpm: under the seat-speed limit
             self.net[-1].bias[6] = -3.0
             self.log_std[6] = -2.0
+            self.log_std[5] = -1.6     # spindle speed: noise over the 120 rpm seat limit would end most runs as FAST_SEAT
 
     def mean(self, x):
         return torch.tanh(self.net(self.norm(x)))
