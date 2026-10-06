@@ -216,7 +216,7 @@ class DuckWalkEnv:
         vx = self._u(*dr["cmd_vx"], n)
         vx = torch.where(torch.rand(n, generator=self.g).to(d) < dr["cmd_zero_p"], torch.zeros_like(vx), vx)
         self.cmd[idx] = torch.stack([vx, torch.zeros_like(vx), torch.zeros_like(vx)], -1)
-        self.prev_action[idx] = 0; self.t[idx] = 0; self.air[idx] = 0; self.stance[idx] = 0; self.contact_prev[idx] = 1
+        self.prev_action[idx] = 0; self.t[idx] = 0; self.air[idx] = 0; self.stance[idx] = 0; self.contact_prev[idx] = 0
         self.next_push[idx] = self._u(*dr["push_interval_s"], n)
         self.ep_ret[idx] = 0; self.ep_len[idx] = 0
         # the servos hold the standing pose; the IMU's fusion starts from the true down direction (as after power-on rest)
@@ -332,16 +332,17 @@ class DuckWalkEnv:
         T, dt = self.trunk(), 1.0 / RATE_HZ
         cmd = self.cmd
         contact = self.out[:, 0:2]
-        # air time (legged_gym style): on touchdown reward the swing's air time minus 0.25 s, only when told to walk
-        touch = (contact > 0.5) & (self.contact_prev < 0.5)
-        self.air += dt
+        # gait bookkeeping on real lifts: a foot is in the air only with its whole sole over 6 mm (World2's judge counts 4 mm)
+        lifted = (self.out[:, 7:9] > 0.006).float()
+        touch = (lifted < 0.5) & (self.contact_prev > 0.5)        # contact_prev holds the previous `lifted`
+        self.air += dt * lifted
         moving = (cmd[:, 0].abs() > 0.02).float()
-        r_air = ((self.air - 0.2).clamp(max=0.3) * touch.float()).sum(-1) * moving
-        self.air = torch.where(contact > 0.5, torch.zeros_like(self.air), self.air)
-        self.stance = torch.where(contact > 0.5, self.stance + dt, torch.zeros_like(self.stance))
-        self.contact_prev = contact.clone()
-        single = ((contact > 0.5).float().sum(-1) == 1).float()
-        swing_h = torch.where(contact < 0.5, self.out[:, 7:9], torch.zeros_like(self.out[:, 7:9])).clamp(max=0.03)
+        r_air = ((self.air - 0.15).clamp(max=0.3) * touch.float()).sum(-1) * moving
+        self.air = torch.where(touch, torch.zeros_like(self.air), self.air)
+        self.stance = torch.where(lifted > 0.5, torch.zeros_like(self.stance), self.stance + dt)
+        self.contact_prev = lifted.clone()
+        single = (lifted.sum(-1) == 1).float()
+        swing_h = (self.out[:, 7:9] * lifted).clamp(max=0.03)
         terms = dict(
             track_vx=2.0 * torch.exp(-(T["vx"] - cmd[:, 0]) ** 2 / 0.01),
             track_vy=0.5 * torch.exp(-(T["vy"] - cmd[:, 1]) ** 2 / 0.01),
@@ -351,7 +352,7 @@ class DuckWalkEnv:
             height=-2000.0 * (T["h"] - self.trunk_y0).clamp(max=0) ** 2,
             air=3.0 * r_air,
             single=0.6 * single * moving,
-            stance=-1.0 * (self.stance > 0.5).float().sum(-1) * moving,
+            stance=-1.0 * (self.stance > 0.6).float().sum(-1) * moving,
             clearance=10.0 * swing_h.sum(-1) * moving,
             still=-0.5 * (1 - moving) * (self.out[:, 4:6].sum(-1) + (contact < 0.5).float().sum(-1) * 0.5),
             action_rate=-0.02 * ((a - self.prev_action) ** 2).sum(-1),
