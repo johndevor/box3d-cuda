@@ -104,9 +104,7 @@ def to_task(v):  # its own inverse
 # ---------------------------------------------------------------- physics backends
 def load_cuda_ext():
     from torch.utils.cpp_extension import load
-    srcs = ["bindings.cpp", "step.cu", "gripper.cu", "obb.cu", "sat.cu", "manifold.cu", "joint.cu", "ray.cu",
-            "camera.cu", "coupled.cu", "articulation_response.cu"]
-    return load(name="box3d_peg_insert_ext", sources=[str(ROOT / "csrc" / s) for s in srcs],
+    return load(name="box3d_peg_manifold_ext", sources=[str(Path(__file__).with_name("manifold_only.cpp")), str(ROOT / "csrc" / "manifold.cu")],
                 extra_cflags=["-O3"], extra_cuda_cflags=["-O3", "--use_fast_math"], verbose=False)
 
 
