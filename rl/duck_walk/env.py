@@ -158,6 +158,7 @@ class DuckWalkEnv:
         self.hist = z(E, HISTORY, FRAME)
         self.t, self.next_push, self.air, self.contact_prev = z(E), z(E), z(E, 2), z(E, 2)
         self.stance = z(E, 2)
+        self.yaw_ref = z(E)
         self.ep_ret, self.ep_len = z(E), z(E)
         self.last_touch_x = z(E, 2)
         self.base_mass, self.fric_now = z(E), z(E)
@@ -182,6 +183,8 @@ class DuckWalkEnv:
         v = (torch.randn(n, 1, 3, generator=self.g).to(d) * dr["init_vel"]).expand(n, self.NB, 3).clone(); v[..., 1] = 0
         st = torch.cat([p, q, v, torch.zeros(n, self.NB, 3, device=d)], -1)
         self.state[idx] = st
+        self.yaw_ref[idx] = 0
+        self.yaw_ref[idx] = self.trunk()["yaw"][idx]
         # masses and inertias
         ms = self._u(*dr["mass_scale"], n * self.NB).reshape(n, self.NB)
         mass = self.mass0[None] * ms
@@ -286,9 +289,11 @@ class DuckWalkEnv:
         up = tq_rot(q_obj, torch.tensor([0.0, 1.0, 0.0], device=self.device).expand(self.E, 3))
         fwd = tq_rot(q_obj, torch.tensor([1.0, 0.0, 0.0], device=self.device).expand(self.E, 3))
         yaw = torch.atan2(-fwd[:, 2], fwd[:, 0])
-        c, s = torch.cos(yaw), torch.sin(yaw)
+        # velocities in the command frame: the heading the duck had at the episode's start (a circle earns no forward
+        # tracking: an earlier policy walked 116 deg round in 10 s with tracking in the current heading frame)
+        c, s = torch.cos(self.yaw_ref), torch.sin(self.yaw_ref)
         v = st[:, 7:10]; w = st[:, 10:13]
-        vx = c * v[:, 0] - s * v[:, 2]; vy = s * v[:, 0] + c * v[:, 2]   # heading frame: x forward, y = the duck's right (World2 +z at yaw 0)
+        vx = c * v[:, 0] - s * v[:, 2]; vy = s * v[:, 0] + c * v[:, 2]   # x forward, y = the duck's right (World2 +z at yaw 0)
         tilt = torch.acos(up[:, 1].clamp(-1, 1))
         return dict(p=st[:, :3], v=v, w=w, up=up, yaw=yaw, vx=vx, vy=vy, wz=w[:, 1], tilt=tilt, h=st[:, 1])
 
@@ -360,6 +365,7 @@ class DuckWalkEnv:
             slip=-0.5 * (self.out[:, 4:6] * contact).sum(-1),
             ang_vel=-0.05 * (T["w"][:, 0] ** 2 + T["w"][:, 2] ** 2),
             hip_pose=-0.3 * (a[:, [0, 1, 5, 6]] ** 2).sum(-1),
+            heading=-2.0 * torch.atan2(torch.sin(T["yaw"] - self.yaw_ref), torch.cos(T["yaw"] - self.yaw_ref)) ** 2,
         )
         reward = sum(terms.values()) * dt * 10
         fell = (T["h"] < 0.7 * self.trunk_y0) | (T["tilt"] > math.radians(40)) | ~torch.isfinite(self.state).all(-1).all(-1)
