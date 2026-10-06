@@ -139,7 +139,7 @@ def main():
                 v = ac.value(B["obs"][j], B["priv"][j])
                 vl = ((v - R[j]) ** 2).mean()
                 ent = dist.entropy().sum(-1).mean()
-                loss = pg + 1.0 * vl - 0.006 * ent + 0.001 * (mean ** 2).mean()
+                loss = pg + 1.0 * vl - float(__import__("os").environ.get("DUCK_ENT", "0.006")) * ent + 0.001 * (mean ** 2).mean()
                 opt.zero_grad(); loss.backward(); nn.utils.clip_grad_norm_(ac.parameters(), 1.0); opt.step()
                 with torch.no_grad():
                     kl = (B["logp"][j] - logp).mean().item(); kls.append(kl)

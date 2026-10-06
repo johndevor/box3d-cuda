@@ -74,7 +74,7 @@ def default_dr(**over):
         friction_viscous=(0.5, 1.6), backlash_rad=(0.0, 0.02), gear_stiffness=(0.4, 1.3), gear_damping=(0.6, 3.0), max_velocity=(0.9, 1.1),
         goal_extra_delay=(0, 1), imu_delay=(0, 1), imu_noise=(0.5, 2.0), imu_bias=(0.0, 2.0), calibration_steps=3,
         push_interval_s=(2.0, 5.0), push_dv=0.25, push_p=1.0, init_yaw=math.pi, init_vel=0.05,
-        cmd_vx=(0.0, 0.25), cmd_zero_p=0.15, episode_s=20.0,
+        cmd_vx=(0.0, 0.25), cmd_zero_p=0.15, episode_s=20.0, cmd_wz=0.4, cmd_wz_p=0.7, cmd_wz_change_s=3.0,
     )
     c.update(over)
     return c
@@ -88,7 +88,7 @@ class DuckWalkEnv:
         self.dr = default_dr(**(dr or {})) if dr_on else default_dr(mass_scale=(1, 1), trunk_com_shift_m=0, friction=(0.8, 0.8), damping_lin=(1, 1), damping_ang=(2, 2),
                                                                  kt=(1, 1), R=(1, 1), vin=(7.4, 7.4), gain=(1, 1), armature=(1, 1), friction_base=(1, 1), friction_viscous=(1, 1),
                                                                  backlash_rad=(0.0087, 0.0087), gear_stiffness=(1, 1), gear_damping=(1, 1), max_velocity=(1, 1), goal_extra_delay=(0, 0), imu_delay=(1, 1),
-                                                                 imu_noise=(1, 1), imu_bias=(1, 1), calibration_steps=0, push_p=0.0, init_yaw=0.0, init_vel=0.0)
+                                                                 imu_noise=(1, 1), imu_bias=(1, 1), calibration_steps=0, push_p=0.0, init_yaw=0.0, init_vel=0.0, cmd_wz=0.0)
         if not dr_on: self.dr.update(dr or {})
         self.g = torch.Generator(device="cpu").manual_seed(seed)
         self.ext = load_ext(self.device)
@@ -218,7 +218,8 @@ class DuckWalkEnv:
         # commands
         vx = self._u(*dr["cmd_vx"], n)
         vx = torch.where(torch.rand(n, generator=self.g).to(d) < dr["cmd_zero_p"], torch.zeros_like(vx), vx)
-        self.cmd[idx] = torch.stack([vx, torch.zeros_like(vx), torch.zeros_like(vx)], -1)
+        wz = self._u(-dr["cmd_wz"], dr["cmd_wz"], n) * (torch.rand(n, generator=self.g).to(d) < dr["cmd_wz_p"]).float()
+        self.cmd[idx] = torch.stack([vx, torch.zeros_like(vx), wz], -1)
         self.prev_action[idx] = 0; self.t[idx] = 0; self.air[idx] = 0; self.stance[idx] = 0; self.contact_prev[idx] = 0
         self.next_push[idx] = self._u(*dr["push_interval_s"], n)
         self.ep_ret[idx] = 0; self.ep_len[idx] = 0
@@ -323,6 +324,14 @@ class DuckWalkEnv:
             self.next_push = torch.where(due, self.t + self._u(*dr["push_interval_s"], E), self.next_push)
         self._step_physics()
         self.t += 1.0 / RATE_HZ
+        # a yaw-rate command (a heading controller on the robot sends these): the command frame turns with it, and it
+        # changes now and then
+        self.yaw_ref = self.yaw_ref + self.cmd[:, 2] / RATE_HZ
+        if dr["cmd_wz"] > 0:
+            ch = torch.rand(E, generator=self.g).to(d) < 1.0 / (dr["cmd_wz_change_s"] * RATE_HZ)
+            if ch.any():
+                nw = self._u(-dr["cmd_wz"], dr["cmd_wz"], E) * (torch.rand(E, generator=self.g).to(d) < dr["cmd_wz_p"]).float()
+                self.cmd[:, 2] = torch.where(ch, nw, self.cmd[:, 2])
         q_obs = self._q_obs()
         fr = torch.cat([self.imu[:, 28:31], self.imu[:, 10:13], q_obs, (q_obs - self.q_obs_prev) * RATE_HZ * 0.1, a, self.cmd], -1)
         self.q_obs_prev = q_obs

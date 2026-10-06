@@ -16,10 +16,10 @@ from .env import DuckWalkEnv, RATE_HZ
 ap = argparse.ArgumentParser()
 ap.add_argument("policy"); ap.add_argument("--envs", type=int, default=16); ap.add_argument("--seconds", type=float, default=10)
 ap.add_argument("--dr", default="off"); ap.add_argument("--vx", type=float, default=0.15); ap.add_argument("--dump", default=None)
-ap.add_argument("--device", default="cpu"); ap.add_argument("--settle", type=float, default=1.0)
+ap.add_argument("--device", default="cpu"); ap.add_argument("--heading-hold", type=float, default=0.0, help="gain of the program-side heading loop (World2 skills/duck-walk.mjs)"); ap.add_argument("--settle", type=float, default=1.0)
 a = ap.parse_args()
 sess = ort.InferenceSession(str(Path(a.policy) / "policy.onnx"))
-env = DuckWalkEnv(a.envs, device=a.device, seed=123, dr_on=(a.dr == "on"), dr=dict(push_p=0.0, cmd_zero_p=0.0, cmd_vx=(a.vx, a.vx), episode_s=1e9, init_yaw=0.0))
+env = DuckWalkEnv(a.envs, device=a.device, seed=123, dr_on=(a.dr == "on"), dr=dict(push_p=0.0, cmd_zero_p=0.0, cmd_vx=(a.vx, a.vx), episode_s=1e9, init_yaw=0.0, cmd_wz=0.0))
 env.cmd[:, 0] = a.vx
 from .env import LEGS
 # settle (hold) like World2's program, then walk
@@ -29,10 +29,13 @@ env.prev_action.zero_()
 x0 = env.trunk()["p"][:, 0].clone(); z0 = env.trunk()["p"][:, 2].clone(); yaw0 = env.trunk()["yaw"].clone(); fell = torch.zeros(a.envs, dtype=torch.bool)
 on = torch.ones(a.envs, 2, dtype=torch.bool); lifts = torch.zeros(a.envs, 2); maxh = torch.zeros(a.envs, 2)
 dumps = []
-obs = env.obs()
+obs = env.obs(); yaw_est = torch.zeros(a.envs)
 for k in range(int(a.seconds * RATE_HZ)):
+    if a.heading_hold > 0:
+        yaw_est += obs[:, 1].cpu() / RATE_HZ
+        env.cmd[:, 2] = (-a.heading_hold * yaw_est).clamp(-0.3, 0.3).to(env.device)
     act = torch.from_numpy(np.concatenate([sess.run(None, {"obs": obs[i:i + 1].cpu().numpy()})[0] for i in range(a.envs)]))
-    if a.dump and k < 40: dumps.append({"k": k, "obs": obs[0].tolist(), "act": act[0].tolist()})
+    if a.dump and k < 200: dumps.append({"k": k, "obs": obs[0].tolist(), "act": act[0].tolist()})
     obs, priv, r, done, info = env.step(act.to(env.device))
     T = env.trunk(); fell |= (T["h"] < 0.7 * env.trunk_y0) | (T["tilt"] > math.radians(40))
     h = env.out[:, 7:9].cpu(); maxh = torch.maximum(maxh, h)
