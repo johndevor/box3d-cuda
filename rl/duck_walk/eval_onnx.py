@@ -19,7 +19,7 @@ ap.add_argument("--dr", default="off"); ap.add_argument("--vx", type=float, defa
 ap.add_argument("--device", default="cpu"); ap.add_argument("--settle", type=float, default=1.0)
 a = ap.parse_args()
 sess = ort.InferenceSession(str(Path(a.policy) / "policy.onnx"))
-env = DuckWalkEnv(a.envs, device=a.device, seed=123, dr_on=(a.dr == "on"), dr=dict(push_p=0.0, cmd_zero_p=0.0, cmd_vx=(a.vx, a.vx), episode_s=1e9))
+env = DuckWalkEnv(a.envs, device=a.device, seed=123, dr_on=(a.dr == "on"), dr=dict(push_p=0.0, cmd_zero_p=0.0, cmd_vx=(a.vx, a.vx), episode_s=1e9, init_yaw=0.0))
 env.cmd[:, 0] = a.vx
 from .env import LEGS
 # settle (hold) like World2's program, then walk
