@@ -26,7 +26,7 @@ from .env import LEGS
 for _ in range(int(a.settle * RATE_HZ)):
     obs, priv, r, done, info = env.step(torch.zeros(a.envs, LEGS))
 env.prev_action.zero_()
-x0 = env.trunk()["p"][:, 0].clone(); fell = torch.zeros(a.envs, dtype=torch.bool)
+x0 = env.trunk()["p"][:, 0].clone(); z0 = env.trunk()["p"][:, 2].clone(); yaw0 = env.trunk()["yaw"].clone(); fell = torch.zeros(a.envs, dtype=torch.bool)
 on = torch.ones(a.envs, 2, dtype=torch.bool); lifts = torch.zeros(a.envs, 2); maxh = torch.zeros(a.envs, 2)
 dumps = []
 obs = env.obs()
@@ -37,7 +37,7 @@ for k in range(int(a.seconds * RATE_HZ)):
     T = env.trunk(); fell |= (T["h"] < 0.7 * env.trunk_y0) | (T["tilt"] > math.radians(40))
     h = env.out[:, 7:9].cpu(); maxh = torch.maximum(maxh, h)
     lift = on & (h > 0.004); lifts += lift.float(); on = torch.where(lift, torch.zeros_like(on), on) | (h < 0.001)
-fwd = (env.trunk()["p"][:, 0] - x0).cpu()
-print(json.dumps({"forward_m_mean": round(fwd.mean().item(), 3), "forward_min": round(fwd.min().item(), 3), "falls": int(fell.sum()), "lifts_mean": lifts.mean(0).tolist(),
+fwd = (env.trunk()["p"][:, 0] - x0).cpu(); lat = (env.trunk()["p"][:, 2] - z0).cpu(); dyaw = (env.trunk()["yaw"] - yaw0).cpu()
+print(json.dumps({"forward_m_mean": round(fwd.mean().item(), 3), "forward_min": round(fwd.min().item(), 3), "falls": int(fell.sum()), "lateral_mean": round(lat.mean().item(), 3), "lateral_absmax": round(lat.abs().max().item(), 3), "yaw_change_deg_mean": round(math.degrees(dyaw.mean().item()), 1), "lifts_mean": lifts.mean(0).tolist(),
                   "lifts_min_foot": lifts.min(-1).values.min().item(), "max_sole_mm": (maxh.mean(0) * 1000).tolist()}))
 if a.dump: Path(a.dump).write_text(json.dumps(dumps))

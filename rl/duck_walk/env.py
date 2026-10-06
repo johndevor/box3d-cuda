@@ -345,8 +345,8 @@ class DuckWalkEnv:
         swing_h = (self.out[:, 7:9] * lifted).clamp(max=0.03)
         terms = dict(
             track_vx=2.0 * torch.exp(-(T["vx"] - cmd[:, 0]) ** 2 / 0.01),
-            track_vy=0.5 * torch.exp(-(T["vy"] - cmd[:, 1]) ** 2 / 0.01),
-            track_wz=0.5 * torch.exp(-(T["wz"] - cmd[:, 2]) ** 2 / 0.1),
+            track_vy=1.0 * torch.exp(-(T["vy"] - cmd[:, 1]) ** 2 / 0.01),
+            track_wz=1.5 * torch.exp(-(T["wz"] - cmd[:, 2]) ** 2 / 0.02),
             alive=torch.full_like(T["vx"], 0.1),
             upright=-2.0 * (1 - T["up"][:, 1]),
             height=-2000.0 * (T["h"] - self.trunk_y0).clamp(max=0) ** 2,
