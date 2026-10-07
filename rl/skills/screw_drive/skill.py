@@ -22,7 +22,7 @@ RECIPE["eval_ticks"] = 380
 # The fast recipe (default): a residual over the scripted drive (rl/common/priors.py ScriptedScrewPrior), asymmetric PPO,
 # trained in World2's opt-in interaction (thread catch mode A, the full driving wrench) and its crooked-insert cases (the
 # program believes the layout's axis half the time; inserts to 6.5 degrees, 0.6 mm off: World2's hard set inside).
-RESIDUAL = dict(kind="asymmetric", envs=65536, eval_n=2048, eval_seed=10_000, eval_ticks=380, graphs=True,
+RESIDUAL = dict(kind="asymmetric", envs=131072, eval_n=2048, eval_seed=10_000, eval_ticks=380, graphs=True,
                 cfg=dict(mode_b_p=0.0, full_wrench=1.0, layout_belief_p=0.5, insert_tilt_deg=(0.0, 6.5), insert_offset_mm=(0.0, 0.6), curriculum_frac=0.0),
                 model=dict(prior=dict(kind="scripted_screw", args={}), residual_scale=1.0, log_std=-1.2, init_bias={}, init_log_std={}),
                 ppo=dict(horizon=64, lr=3e-4, gamma=0.995, lam=0.95, clip=0.2, epochs=4, minibatches=4, ent=0.0, kl="stop", kl_target=0.03,
