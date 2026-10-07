@@ -37,10 +37,16 @@ RECIPE = dict(
 # The fast recipe (default): the v2 interface from scratch over a gait prior (rl/common/priors.py GaitPrior: the
 # observation's 2.5 Hz clock lifts each foot in its half of the cycle, scaled by the command; the policy corrects it),
 # many worlds, CUDA-graph stepping. Frame (43): ... command 36:39, foot_contact 39:41, gait_clock (sin, cos) 41:43.
+# The open-loop stepping the residual policy starts from: chosen by rl/skills/duck_walk/prior_probe.py (World2's walk
+# judge on 750 patterns, nominal robot, no policy). Clock 2.5 Hz, swing-leg squat flex 0.7, hip-roll weight shift 0.3,
+# thighs 0.3 forward/back: open loop it passes the judge 128/128 (0.78 m in 10 s, 8 mm sideways, 23 lifts a foot). The
+# first prior (flex 0.5, no weight shift, no stride) never lifted a foot and the policy learned to stand.
 GAIT = dict(kind="gait", args=dict(n_in=43 * HISTORY, n_act=LEGS, sin_idx=41, cmd_vx_idx=36, cmd_wz_idx=38,
-                                   lift_l=[0, 0, -0.5, 1.0, -0.5, 0, 0, 0, 0, 0], lift_r=[0, 0, 0, 0, 0, 0, 0, 0.5, 1.0, -0.5], amp=0.5, v_ref=0.15, w_ref=0.4))
+                                   lift_l=[0, -0.3, -0.35, 0.7, -0.35, 0, -0.3, 0, 0, 0], lift_r=[0, 0.3, 0, 0, 0, 0, 0.3, 0.35, 0.7, -0.35],
+                                   stride_l=[0, 0, 0.3, 0, 0, 0, 0, 0.3, 0, 0], stride_r=[0, 0, -0.3, 0, 0, 0, 0, -0.3, 0, 0],
+                                   amp=1.0, stride=1.0, v_ref=0.15, w_ref=0.4))
 FAST = dict(kind="asymmetric", envs=32768, eval_n=64, eval_seed=10_000, graphs=False, ppo=dict(PPO, ent=0.003, max_minutes=5.0, max_steps=3e9, minibatches=8),
-            model=dict(prior=GAIT), env=dict(substeps=8, iterations=6, clock_hz=2.5, clearance_m=0.035))
+            model=dict(prior=GAIT, log_std=math.log(0.15)), env=dict(substeps=8, iterations=6, clock_hz=2.5, clearance_m=0.035))
 CRITERIA = dict(window_s=10.0, vx=0.15, settle_s=1.0, min_forward_m=0.5, max_lateral_m=0.5, min_liftoffs=4, sole_clearance_m=0.004,
                 sole_down_m=0.003,   # (World2's judge: on the floor under 1 mm; box3d's sole height reads 1.5-2 mm in stance)
                 heading_gain=1.0, heading_max=0.3)
