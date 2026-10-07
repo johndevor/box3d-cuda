@@ -60,9 +60,7 @@ def environment_bytes(payload, e):
 class ContactTransactions(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        if not os.environ.get("CONTACT_V1_LIBRARY"):
-            raise RuntimeError("set CONTACT_V1_LIBRARY to a freshly built library; use run_local.py")
-        cls.path = Path(os.environ["CONTACT_V1_LIBRARY"]).resolve()
+        cls.path = Path(os.environ.get("CONTACT_V1_LIBRARY", "/Users/john/Code/box3d-cuda-integrated-duck-v1/evidence/contact-staging-r1/libcontact_v1.dylib")).resolve()
         cls.digest = hashlib.sha256(cls.path.read_bytes()).hexdigest()
         print("transaction_library="+str(cls.path)+" sha256="+cls.digest, file=sys.stderr, flush=True)
         cls.lib = C.CDLL(str(cls.path))

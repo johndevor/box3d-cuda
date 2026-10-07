@@ -1,0 +1,879 @@
+{
+ "schema": "duckgridwalk.training_acceptance/2",
+ "accepted": true,
+ "robot": "humanoid",
+ "variant": "h1_stocky",
+ "update": 936,
+ "env_steps": 981467136,
+ "train_wall_s": 7368.855,
+ "probe_wall_s": 16.932,
+ "probe_wall_last_s": 8.537,
+ "policy": "ff",
+ "protocol": {
+  "seeds": [
+   4242,
+   7,
+   1913,
+   90210
+  ],
+  "commands": [
+   0.5,
+   0.75,
+   1.0
+  ],
+  "variant": "h1_stocky",
+  "seconds": 8.0,
+  "judge": "walk/eval/humanoid_gait.py"
+ },
+ "lane": "training lane class, fresh instance, DR/gates/RSI off",
+ "library": "experimental/duck_cuda/build-humanoid-stocky/libhumanoid_cuda_fast.so",
+ "cells_passed": 12,
+ "cells_total": 12,
+ "episodes": {
+  "seed4242-cmd0.50": {
+   "passed": true,
+   "qualified": 12,
+   "left": 6,
+   "right": 6,
+   "failed_criteria": [],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "at_least_6_qualified_footfalls": {
+     "pass": true,
+     "detail": 12
+    },
+    "at_least_3_per_foot": {
+     "pass": true,
+     "detail": {
+      "left": 6,
+      "right": 6
+     }
+    },
+    "footfalls_alternate": {
+     "pass": true,
+     "detail": [
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left"
+     ]
+    },
+    "translation_60_to_150_percent": {
+     "pass": true,
+     "detail": {
+      "displacement_m": 4.496400451726004,
+      "expected_m": 4.0,
+      "ratio": 1.124100112931501
+     }
+    },
+    "tilt_within_30_degrees": {
+     "pass": true,
+     "detail": {
+      "max_tilt_deg": 10.778875286673818
+     }
+    },
+    "first_step_within_2p5_s": {
+     "pass": true,
+     "detail": 0.846
+    },
+    "last_step_within_final_1p5_s": {
+     "pass": "True",
+     "detail": 7.466
+    }
+   },
+   "swings_examined": 13
+  },
+  "seed4242-cmd0.75": {
+   "passed": true,
+   "qualified": 18,
+   "left": 9,
+   "right": 9,
+   "failed_criteria": [],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "at_least_6_qualified_footfalls": {
+     "pass": true,
+     "detail": 18
+    },
+    "at_least_3_per_foot": {
+     "pass": true,
+     "detail": {
+      "left": 9,
+      "right": 9
+     }
+    },
+    "footfalls_alternate": {
+     "pass": true,
+     "detail": [
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right"
+     ]
+    },
+    "translation_60_to_150_percent": {
+     "pass": true,
+     "detail": {
+      "displacement_m": 5.772908496132004,
+      "expected_m": 6.0,
+      "ratio": 0.9621514160220007
+     }
+    },
+    "tilt_within_30_degrees": {
+     "pass": true,
+     "detail": {
+      "max_tilt_deg": 10.083401925280842
+     }
+    },
+    "first_step_within_2p5_s": {
+     "pass": true,
+     "detail": 0.748
+    },
+    "last_step_within_final_1p5_s": {
+     "pass": "True",
+     "detail": 7.5360000000000005
+    }
+   },
+   "swings_examined": 20
+  },
+  "seed4242-cmd1.00": {
+   "passed": true,
+   "qualified": 25,
+   "left": 13,
+   "right": 12,
+   "failed_criteria": [],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "at_least_6_qualified_footfalls": {
+     "pass": true,
+     "detail": 25
+    },
+    "at_least_3_per_foot": {
+     "pass": true,
+     "detail": {
+      "left": 13,
+      "right": 12
+     }
+    },
+    "footfalls_alternate": {
+     "pass": true,
+     "detail": [
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left"
+     ]
+    },
+    "translation_60_to_150_percent": {
+     "pass": true,
+     "detail": {
+      "displacement_m": 6.539867573803349,
+      "expected_m": 8.0,
+      "ratio": 0.8174834467254186
+     }
+    },
+    "tilt_within_30_degrees": {
+     "pass": true,
+     "detail": {
+      "max_tilt_deg": 9.53083603832668
+     }
+    },
+    "first_step_within_2p5_s": {
+     "pass": true,
+     "detail": 0.62
+    },
+    "last_step_within_final_1p5_s": {
+     "pass": "True",
+     "detail": 7.832
+    }
+   },
+   "swings_examined": 26
+  },
+  "seed7-cmd0.50": {
+   "passed": true,
+   "qualified": 12,
+   "left": 6,
+   "right": 6,
+   "failed_criteria": [],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "at_least_6_qualified_footfalls": {
+     "pass": true,
+     "detail": 12
+    },
+    "at_least_3_per_foot": {
+     "pass": true,
+     "detail": {
+      "left": 6,
+      "right": 6
+     }
+    },
+    "footfalls_alternate": {
+     "pass": true,
+     "detail": [
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right"
+     ]
+    },
+    "translation_60_to_150_percent": {
+     "pass": true,
+     "detail": {
+      "displacement_m": 4.446795246681177,
+      "expected_m": 4.0,
+      "ratio": 1.1116988116702942
+     }
+    },
+    "tilt_within_30_degrees": {
+     "pass": true,
+     "detail": {
+      "max_tilt_deg": 11.801198461030987
+     }
+    },
+    "first_step_within_2p5_s": {
+     "pass": true,
+     "detail": 0.89
+    },
+    "last_step_within_final_1p5_s": {
+     "pass": "True",
+     "detail": 7.472
+    }
+   },
+   "swings_examined": 13
+  },
+  "seed7-cmd0.75": {
+   "passed": true,
+   "qualified": 18,
+   "left": 9,
+   "right": 9,
+   "failed_criteria": [],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "at_least_6_qualified_footfalls": {
+     "pass": true,
+     "detail": 18
+    },
+    "at_least_3_per_foot": {
+     "pass": true,
+     "detail": {
+      "left": 9,
+      "right": 9
+     }
+    },
+    "footfalls_alternate": {
+     "pass": true,
+     "detail": [
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right"
+     ]
+    },
+    "translation_60_to_150_percent": {
+     "pass": true,
+     "detail": {
+      "displacement_m": 5.724591114500072,
+      "expected_m": 6.0,
+      "ratio": 0.9540985190833453
+     }
+    },
+    "tilt_within_30_degrees": {
+     "pass": true,
+     "detail": {
+      "max_tilt_deg": 9.258602336032483
+     }
+    },
+    "first_step_within_2p5_s": {
+     "pass": true,
+     "detail": 0.8200000000000001
+    },
+    "last_step_within_final_1p5_s": {
+     "pass": "True",
+     "detail": 7.614
+    }
+   },
+   "swings_examined": 19
+  },
+  "seed7-cmd1.00": {
+   "passed": true,
+   "qualified": 25,
+   "left": 13,
+   "right": 12,
+   "failed_criteria": [],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "at_least_6_qualified_footfalls": {
+     "pass": true,
+     "detail": 25
+    },
+    "at_least_3_per_foot": {
+     "pass": true,
+     "detail": {
+      "left": 13,
+      "right": 12
+     }
+    },
+    "footfalls_alternate": {
+     "pass": true,
+     "detail": [
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left"
+     ]
+    },
+    "translation_60_to_150_percent": {
+     "pass": true,
+     "detail": {
+      "displacement_m": 6.394582344524679,
+      "expected_m": 8.0,
+      "ratio": 0.7993227930655848
+     }
+    },
+    "tilt_within_30_degrees": {
+     "pass": true,
+     "detail": {
+      "max_tilt_deg": 8.785909074462477
+     }
+    },
+    "first_step_within_2p5_s": {
+     "pass": true,
+     "detail": 0.652
+    },
+    "last_step_within_final_1p5_s": {
+     "pass": "True",
+     "detail": 7.856
+    }
+   },
+   "swings_examined": 26
+  },
+  "seed1913-cmd0.50": {
+   "passed": true,
+   "qualified": 12,
+   "left": 6,
+   "right": 6,
+   "failed_criteria": [],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "at_least_6_qualified_footfalls": {
+     "pass": true,
+     "detail": 12
+    },
+    "at_least_3_per_foot": {
+     "pass": true,
+     "detail": {
+      "left": 6,
+      "right": 6
+     }
+    },
+    "footfalls_alternate": {
+     "pass": true,
+     "detail": [
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left"
+     ]
+    },
+    "translation_60_to_150_percent": {
+     "pass": true,
+     "detail": {
+      "displacement_m": 4.344764650532397,
+      "expected_m": 4.0,
+      "ratio": 1.0861911626330993
+     }
+    },
+    "tilt_within_30_degrees": {
+     "pass": true,
+     "detail": {
+      "max_tilt_deg": 11.50055863785027
+     }
+    },
+    "first_step_within_2p5_s": {
+     "pass": true,
+     "detail": 0.774
+    },
+    "last_step_within_final_1p5_s": {
+     "pass": "True",
+     "detail": 7.396
+    }
+   },
+   "swings_examined": 14
+  },
+  "seed1913-cmd0.75": {
+   "passed": true,
+   "qualified": 19,
+   "left": 10,
+   "right": 9,
+   "failed_criteria": [],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "at_least_6_qualified_footfalls": {
+     "pass": true,
+     "detail": 19
+    },
+    "at_least_3_per_foot": {
+     "pass": true,
+     "detail": {
+      "left": 10,
+      "right": 9
+     }
+    },
+    "footfalls_alternate": {
+     "pass": true,
+     "detail": [
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left"
+     ]
+    },
+    "translation_60_to_150_percent": {
+     "pass": true,
+     "detail": {
+      "displacement_m": 5.684950421677058,
+      "expected_m": 6.0,
+      "ratio": 0.9474917369461764
+     }
+    },
+    "tilt_within_30_degrees": {
+     "pass": true,
+     "detail": {
+      "max_tilt_deg": 11.12098540171135
+     }
+    },
+    "first_step_within_2p5_s": {
+     "pass": true,
+     "detail": 0.646
+    },
+    "last_step_within_final_1p5_s": {
+     "pass": "True",
+     "detail": 7.844
+    }
+   },
+   "swings_examined": 20
+  },
+  "seed1913-cmd1.00": {
+   "passed": true,
+   "qualified": 25,
+   "left": 12,
+   "right": 13,
+   "failed_criteria": [],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "at_least_6_qualified_footfalls": {
+     "pass": true,
+     "detail": 25
+    },
+    "at_least_3_per_foot": {
+     "pass": true,
+     "detail": {
+      "left": 12,
+      "right": 13
+     }
+    },
+    "footfalls_alternate": {
+     "pass": true,
+     "detail": [
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right"
+     ]
+    },
+    "translation_60_to_150_percent": {
+     "pass": true,
+     "detail": {
+      "displacement_m": 6.5728718834125175,
+      "expected_m": 8.0,
+      "ratio": 0.8216089854265647
+     }
+    },
+    "tilt_within_30_degrees": {
+     "pass": true,
+     "detail": {
+      "max_tilt_deg": 9.262025124547973
+     }
+    },
+    "first_step_within_2p5_s": {
+     "pass": true,
+     "detail": 0.504
+    },
+    "last_step_within_final_1p5_s": {
+     "pass": "True",
+     "detail": 7.708
+    }
+   },
+   "swings_examined": 26
+  },
+  "seed90210-cmd0.50": {
+   "passed": true,
+   "qualified": 13,
+   "left": 7,
+   "right": 6,
+   "failed_criteria": [],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "at_least_6_qualified_footfalls": {
+     "pass": true,
+     "detail": 13
+    },
+    "at_least_3_per_foot": {
+     "pass": true,
+     "detail": {
+      "left": 7,
+      "right": 6
+     }
+    },
+    "footfalls_alternate": {
+     "pass": true,
+     "detail": [
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left"
+     ]
+    },
+    "translation_60_to_150_percent": {
+     "pass": true,
+     "detail": {
+      "displacement_m": 4.464505029340216,
+      "expected_m": 4.0,
+      "ratio": 1.116126257335054
+     }
+    },
+    "tilt_within_30_degrees": {
+     "pass": true,
+     "detail": {
+      "max_tilt_deg": 13.064677169987705
+     }
+    },
+    "first_step_within_2p5_s": {
+     "pass": true,
+     "detail": 0.664
+    },
+    "last_step_within_final_1p5_s": {
+     "pass": "True",
+     "detail": 7.852
+    }
+   },
+   "swings_examined": 14
+  },
+  "seed90210-cmd0.75": {
+   "passed": true,
+   "qualified": 18,
+   "left": 9,
+   "right": 9,
+   "failed_criteria": [],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "at_least_6_qualified_footfalls": {
+     "pass": true,
+     "detail": 18
+    },
+    "at_least_3_per_foot": {
+     "pass": true,
+     "detail": {
+      "left": 9,
+      "right": 9
+     }
+    },
+    "footfalls_alternate": {
+     "pass": true,
+     "detail": [
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right"
+     ]
+    },
+    "translation_60_to_150_percent": {
+     "pass": true,
+     "detail": {
+      "displacement_m": 5.812001339447306,
+      "expected_m": 6.0,
+      "ratio": 0.9686668899078844
+     }
+    },
+    "tilt_within_30_degrees": {
+     "pass": true,
+     "detail": {
+      "max_tilt_deg": 9.941624315332971
+     }
+    },
+    "first_step_within_2p5_s": {
+     "pass": true,
+     "detail": 0.772
+    },
+    "last_step_within_final_1p5_s": {
+     "pass": "True",
+     "detail": 7.564
+    }
+   },
+   "swings_examined": 20
+  },
+  "seed90210-cmd1.00": {
+   "passed": true,
+   "qualified": 24,
+   "left": 12,
+   "right": 12,
+   "failed_criteria": [],
+   "criteria": {
+    "single_episode_no_reset_or_failure": {
+     "pass": true,
+     "detail": "single continuous 8 s episode"
+    },
+    "at_least_6_qualified_footfalls": {
+     "pass": true,
+     "detail": 24
+    },
+    "at_least_3_per_foot": {
+     "pass": true,
+     "detail": {
+      "left": 12,
+      "right": 12
+     }
+    },
+    "footfalls_alternate": {
+     "pass": true,
+     "detail": [
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left",
+      "right",
+      "left"
+     ]
+    },
+    "translation_60_to_150_percent": {
+     "pass": true,
+     "detail": {
+      "displacement_m": 6.613139076793232,
+      "expected_m": 8.0,
+      "ratio": 0.826642384599154
+     }
+    },
+    "tilt_within_30_degrees": {
+     "pass": true,
+     "detail": {
+      "max_tilt_deg": 11.094831006272283
+     }
+    },
+    "first_step_within_2p5_s": {
+     "pass": true,
+     "detail": 0.752
+    },
+    "last_step_within_final_1p5_s": {
+     "pass": "True",
+     "detail": 7.666
+    }
+   },
+   "swings_examined": 27
+  }
+ }
+}

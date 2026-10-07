@@ -1,0 +1,12 @@
+independent_geometry_library=/Users/john/Code/duck-grid-walk/gates-caps/libintegrated_duck.dylib sha256=54fe46263d0fc6b0b6bcd47623942ad7c056b397a777659e56a974aeed0d4b44
+test_asymmetric_tetra_containment_and_reversed_owner (__main__.IndependentGeometryTests.test_asymmetric_tetra_containment_and_reversed_owner) ... ok
+test_deterministic_rotated_convex_sat_32_poses (__main__.IndependentGeometryTests.test_deterministic_rotated_convex_sat_32_poses) ... ok
+test_null_query_does_not_overwrite_output_canary (__main__.IndependentGeometryTests.test_null_query_does_not_overwrite_output_canary) ... ok
+test_out_of_contract_arbitrary_plane_scaling_is_rejected (__main__.IndependentGeometryTests.test_out_of_contract_arbitrary_plane_scaling_is_rejected) ... ok
+test_shifted_rotated_and_rescaled_plane (__main__.IndependentGeometryTests.test_shifted_rotated_and_rescaled_plane) ... ok
+test_skew_and_near_parallel_true_edge_witnesses (__main__.IndependentGeometryTests.test_skew_and_near_parallel_true_edge_witnesses) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.040s
+
+OK

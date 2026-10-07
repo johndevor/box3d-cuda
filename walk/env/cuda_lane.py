@@ -30,11 +30,12 @@ removing the full-state readback entirely for training:
 
     lane.step_policy(actions, n_ticks=10)
         -> (obs [E,58] f32, reward [E] f32, done [E] bool, diagnostics)
-    lane.reset_policy(mask, seed=..., commands=...) -> obs   (flat.py-exact
-        counter-based command resampling from {0.10, 0.15, 0.20} m/s)
+    lane.reset_policy(mask, seed=..., commands=..., phase_offsets=...) -> obs
+        (flat.py-exact counter-based per-episode resampling: command from
+        {0.10, 0.15, 0.20} m/s, then the v10 gait-phase offset 2*pi*random())
     lane.observe() -> obs;  lane.set_command(commands) -> obs
 
-    walk/env/flat.py and walk/env/reward.py (v6) are the contract; the
+    walk/env/flat.py and walk/env/reward.py are the contract; the
     in-kernel policy chain runs in f64 mirroring numpy operation for
     operation, so obs/reward/done are bit-identical to FlatFloorDuckEnv
     running over the same lane build (verified by
@@ -55,6 +56,7 @@ from __future__ import annotations
 import ctypes as C
 import dataclasses
 import hashlib
+import math
 import os
 import shutil
 import subprocess
@@ -65,10 +67,81 @@ import numpy as np
 
 from .native_lane import LaneState
 
-ABI_VERSION = 3  # must match DWC1_ABI_VERSION in duck_cuda.h
+ABI_VERSION = 8  # must match DWC1_ABI_VERSION in duck_cuda.h
+
+# dwc1_env_kind(): which device policy layer a library compiled (ABI v8).
+ENV_KIND_LOCOMOTION = 0      # duck / humanoid 3*J+16 gait contract
+ENV_KIND_REACH = 1           # fixed-base arm reach contract (arm_cuda_lane)
 
 OBS = 58
 COMMANDS_MPS = (0.10, 0.15, 0.20)   # flat.py per-episode forward commands
+MAX_LATENCY = 4                     # DWC1_MAX_LATENCY (ring capacity - 1)
+
+# =============================================================================
+# DOMAIN RANDOMIZATION + ACTUATION LATENCY -- python-side contract (v6)
+# =============================================================================
+# This is the exact spec walk/env/flat.py must implement so the python env
+# and the device policy path stay 0.0-parity. Feature is OFF by default
+# (randomization=None everywhere == today's behavior, bit-identical).
+#
+# CONFIG (creation time, both FlatFloorDuckEnv and CudaDuckLane):
+#   randomization = {"r_mass": float, "r_friction": float, "r_kp": float,
+#                    "r_damping": float, "max_latency_steps": int,
+#                    "r_gravity": float}          # r_gravity: ABI v7, optional
+#   each r in [0, 0.5]; max_latency_steps in [0, 4]; r_gravity in [0, 0.9]
+#   (DWC1_MAX_R_GRAVITY). flat.py passes the SAME
+#   dict to its lane factory (CudaDuckLane(..., randomization=cfg)); enabling
+#   it with a lane lacking set_randomization must raise.
+#
+# PER-EPISODE DRAWS (flat.py reset(), per masked env, from the SAME
+# counter-based stream rng = _episode_rng(seed, e, episode + 1)) -- exact
+# order; draws 3-7 happen ONLY when randomization is enabled (config not
+# None), so disabled behavior consumes the stream exactly as today:
+#   1. draw = rng.random(); command = 0.10 if draw < 0.5
+#                                      else 0.15 if draw < 0.75 else 0.20
+#   2. phase0 = 2.0 * math.pi * rng.random()
+#   3. mass_scale     = 1.0 + r_mass     * (2.0 * rng.random() - 1.0)
+#   4. friction_scale = 1.0 + r_friction * (2.0 * rng.random() - 1.0)
+#   5. kp_scale       = 1.0 + r_kp       * (2.0 * rng.random() - 1.0)
+#   6. damping_scale  = 1.0 + r_damping  * (2.0 * rng.random() - 1.0)
+#   7. latency = int(rng.integers(max_latency_steps + 1))
+#   All five are always drawn while enabled (an individual r of 0 yields
+#   exactly 1.0), keeping the stream shape fixed.
+#   8. gravity_scale = 1.0 - r_gravity * rng.random()   ONLY IF r_gravity > 0
+#      (ONE-SIDED: the authored gravity magnitude is the maximum, lighter
+#      worlds are drawn; see duck_cuda.h). Drawn LAST and only when
+#      requested, so every pre-v7 config consumes the stream exactly as
+#      before -- the accepted duck lineage's DR runs are bit-identical
+#      (experimental/duck_cuda/tests/test_duck_fingerprint.py).
+#
+# APPLYING (flat.py python path): after self._lane.restore(m), call
+#   self._lane.set_randomization(m, mass_scale, friction_scale, kp_scale,
+#                                damping_scale, latency_steps,
+#                                gravity_scale=...)             # [E] arrays
+# (a reset returns envs to neutral until this call). The lane applies the
+# scales INSIDE the physics: mass AND principal inertia together, pair mu,
+# PD kp, passive damping, gravity -- flat.py must NOT rescale anything else
+# (gravity touches no python-side quantity: obs carry only the gravity
+# DIRECTION, the reward never reads the magnitude); the
+# reference-weight regularizers stay nominal; observations do not expose the
+# draws.
+#
+# LATENCY (flat.py implements it python-side for its own step(); the kernel
+# has the identical ring for step_policy):
+#   - the slew/target chain is UNCHANGED and undelayed; it produces
+#     eff[t] = self._effective at policy step t (t = self._t pre-increment).
+#   - applied[t] = eff[t - latency] for t >= latency, else the reset
+#     effective targets clip(HOME, joint_limits). Done envs keep t frozen,
+#     so their applied targets pin exactly like their computed ones.
+#   - physics consumes applied: lane.tick_block(applied, 10).
+#   - the reward torque estimate uses applied AND the scaled gain, with this
+#     f64 association: torque = (kp * kp_scale) * (applied - q) - kv * qdot,
+#     clipped to +-effort_cap (kp = lane.kp, f64).
+#   - reference ring implementation (kernel-identical): P = max_latency + 1
+#     slots per env prefilled with the reset targets at reset;
+#     ring[e, t % P] = eff[t] written first, then
+#     applied = ring[e, (t + P - latency[e]) % P].
+# =============================================================================
 
 
 def _episode_rng(seed: int, env: int, episode: int) -> np.random.Generator:
@@ -145,6 +218,126 @@ class Info(C.Structure):
                 ("joint_upper", F * J)]
 
 
+class RandConfig(C.Structure):   # dwc1_randomization (ABI v7)
+    _fields_ = [(n, C.c_double) for n in
+                ["r_mass", "r_friction", "r_kp", "r_damping",
+                 "r_gravity"]] + \
+               [("max_latency_steps", C.c_uint32), ("reserved", C.c_uint32)]
+
+
+class EnvRandom(C.Structure):    # dwc1_env_random (ABI v7)
+    _fields_ = [(n, C.c_double) for n in
+                ["mass_scale", "friction_scale", "kp_scale",
+                 "damping_scale", "gravity_scale"]] + \
+               [("latency_steps", C.c_uint32), ("reserved", C.c_uint32)]
+
+
+RANDOMIZATION_KEYS = ("r_mass", "r_friction", "r_kp", "r_damping",
+                      "max_latency_steps", "r_gravity")
+MAX_R_GRAVITY = 0.9                 # DWC1_MAX_R_GRAVITY
+
+
+def rand_config(randomization: dict | None):
+    """dwc1_randomization from the python DR dict (None -> None = off).
+    Unknown keys are an error (a typo must never silently disable a knob)."""
+    if not randomization:
+        return None
+    unknown = sorted(set(randomization) - set(RANDOMIZATION_KEYS))
+    if unknown:
+        raise ValueError(f"unknown randomization keys: {unknown}")
+    return RandConfig(
+        float(randomization.get("r_mass", 0.0)),
+        float(randomization.get("r_friction", 0.0)),
+        float(randomization.get("r_kp", 0.0)),
+        float(randomization.get("r_damping", 0.0)),
+        float(randomization.get("r_gravity", 0.0)),
+        int(randomization.get("max_latency_steps", 0)), 0)
+
+
+def draw_randomization(rng: np.random.Generator, cfg: dict):
+    """The documented per-episode draw stream (steps 3-8 above) from an
+    episode RNG already advanced past the command and phase0 draws.
+    Returns (scales[5] = mass, friction, kp, damping, gravity; latency).
+    Shared by every python mirror (flat.py, humanoid_flat.py) and lane
+    wrapper so the stream can never diverge between them."""
+    scales = np.ones(5, np.float64)
+    for k, key in enumerate(("r_mass", "r_friction", "r_kp", "r_damping")):
+        scales[k] = 1.0 + float(cfg.get(key, 0.0)) * (2.0 * rng.random() - 1.0)
+    latency = int(rng.integers(int(cfg.get("max_latency_steps", 0)) + 1))
+    r_gravity = float(cfg.get("r_gravity", 0.0))
+    if r_gravity > 0.0:             # v7: drawn LAST, only when requested
+        scales[4] = 1.0 - r_gravity * rng.random()
+    return scales, latency
+
+
+class GateProxy(C.Structure):
+    """dwc1_gate_proxy: judge-shadow gait counters (metrics only; see the
+    honesty note in duck_cuda.h -- tick-resolution approximation of the
+    frozen judge's footfall clauses, never a substitute for it)."""
+    _fields_ = [(n, C.c_uint32) for n in [
+        "qualified_left", "qualified_right", "alternation_violations",
+        "episode_qualified_left", "episode_qualified_right",
+        "episode_alternation_violations",
+        "termination_reason", "episode_termination_reason"]]
+
+
+GATE_PROXY_DTYPE = np.dtype(
+    [(name, "u4") for name, _ in GateProxy._fields_])
+
+# dwc1 DWC1_TERM_* codes (why an env last became done; metrics only).
+# REACH kind: "fell" = proxy crash / non-finite, "reach_starved" = an
+# acquisition found no queued target (host contract violation).
+TERM_REASONS = ("none", "fell", "gate_deadline", "alternation", "horizon",
+                "fault", "reach_starved")
+
+REACH_TARGETS = 5            # DWC1_REACH_TARGETS (judged targets/episode)
+
+
+class ReachState(C.Structure):
+    """dwc1_reach_state (ABI v8, REACH kind): target queue + judge-shadow
+    counters of the arm reach layer (see duck_cuda.h)."""
+    _fields_ = [("target", C.c_double * 3), ("next_target", C.c_double * 3),
+                ("tier", C.c_double), ("key", C.c_double)] + \
+               [(n, C.c_uint32) for n in
+                ["target_index", "hold", "next_valid", "valid"]] + \
+               [("acquire_step", C.c_uint32 * REACH_TARGETS)] + \
+               [(n, C.c_uint32) for n in
+                ["limit_violation_ticks", "speed_violation_ticks",
+                 "proxy_violation_ticks", "starved", "episode_acquired"]] + \
+               [("episode_acquire_step", C.c_uint32 * REACH_TARGETS)] + \
+               [(n, C.c_uint32) for n in
+                ["episode_limit_violation_ticks",
+                 "episode_speed_violation_ticks",
+                 "episode_proxy_violation_ticks", "reserved"]]
+
+
+REACH_STATE_DTYPE = np.dtype(
+    [("target", "f8", (3,)), ("next_target", "f8", (3,)),
+     ("tier", "f8"), ("key", "f8"),
+     ("target_index", "u4"), ("hold", "u4"), ("next_valid", "u4"),
+     ("valid", "u4"), ("acquire_step", "u4", (REACH_TARGETS,)),
+     ("limit_violation_ticks", "u4"), ("speed_violation_ticks", "u4"),
+     ("proxy_violation_ticks", "u4"), ("starved", "u4"),
+     ("episode_acquired", "u4"),
+     ("episode_acquire_step", "u4", (REACH_TARGETS,)),
+     ("episode_limit_violation_ticks", "u4"),
+     ("episode_speed_violation_ticks", "u4"),
+     ("episode_proxy_violation_ticks", "u4"), ("reserved", "u4")],
+    align=True)   # the C struct is 8-byte aligned (doubles): 160 B, not 156
+assert REACH_STATE_DTYPE.itemsize == C.sizeof(ReachState)
+
+
+class DeviceInfo(C.Structure):
+    _fields_ = [(n, C.c_uint32) for n in [
+        "lanes_per_env", "threads_per_block", "min_blocks_per_sm", "sm_count",
+        "step_regs_per_thread", "step_local_bytes", "step_blocks_per_sm",
+        "policy_regs_per_thread", "policy_local_bytes",
+        "policy_blocks_per_sm"]] + \
+        [(n, C.c_uint64) for n in ["stack_limit_bytes",
+                                   "workspace_bytes_per_env"]] + \
+        [(n, C.c_uint32) for n in ["resident_envs_estimate", "reserved"]]
+
+
 def _source_digest() -> str:
     h = hashlib.sha256()
     for p in _SOURCES:
@@ -174,7 +367,9 @@ def build_library() -> Path:
 def load_library(path: Path):
     lib = C.CDLL(str(path))
     specs = {
-        "dwc1_create": [C.c_uint32, FP, C.POINTER(C.c_void_p)],
+        "dwc1_create": [C.c_uint32, FP, C.POINTER(RandConfig),
+                        C.POINTER(C.c_void_p)],
+        "dwc1_set_randomization": [C.c_void_p, U8P, C.POINTER(EnvRandom)],
         "dwc1_destroy": [C.c_void_p],
         "dwc1_info_get": [C.c_void_p, C.POINTER(Info)],
         "dwc1_step": [C.c_void_p, FP, C.c_uint32, C.POINTER(Diagnostic)],
@@ -184,12 +379,24 @@ def load_library(path: Path):
                              C.POINTER(Diagnostic)],
         "dwc1_observe": [C.c_void_p, FP],
         "dwc1_set_command": [C.c_void_p, DP],
-        "dwc1_reset_policy": [C.c_void_p, U8P, DP],
+        "dwc1_reset_policy": [C.c_void_p, U8P, DP, DP],
+        "dwc1_device_info_get": [C.c_void_p, C.POINTER(DeviceInfo)],
         "dwc1_abi_version": [],
         "dwc1_reset": [C.c_void_p, U8P],
         "dwc1_set_state": [C.c_void_p, C.c_uint32, FP, FP, FP,
                            C.POINTER(Manifold), C.c_uint64],
         "dwc1_query": [C.c_void_p, C.POINTER(Manifold)],
+        "dwc1_gate_proxy_get": [C.c_void_p, C.POINTER(GateProxy)],
+        "dwc1_set_fast_termination": [C.c_void_p, C.c_uint32],
+        "dwc1_set_gate_termination": [C.c_void_p, C.c_uint32, C.c_uint32],
+        "dwc1_set_rsi": [C.c_void_p, C.c_double],
+        # ABI v8: env kind + reach entries (exported by every build; the
+        # reach calls return DWC1_INVALID on locomotion builds)
+        "dwc1_env_kind": [],
+        "dwc1_obs_width": [],
+        "dwc1_action_mode": [],
+        "dwc1_reach_set_targets": [C.c_void_p, U8P, DP, DP],
+        "dwc1_reach_get": [C.c_void_p, C.POINTER(ReachState)],
     }
     for name, args in specs.items():
         fn = getattr(lib, name)
@@ -216,7 +423,8 @@ class CudaDuckLane:
     """E batched fp32 flat-floor ducks over the dwc1 C ABI."""
 
     def __init__(self, environments: int, joint_offsets: np.ndarray | None = None,
-                 library_path: str | Path | None = None):
+                 library_path: str | Path | None = None,
+                 randomization: dict | None = None):
         path = library_path or os.environ.get("DUCK_CUDA_LIBRARY")
         self.library_path = Path(path) if path else build_library()
         self._lib = load_library(self.library_path)
@@ -225,6 +433,11 @@ class CudaDuckLane:
             raise RuntimeError(
                 f"{self.library_path} exports dwc1 ABI v{abi}; "
                 f"this wrapper requires v{ABI_VERSION} (rebuild the library)")
+        # The CUDA build is warp-per-env (32 lanes/env): throughput saturates
+        # around E=8192-16384 on an RTX 5090; larger batches only add memory
+        # (~sizeof(DwWork) ~ 100 KB workspace per env).
+        if not 1 <= int(environments) <= 65536:
+            raise ValueError("environments must be in [1, 65536]")
         self.E = int(environments)
         self.J, self.B, self.P = J, B, P
         offsets = None
@@ -233,8 +446,11 @@ class CudaDuckLane:
             if offsets.shape != (self.E, J):
                 raise ValueError("joint_offsets requires shape [E, J]")
         self._h = C.c_void_p()
+        self.randomization = dict(randomization) if randomization else None
+        cfg = rand_config(self.randomization)
         rc = self._lib.dwc1_create(
             self.E, _fp(offsets) if offsets is not None else None,
+            C.byref(cfg) if cfg is not None else None,
             C.byref(self._h))
         if rc:
             raise ValueError(f"dwc1_create status={rc}")
@@ -280,7 +496,7 @@ class CudaDuckLane:
     # -- device policy path (obs + reward + termination in-kernel) ----------
     def step_policy(self, actions: np.ndarray, n_ticks: int = 10):
         """One full policy step on device: action -> slew-limited targets ->
-        n_ticks physics -> reward.py v6 -> termination -> 58-dim observation.
+        n_ticks physics -> reward.py -> termination -> 58-dim observation.
 
         Returns (obs [E,58] f32, reward [E] f32, done [E] bool, diagnostics)
         where diagnostics is a numpy structured array (DIAG_DTYPE); a nonzero
@@ -301,6 +517,51 @@ class CudaDuckLane:
         diagnostics = np.frombuffer(diag, dtype=DIAG_DTYPE).copy()
         return obs, reward, done.astype(bool), diagnostics
 
+    def device_info(self) -> dict:
+        """Launch/occupancy telemetry (zeros for GPU-only fields on serial)."""
+        info = DeviceInfo()
+        rc = self._lib.dwc1_device_info_get(self._h, C.byref(info))
+        if rc:
+            raise RuntimeError(f"dwc1_device_info_get status={rc}")
+        return {name: int(getattr(info, name))
+                for name, _ in DeviceInfo._fields_ if name != "reserved"}
+
+    def gate_proxy(self) -> np.ndarray:
+        """Judge-shadow gait counters per env (GATE_PROXY_DTYPE structured
+        array): current-episode qualified swings L/R + alternation
+        violations, plus the last COMPLETED episode's snapshot. Metrics
+        only -- see the honesty note in duck_cuda.h."""
+        out = (GateProxy * self.E)()
+        rc = self._lib.dwc1_gate_proxy_get(self._h, out)
+        if rc:
+            raise RuntimeError(f"dwc1_gate_proxy_get status={rc}")
+        return np.frombuffer(out, dtype=GATE_PROXY_DTYPE).copy()
+
+    def set_gate_termination(self, first_deadline_ticks: int = 0,
+                             max_alternation_violations: int = 0) -> None:
+        """OPT-IN judge-aligned death rules (both 0 = off, the default):
+        terminate a live env once `first_deadline_ticks` accepted episode
+        ticks pass without any gate-qualified swing, or once its
+        alternation-violation count reaches the maximum. Runtime knobs
+        (curriculum-tightenable, no recompile); termination reasons
+        surface via gate_proxy() as TERM_REASONS indices."""
+        rc = self._lib.dwc1_set_gate_termination(
+            self._h, int(first_deadline_ticks),
+            int(max_alternation_violations))
+        if rc:
+            raise RuntimeError(f"dwc1_set_gate_termination status={rc}")
+
+    def set_rsi(self, fraction: float) -> None:
+        """Reference State Initialization (DeepMimic-style, default OFF):
+        with this probability each policy-reset env starts ON the
+        DW_REF_GAIT reference cycle at the bin aligned with its fresh
+        phase offset (joint q from the table, qdot from its finite
+        difference at the clock rate) so the imitation term is consistent
+        at t=0. fraction 0.0 keeps resets bit-identical to today."""
+        rc = self._lib.dwc1_set_rsi(self._h, float(fraction))
+        if rc:
+            raise RuntimeError(f"dwc1_set_rsi status={rc}")
+
     def observe(self) -> np.ndarray:
         """Current 58-dim observations (no stepping); reset()-style read."""
         obs = np.empty((self.E, OBS), np.float32)
@@ -319,29 +580,77 @@ class CudaDuckLane:
         return self.observe()
 
     def reset_policy(self, mask: np.ndarray | None = None,
-                     seed: int | None = None, commands=None) -> np.ndarray:
+                     seed: int | None = None, commands=None,
+                     phase_offsets=None) -> np.ndarray:
         """Masked policy reset mirroring FlatFloorDuckEnv.reset(): physics and
-        tracker state back to creation, per-env commands resampled from
-        COMMANDS_MPS with flat.py's exact counter-based (seed, env, episode)
-        RNG (pass `commands` [E] to override). Returns fresh observations."""
+        tracker state back to creation; per-env command AND per-episode gait
+        phase offset resampled with flat.py's exact counter-based (seed, env,
+        episode) RNG -- one stream per episode: draw = rng.random() picks the
+        command NON-uniformly (0.10 if draw < 0.5 else 0.15 if draw < 0.75
+        else 0.20: the hardest slow-walk command is oversampled 50%), then
+        phase0 = 2*pi*rng.random() as the NEXT draw. Pass
+        `commands`/`phase_offsets` [E] to override the drawn values.
+        Returns fresh observations."""
         if seed is not None:
             self._seed = int(seed)
         m = np.ones(self.E, bool) if mask is None \
             else np.asarray(mask, bool).reshape(self.E)
         cmd = np.zeros(self.E, np.float64)
+        ph0 = np.zeros(self.E, np.float64)
+        rnd = np.ones((self.E, 5), np.float64)
+        lat = np.zeros(self.E, np.int64)
+        cfg = self.randomization
+        for e in np.flatnonzero(m):
+            rng = _episode_rng(self._seed, int(e), int(self._episode[e]) + 1)
+            draw = rng.random()
+            cmd[e] = (COMMANDS_MPS[0] if draw < 0.5
+                      else COMMANDS_MPS[1] if draw < 0.75
+                      else COMMANDS_MPS[2])
+            ph0[e] = 2.0 * math.pi * rng.random()
+            if cfg is not None:   # draws 3-8 of the documented stream order
+                rnd[e], lat[e] = draw_randomization(rng, cfg)
+            self._episode[e] += 1
         if commands is not None:
             cmd[:] = np.broadcast_to(np.asarray(commands, np.float64), (self.E,))
-            self._episode[m] += 1
-        else:
-            for e in np.flatnonzero(m):
-                rng = _episode_rng(self._seed, int(e), int(self._episode[e]) + 1)
-                cmd[e] = COMMANDS_MPS[rng.integers(len(COMMANDS_MPS))]
-                self._episode[e] += 1
+        if phase_offsets is not None:
+            ph0[:] = np.broadcast_to(
+                np.asarray(phase_offsets, np.float64), (self.E,))
         mc = (C.c_uint8 * self.E)(*[1 if x else 0 for x in m])
-        rc = self._lib.dwc1_reset_policy(self._h, mc, cmd.ctypes.data_as(DP))
+        rc = self._lib.dwc1_reset_policy(self._h, mc, cmd.ctypes.data_as(DP),
+                                         ph0.ctypes.data_as(DP))
         if rc:
             raise RuntimeError(f"dwc1_reset_policy status={rc}")
+        if cfg is not None:
+            self.set_randomization(m, rnd[:, 0], rnd[:, 1], rnd[:, 2],
+                                   rnd[:, 3], lat, gravity_scale=rnd[:, 4])
         return self.observe()
+
+    def set_randomization(self, mask, mass_scale, friction_scale, kp_scale,
+                          damping_scale, latency_steps,
+                          gravity_scale=1.0) -> None:
+        """Apply per-env randomization values ([E] arrays) to masked envs and
+        reset their actuation-latency buffer; call right after a reset of the
+        same envs (see the module-level contract). Values must lie inside the
+        creation-time ranges. gravity_scale (v7) defaults to the neutral 1.0
+        so pre-v7 callers are unchanged."""
+        m = np.ones(self.E, bool) if mask is None \
+            else np.asarray(mask, bool).reshape(self.E)
+        randoms = (EnvRandom * self.E)()
+        arrays = [np.broadcast_to(np.asarray(v, np.float64), (self.E,))
+                  for v in (mass_scale, friction_scale, kp_scale,
+                            damping_scale, gravity_scale)]
+        lats = np.broadcast_to(np.asarray(latency_steps, np.int64), (self.E,))
+        for e in range(self.E):
+            randoms[e].mass_scale = float(arrays[0][e])
+            randoms[e].friction_scale = float(arrays[1][e])
+            randoms[e].kp_scale = float(arrays[2][e])
+            randoms[e].damping_scale = float(arrays[3][e])
+            randoms[e].gravity_scale = float(arrays[4][e])
+            randoms[e].latency_steps = int(lats[e])
+        mc = (C.c_uint8 * self.E)(*[1 if x else 0 for x in m])
+        rc = self._lib.dwc1_set_randomization(self._h, mc, randoms)
+        if rc:
+            raise RuntimeError(f"dwc1_set_randomization status={rc}")
 
     # -- reads --------------------------------------------------------------
     def read(self) -> CudaLaneState:

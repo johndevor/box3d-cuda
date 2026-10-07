@@ -31,6 +31,16 @@
       "continue_on_error": false
     },
     {
+      "name": "gpu-diag",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; DUCK_CUDA_LIBRARY=$(find experimental/duck_cuda -name 'libduck_cuda.so' | head -1) $PY -B experimental/duck_cuda/tests/remote_gpu_diag.py 2>&1 | tee gpu-diag.log",
+      "timeout_s": 300,
+      "artifacts": [
+        "gpu-diag.log",
+        "gpu-diag.json"
+      ],
+      "continue_on_error": false
+    },
+    {
       "name": "gpu-parity",
       "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; DUCK_CUDA_LIBRARY=$(find experimental/duck_cuda -name 'libduck_cuda.so' | head -1) DUCK_CUDA_SERIAL_LIBRARY=$PWD/libduck_cuda_serial.so $PY -B experimental/duck_cuda/tests/remote_gpu_parity.py 2>&1 | tee gpu-parity.log",
       "timeout_s": 600,

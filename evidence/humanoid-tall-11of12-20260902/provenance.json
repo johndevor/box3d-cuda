@@ -1,0 +1,16 @@
+{
+ "spec": "humanoid-tree-tall-continue",
+ "leg": 6,
+ "run_dir": "/Users/john/Code/duck-grid-walk/runs/gpu/20260902-185946-humanoid-tree-tall-continue",
+ "source_actor": "/Users/john/Code/duck-grid-walk/runs/gpu/20260902-185946-humanoid-tree-tall-continue/artifacts/train/gpu-train-out/actor_final.pt",
+ "cells_passed": 11,
+ "cells_total": 12,
+ "failed_cells": [
+  "seed1913-cmd0.50"
+ ],
+ "accepted": false,
+ "judge_wall_s": 5.1,
+ "actor": "/Users/john/Code/duck-grid-walk/runs/gpu/20260902-185946-humanoid-tree-tall-continue/artifacts/train/gpu-train-out/actor_final.pt",
+ "acceptance_json": "/Users/john/Code/duck-grid-walk/runs/gpu/20260902-185946-humanoid-tree-tall-continue/judge/actor_final/acceptance.json",
+ "recorded_at": "2026-09-02T19:14:10"
+}

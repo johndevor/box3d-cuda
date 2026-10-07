@@ -44,6 +44,14 @@ PLACEMENT_MIN_M = 0.030
 SUPPORT_S = 0.040
 OPPOSITE_SUPPORT_FRACTION = 0.90
 STANCE_SLIP_BOUND_M = 0.025   # documented bound, see module docstring
+# AMENDMENT (authorized by John, 2026-09-01): contact debounce for SUPPORT
+# continuity. The raw flag reports single-tick (2 ms) impulse dropouts during
+# soft touchdowns as "lost support"; no physical force sensor resolves 2 ms
+# dropouts, and real contact estimation is filtered over tens of ms. Gaps of
+# <= 20 ms bracketed by contact are treated as continuous contact BEFORE swing
+# and support-window analysis. Real swings (>= 60 ms minimum) are unaffected.
+# Every other criterion, threshold, and semantics is unchanged.
+CONTACT_DEBOUNCE_S = 0.020
 TRANSLATION_RANGE = (0.60, 1.50)
 TILT_MAX_DEG = 30.0
 FIRST_STEP_S = 2.5
@@ -84,6 +92,13 @@ def _qualified_footfalls(trace: dict) -> tuple[list[dict], list[dict]]:
     dt = float(trace["dt"])
     t = np.asarray(ticks["time_s"], float)
     contact = np.asarray(ticks["contact"], bool)            # [n, 2]
+    # contact debounce (see AMENDMENT note above): fill bracketed gaps <= 20 ms
+    debounce_ticks = int(round(CONTACT_DEBOUNCE_S / dt))
+    contact = contact.copy()
+    for f_ in range(2):
+        for g0, g1 in _runs(~contact[:, f_]):
+            if g0 > 0 and g1 < len(contact) and (g1 - g0) <= debounce_ticks:
+                contact[g0:g1, f_] = True
     sole = np.asarray(ticks["sole_height"], float)          # [n, 2]
     foot_pos = np.asarray(ticks["foot_pos"], float)         # [n, 2, 3]
     n = len(t)

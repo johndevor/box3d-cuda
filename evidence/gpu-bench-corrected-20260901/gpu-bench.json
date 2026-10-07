@@ -1,0 +1,64 @@
+{
+ "schema": "duckgridwalk.gpu-bench/1",
+ "results": [
+  {
+   "label": "parity",
+   "environments": 1024,
+   "ticks": 1000,
+   "wall_s": 0.306,
+   "ticks_per_s": 3345351
+  },
+  {
+   "label": "parity",
+   "environments": 4096,
+   "ticks": 1000,
+   "wall_s": 0.866,
+   "ticks_per_s": 4729776
+  },
+  {
+   "label": "parity",
+   "environments": 8192,
+   "ticks": 1000,
+   "wall_s": 1.643,
+   "ticks_per_s": 4986442
+  },
+  {
+   "label": "parity",
+   "environments": 16384,
+   "ticks": 1000,
+   "wall_s": 3.321,
+   "ticks_per_s": 4932933
+  },
+  {
+   "label": "fast",
+   "environments": 1024,
+   "ticks": 1000,
+   "wall_s": 0.292,
+   "ticks_per_s": 3501639
+  },
+  {
+   "label": "fast",
+   "environments": 4096,
+   "ticks": 1000,
+   "wall_s": 0.818,
+   "ticks_per_s": 5005051
+  },
+  {
+   "label": "fast",
+   "environments": 8192,
+   "ticks": 1000,
+   "wall_s": 1.542,
+   "ticks_per_s": 5311784
+  },
+  {
+   "label": "fast",
+   "environments": 16384,
+   "ticks": 1000,
+   "wall_s": 3.242,
+   "ticks_per_s": 5053437
+  }
+ ],
+ "best_ticks_per_s": 5311784,
+ "target_ticks_per_s": 1000000,
+ "target_met": true
+}

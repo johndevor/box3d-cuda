@@ -146,9 +146,10 @@ class PhaseLockTest(unittest.TestCase):
         prev = self._state(contact, phase)
         r = rm.reward(prev, self._state(contact, phase), np.zeros((3, 14)),
                       np.full(3, 0.15), tr)
-        self.assertAlmostEqual(float(r[0] - r[1]), rm.W_PHASE, places=5)
+        # signed term: each foot flipping match->mismatch swings 2*W_PHASE
+        self.assertAlmostEqual(float(r[0] - r[1]), 2 * rm.W_PHASE, places=5)
         # limp keeps one matching foot (left), fully inverted stance matches none
-        self.assertAlmostEqual(float(r[1] - r[2]), rm.W_PHASE, places=5)
+        self.assertAlmostEqual(float(r[1] - r[2]), 2 * rm.W_PHASE, places=5)
 
     def test_phase_term_absent_without_phase_key(self):
         from walk.env import reward as rm

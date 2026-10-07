@@ -34,7 +34,20 @@ SIM_DT = 0.002
 TICKS_PER_STEP = 10
 ACTION_SCALE = 0.25
 MAX_TARGET_INCREMENT = 5.24 * CONTROL_DT          # 0.1048 rad per policy step
-PHASE_HZ = 2.5   # gait clock; 2.5 Hz matches the learned ~0.2 s step period
+import os as _os
+# Affine gait clock: phase_hz = BASE + PER_MPS * command. Sweepable via env
+# vars (read once at import; the kernel bakes the same values through the
+# generated header, drift-checked by the duck_cuda test suite).
+# History: fixed 2.5 Hz -> per-mps 16.67 (knife-edge: demanded exactly the
+# evaluator's 30 mm minimum step) -> 10.0. Base term lets low speeds keep a
+# workable cadence without knife-edging step length.
+PHASE_HZ_BASE = float(_os.environ.get("DUCK_PHASE_HZ_BASE", "0.0"))
+PHASE_HZ_PER_MPS = float(_os.environ.get("DUCK_PHASE_HZ_PER_MPS", "16.67"))
+# 16.67: sweep-validated, twice re-confirmed empirically. Both attempts to move
+# it off 16.67 on theoretical grounds (10.0 "knife-edge" theory, 12.5
+# "constant-step" theory) regressed the trained lineage hard. The clock the
+# policies entrain to beats the clock the arithmetic prefers. Do not move
+# without a fresh sweep on a fresh lineage.
 COMMANDS_MPS = (0.10, 0.15, 0.20)                  # per-episode forward commands
 HORIZON_STEPS = 400                                # 8 s at 0.02 s per step
 MIN_HEIGHT_FRACTION = 0.7                          # of the HOME root height
@@ -54,28 +67,58 @@ def _episode_rng(seed: int, env: int, episode: int) -> np.random.Generator:
     return np.random.default_rng([int(seed) & 0xFFFFFFFF, int(env), int(episode)])
 
 
+def _draw_randomization(rng, cfg):
+    """The lane contract's per-episode DR draw stream (cuda_lane.py draws
+    3-8), imported lazily so this module keeps its import graph."""
+    from .cuda_lane import draw_randomization  # noqa: PLC0415
+    return draw_randomization(rng, cfg)
+
+
 class FlatFloorDuckEnv(DuckEnvBatch):
     """E parallel flat-floor ducks; see walk/env/README.md for the obs layout."""
 
     def __init__(self, environments: int = 16, seed: int = 0,
                  perturbation_rad: float = 0.0,
-                 library_path=None, lane_factory=None):
+                 library_path=None, lane_factory=None,
+                 randomization: dict | None = None):
         if not 0.0 <= float(perturbation_rad) <= MAX_PERTURBATION_RAD:
             raise ValueError(f"perturbation_rad must be in [0, {MAX_PERTURBATION_RAD}]")
         self.E = int(environments)
         self._perturbation = float(perturbation_rad)
         self._seed = int(seed)
         self._library_path = library_path
+        # Domain randomization per walk/env/cuda_lane.py's normative spec:
+        # per-episode mass/friction/kp/damping scales + command latency,
+        # applied INSIDE the lane physics; requires a lane with
+        # set_randomization (the duck_cuda lanes; the CPU idv1 lane cannot).
+        rz = dict(randomization or {})
+        self._rz = {k: float(rz.pop(k, 0.0)) for k in
+                    ("r_mass", "r_friction", "r_kp", "r_damping")}
+        self._rz_latency = int(rz.pop("max_latency_steps", 0))
+        # ABI v7: one-sided gravity scale (authored magnitude = maximum);
+        # drawn LAST and only when > 0, so pre-v7 configs keep their exact
+        # RNG stream (see walk/env/cuda_lane.py contract, draw 8).
+        self._rz["r_gravity"] = float(rz.pop("r_gravity", 0.0))
+        if rz:
+            raise ValueError(f"unknown randomization keys: {sorted(rz)}")
+        self._rz_on = any(v > 0 for v in self._rz.values()) or self._rz_latency > 0
         self._lane_factory = lane_factory or (
             lambda E, offsets: native_lane.NativeDuckLane(
                 E, joint_offsets=offsets, library_path=self._library_path))
         self._build_lane()
+        if self._rz_on and not hasattr(self._lane, "set_randomization"):
+            raise ValueError("randomization requires a lane with set_randomization")
+        self._rand_scales = np.ones((self.E, 5))   # mass, mu, kp, damping, g
+        self._latency = np.zeros(self.E, np.int64)
+        self._ring_P = self._rz_latency + 1
+        self._ring = np.zeros((self.E, self._ring_P, ACT))
         self._tracker = reward_mod.GaitTracker(self.E)
         self._episode = np.zeros(self.E, np.int64)   # per-env episode counter
         self._command = np.zeros(self.E)
         self._t = np.zeros(self.E, np.int64)         # policy steps this episode
         self._done = np.zeros(self.E, bool)
         self._prev_action = np.zeros((self.E, ACT))
+        self._phase0 = np.zeros(self.E)              # per-episode gait-phase offset
         self._targets = np.tile(HOME, (self.E, 1))   # pre-clip slew reference
         self._effective = self._clip_limits(self._targets)
         self.reset()
@@ -111,13 +154,34 @@ class FlatFloorDuckEnv(DuckEnvBatch):
             self._lane.restore(m)
             for e in np.flatnonzero(m):
                 rng = _episode_rng(self._seed, int(e), int(self._episode[e]) + 1)
-                self._command[e] = COMMANDS_MPS[rng.integers(len(COMMANDS_MPS))]
+                # oversample the hardest command (0.10: slow walking = longest
+                # balance demands; it fails at every clock without extra data)
+                draw = rng.random()
+                self._command[e] = (COMMANDS_MPS[0] if draw < 0.5
+                                    else COMMANDS_MPS[1] if draw < 0.75
+                                    else COMMANDS_MPS[2])
+                # random gait-phase offset: without it every episode starts in
+                # the LEFT clock window, training a left-leading bias
+                self._phase0[e] = 2.0 * math.pi * rng.random()
+                if self._rz_on:
+                    # draws 3-6: scales in fixed order; draw 7: latency;
+                    # draw 8 (only if r_gravity > 0): one-sided gravity
+                    self._rand_scales[e], self._latency[e] = \
+                        _draw_randomization(rng, {
+                            **self._rz,
+                            "max_latency_steps": self._rz_latency})
                 self._episode[e] += 1
             self._t[m] = 0
             self._done[m] = False
             self._prev_action[m] = 0.0
             self._targets[m] = HOME
             self._effective = self._clip_limits(self._targets)
+            if self._rz_on:
+                self._lane.set_randomization(
+                    m, self._rand_scales[:, 0], self._rand_scales[:, 1],
+                    self._rand_scales[:, 2], self._rand_scales[:, 3],
+                    self._latency, gravity_scale=self._rand_scales[:, 4])
+                self._ring[m] = self._effective[m][:, None, :]
             self._tracker.reset(m)
         state = self._lane.read()
         self._prev = self._reward_state(state, self._prev_action,
@@ -150,6 +214,15 @@ class FlatFloorDuckEnv(DuckEnvBatch):
         # done envs hold their previous targets (no auto-reset; frozen).
         self._targets = np.where(live[:, None], new_targets, self._targets)
         self._effective = self._clip_limits(self._targets)
+        if self._rz_on:
+            # latency ring: write eff[t], physics consumes eff[t - latency]
+            rows = np.arange(self.E)
+            t = self._t
+            self._ring[rows, t % self._ring_P] = self._effective
+            idx = (t + self._ring_P - self._latency) % self._ring_P
+            self._applied = self._ring[rows, idx]
+        else:
+            self._applied = self._effective
 
         iterations = np.zeros(self.E, np.int32)
         # per-tick foot contact: 2 ms flickers are invisible at the 20 ms
@@ -158,7 +231,7 @@ class FlatFloorDuckEnv(DuckEnvBatch):
         # Lanes with a native tick_block (CUDA) count contact ticks on device:
         # one launch + one readback per policy step instead of ten.
         if on_tick is None and hasattr(self._lane, "tick_block"):
-            rc, diagnostics = self._lane.tick_block(self._effective, TICKS_PER_STEP)
+            rc, diagnostics = self._lane.tick_block(self._applied, TICKS_PER_STEP)
             bad = [d for d in diagnostics if d["native_status"] != 0]
             if rc or bad:
                 self._raise_fault(rc, diagnostics, bad, 0, a)
@@ -168,7 +241,7 @@ class FlatFloorDuckEnv(DuckEnvBatch):
         else:
             contact_ticks = np.zeros((self.E, 2), np.int32)
             for tick in range(TICKS_PER_STEP):
-                rc, diagnostics = self._lane.tick(self._effective)
+                rc, diagnostics = self._lane.tick(self._applied)
                 bad = [d for d in diagnostics if d["native_status"] != 0]
                 if rc or bad:
                     self._raise_fault(rc, diagnostics, bad, tick, a)
@@ -205,7 +278,8 @@ class FlatFloorDuckEnv(DuckEnvBatch):
     # ------------------------------------------------------------------
     def _torque(self, state: native_lane.LaneState) -> np.ndarray:
         """Boundary PD torque estimate (same law the lane applies per tick)."""
-        raw = self._lane.kp * (self._effective - state.q[:, 7:]) \
+        raw = (self._lane.kp * self._rand_scales[:, 2:3]) \
+            * (self._applied - state.q[:, 7:]) \
             - self._lane.kv * state.v[:, 6:]
         return np.clip(raw, -self._lane.effort_cap, self._lane.effort_cap)
 
@@ -222,8 +296,12 @@ class FlatFloorDuckEnv(DuckEnvBatch):
                 "action": np.asarray(action).copy(),
                 "torque": np.asarray(torque).copy(),
                 "foot_x": state.foot_pos[:, :, 0].copy(),
+                "joint_q": state.q[:, 7:].copy(),
                 # same clock the policy observes in obs[:, 56:58]
-                "phase": 2.0 * math.pi * PHASE_HZ * self._t * CONTROL_DT}
+                "phase": self._phase0
+                + 2.0 * math.pi
+                * (PHASE_HZ_BASE + PHASE_HZ_PER_MPS * self._command)
+                * self._t * CONTROL_DT}
 
     def _observe(self, state: native_lane.LaneState) -> np.ndarray:
         obs = np.zeros((self.E, OBS), np.float32)
@@ -236,7 +314,9 @@ class FlatFloorDuckEnv(DuckEnvBatch):
         obs[:, 48:51] = np.einsum("eji,ej->ei", rot, state.v[:, 0:3])
         obs[:, 51] = self._command
         obs[:, 54:56] = state.foot_contact
-        phase = 2.0 * math.pi * PHASE_HZ * self._t * CONTROL_DT
+        phase = self._phase0 + 2.0 * math.pi \
+            * (PHASE_HZ_BASE + PHASE_HZ_PER_MPS * self._command) \
+            * self._t * CONTROL_DT
         obs[:, 56] = np.sin(phase)
         obs[:, 57] = np.cos(phase)
         return obs

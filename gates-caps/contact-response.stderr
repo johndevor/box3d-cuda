@@ -1,0 +1,20 @@
+independent_contact_library=/Users/john/Code/duck-grid-walk/gates-caps/libintegrated_duck.dylib sha256=54fe46263d0fc6b0b6bcd47623942ad7c056b397a777659e56a974aeed0d4b44
+test_anisotropic_offcenter_friction_satisfies_conditional_kkt (__main__.IndependentResponseTests.test_anisotropic_offcenter_friction_satisfies_conditional_kkt) ... anisotropic_kkt mu=0.6 residual_m_s=1.08655891513e-07 radial_negative_residual_m_s=0.613023530244 impulse_norm=1.413948309 coulomb_cap=1.41394835369
+anisotropic_kkt mu=1.0 residual_m_s=9.69130685245e-08 radial_negative_residual_m_s=0.284773030224 impulse_norm=3.06718022479 coulomb_cap=3.06718015671
+ok
+test_convex_convex_equal_opposite_impulse_and_momentum (__main__.IndependentResponseTests.test_convex_convex_equal_opposite_impulse_and_momentum) ... ok
+test_ctypes_layout_matches_public_fixed_width_fields (__main__.IndependentResponseTests.test_ctypes_layout_matches_public_fixed_width_fields) ... ok
+test_diagonal_sliding_uses_coulomb_disk_not_componentwise_square (__main__.IndependentResponseTests.test_diagonal_sliding_uses_coulomb_disk_not_componentwise_square) ... ok
+test_explicit_pair_friction_zero_and_coulomb_disk (__main__.IndependentResponseTests.test_explicit_pair_friction_zero_and_coulomb_disk) ... ok
+test_invalid_registration_pairs_friction_and_capacity_rejected (__main__.IndependentResponseTests.test_invalid_registration_pairs_friction_and_capacity_rejected) ... ok
+test_invalid_step_parameters_fail_without_partial_state (__main__.IndependentResponseTests.test_invalid_step_parameters_fail_without_partial_state) ... ok
+test_offcenter_normal_impulse_produces_predicted_torque (__main__.IndependentResponseTests.test_offcenter_normal_impulse_produces_predicted_torque) ... ok
+test_restore_replays_environment_parameters_and_warm_cache_exactly (__main__.IndependentResponseTests.test_restore_replays_environment_parameters_and_warm_cache_exactly) ... ok
+test_topology_mismatch_is_atomic_even_for_zero_mask (__main__.IndependentResponseTests.test_topology_mismatch_is_atomic_even_for_zero_mask) ... ok
+test_two_environment_mask_restores_exact_state_cache_clock (__main__.IndependentResponseTests.test_two_environment_mask_restores_exact_state_cache_clock) ... ok
+test_unique_tetra_vertex_plane_impact_has_analytic_inelastic_impulse (__main__.IndependentResponseTests.test_unique_tetra_vertex_plane_impact_has_analytic_inelastic_impulse) ... ok
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.002s
+
+OK

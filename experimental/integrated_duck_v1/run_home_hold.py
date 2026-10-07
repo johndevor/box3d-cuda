@@ -19,7 +19,7 @@ import traceback
 ROOT=Path(__file__).resolve().parents[2]
 LANE=ROOT/'experimental/integrated_duck_v1'
 GATES={'joint_limit_violation_rad':.05,'penetration_m':.01,'max_joint_speed_rad_s':250.,'max_base_linear_speed_m_s':20.,'max_base_angular_speed_rad_s':250.}
-REFERENCE=ROOT/'duck_model/reference/open-duck-zero-hold-cpu-v1'
+REFERENCE=Path('/Users/john/Code/box3d-cuda-voxel-gate-c1/evidence/open-duck-zero-hold-cpu-v1')
 REFERENCE_SHA='a6d578064b433e730612d7144742b706471e63a37e3c81bcbc24acb7a7203a58'
 SOURCE_COMMIT='b9be205ac64488c23504ca42e5ec790337adeec3'
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
@@ -30,7 +30,7 @@ def preflight(gate):
     if data.get('status')!='passed-local-native-cpu' or data.get('source_unchanged') is not True or len(data['commands'])!=14 or any(x['exit_code'] for x in data['commands']):raise ValueError('local gates not fully passed')
     for name,digest in data['source_sha256'].items():
         if sha(ROOT/name)!=digest:raise ValueError('post-gate source drift '+name)
-    library=gate.parent/('libintegrated_duck.dylib' if sys.platform=='darwin' else 'libintegrated_duck.so')
+    library=gate.parent/'libintegrated_duck.dylib'
     if sha(library)!=data['artifacts'][library.name]:raise ValueError('native library drift')
     if sha(REFERENCE/'cpu-result.json')!=REFERENCE_SHA:raise ValueError('reference drift')
     reference=json.loads((REFERENCE/'cpu-result.json').read_text())

@@ -1,0 +1,1044 @@
+{
+ "clip:arm-kr240-delta--seed4242-tier0:8baafb3f9af07f38b2d3647329276fb111ef011ce4cd6776fc0e235452bea328:3": "8baafb3f9af07f38b2d3647329276fb111ef011ce4cd6776fc0e235452bea328",
+ "clip:arm-kr240-delta--seed90210-tier0:8baafb3f9af07f38b2d3647329276fb111ef011ce4cd6776fc0e235452bea328:3": "8baafb3f9af07f38b2d3647329276fb111ef011ce4cd6776fc0e235452bea328",
+ "clip:duck-walking-v1--nominal-cmd0.10:94cd4ff3fc22e9d1fbe0a1008057f63430445f842dfcf32eab7defdaec197298:3": "94cd4ff3fc22e9d1fbe0a1008057f63430445f842dfcf32eab7defdaec197298",
+ "clip:humanoid-generalist-gru-r2--earth_light_soft-cmd0.50:230c155f506a8df86fbeab735a3c121286dfe1454e7ad11584aba21175e0cb05:3": "230c155f506a8df86fbeab735a3c121286dfe1454e7ad11584aba21175e0cb05",
+ "clip:humanoid-generalist-gru-r2--gravity_9.81-cmd0.50:230c155f506a8df86fbeab735a3c121286dfe1454e7ad11584aba21175e0cb05:3": "230c155f506a8df86fbeab735a3c121286dfe1454e7ad11584aba21175e0cb05",
+ "clip:humanoid-generalist-gru-r2--nominal-cmd0.50:230c155f506a8df86fbeab735a3c121286dfe1454e7ad11584aba21175e0cb05:3": "230c155f506a8df86fbeab735a3c121286dfe1454e7ad11584aba21175e0cb05",
+ "clip:humanoid-h11-accepted--nominal-cmd0.50:01e051c7e5edcc923d473358afef2d891174f7ad231b24b157d2853f7de7b5b4:3": "01e051c7e5edcc923d473358afef2d891174f7ad231b24b157d2853f7de7b5b4",
+ "clip:humanoid-stocky-accepted--nominal-cmd0.50:200f3140a3dce503f92cb9178a64d4c1e5dfaff6827b03a99a92aa2972d19669:3": "200f3140a3dce503f92cb9178a64d4c1e5dfaff6827b03a99a92aa2972d19669",
+ "clip:humanoid-stocky-candidate--nominal-cmd0.50:962bc9cdd0a48f37b5bef32dd96cd46ed3739a93dc1489fc9a17b298a8faf4ab:3": "962bc9cdd0a48f37b5bef32dd96cd46ed3739a93dc1489fc9a17b298a8faf4ab",
+ "clip:humanoid-tall-6of12--nominal-cmd0.50:d578e9078171a184526506e16b875c9808956b6fa2d7008565f3eeada70cac81:3": "d578e9078171a184526506e16b875c9808956b6fa2d7008565f3eeada70cac81",
+ "clip:humanoid-walks-075--nominal-cmd0.50:f699913368f524ef9b3d56405139f0b3fb6c9510300e31e847fcce2f64340b21:3": "f699913368f524ef9b3d56405139f0b3fb6c9510300e31e847fcce2f64340b21",
+ "verdict:arm-kr240-delta:8baafb3f9af07f38b2d3647329276fb111ef011ce4cd6776fc0e235452bea328": {
+  "accepted": false,
+  "cells": [
+   {
+    "acquired": 5,
+    "cell": "seed4242-tier0",
+    "failed": [
+     "joint_speed_within_urdf_limits"
+    ],
+    "left": null,
+    "passed": false,
+    "qualified": null,
+    "right": null
+   },
+   {
+    "acquired": 5,
+    "cell": "seed4242-tier1",
+    "failed": [
+     "joint_speed_within_urdf_limits"
+    ],
+    "left": null,
+    "passed": false,
+    "qualified": null,
+    "right": null
+   },
+   {
+    "acquired": 0,
+    "cell": "seed4242-tier2",
+    "failed": [
+     "single_episode_no_reset_or_failure"
+    ],
+    "left": null,
+    "passed": false,
+    "qualified": null,
+    "right": null
+   },
+   {
+    "acquired": 5,
+    "cell": "seed7-tier0",
+    "failed": [
+     "joint_speed_within_urdf_limits"
+    ],
+    "left": null,
+    "passed": false,
+    "qualified": null,
+    "right": null
+   },
+   {
+    "acquired": 0,
+    "cell": "seed7-tier1",
+    "failed": [
+     "single_episode_no_reset_or_failure"
+    ],
+    "left": null,
+    "passed": false,
+    "qualified": null,
+    "right": null
+   },
+   {
+    "acquired": 3,
+    "cell": "seed7-tier2",
+    "failed": [
+     "all_5_targets_acquired_in_order",
+     "joint_speed_within_urdf_limits"
+    ],
+    "left": null,
+    "passed": false,
+    "qualified": null,
+    "right": null
+   },
+   {
+    "acquired": 5,
+    "cell": "seed1913-tier0",
+    "failed": [
+     "joint_speed_within_urdf_limits"
+    ],
+    "left": null,
+    "passed": false,
+    "qualified": null,
+    "right": null
+   },
+   {
+    "acquired": 5,
+    "cell": "seed1913-tier1",
+    "failed": [
+     "joint_speed_within_urdf_limits"
+    ],
+    "left": null,
+    "passed": false,
+    "qualified": null,
+    "right": null
+   },
+   {
+    "acquired": 5,
+    "cell": "seed1913-tier2",
+    "failed": [
+     "joint_speed_within_urdf_limits"
+    ],
+    "left": null,
+    "passed": false,
+    "qualified": null,
+    "right": null
+   },
+   {
+    "acquired": 5,
+    "cell": "seed90210-tier0",
+    "failed": [],
+    "left": null,
+    "passed": true,
+    "qualified": null,
+    "right": null
+   },
+   {
+    "acquired": 0,
+    "cell": "seed90210-tier1",
+    "failed": [
+     "single_episode_no_reset_or_failure"
+    ],
+    "left": null,
+    "passed": false,
+    "qualified": null,
+    "right": null
+   },
+   {
+    "acquired": 0,
+    "cell": "seed90210-tier2",
+    "failed": [
+     "single_episode_no_reset_or_failure"
+    ],
+    "left": null,
+    "passed": false,
+    "qualified": null,
+    "right": null
+   }
+  ],
+  "committed": {
+   "matches": true,
+   "passed": 1,
+   "path": "runs/gpu/20260902-160543-arm-reach-kr240/artifacts/acceptance/acceptance-out/acceptance.json",
+   "total": 12
+  },
+  "label": "1/12",
+  "passed": 1,
+  "source": "recomputed: walk/eval/arm_acceptance.py (serial lane)",
+  "total": 12,
+  "wall_s": 2.7
+ },
+ "verdict:duck-walking-v1:94cd4ff3fc22e9d1fbe0a1008057f63430445f842dfcf32eab7defdaec197298": {
+  "accepted": false,
+  "cells": [
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd0.10",
+    "failed": [],
+    "left": 12,
+    "passed": true,
+    "qualified": 25,
+    "right": 13
+   },
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd0.15",
+    "failed": [],
+    "left": 19,
+    "passed": true,
+    "qualified": 38,
+    "right": 19
+   },
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd0.20",
+    "failed": [],
+    "left": 26,
+    "passed": true,
+    "qualified": 51,
+    "right": 25
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd0.10",
+    "failed": [],
+    "left": 13,
+    "passed": true,
+    "qualified": 25,
+    "right": 12
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd0.15",
+    "failed": [],
+    "left": 19,
+    "passed": true,
+    "qualified": 38,
+    "right": 19
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd0.20",
+    "failed": [],
+    "left": 26,
+    "passed": true,
+    "qualified": 51,
+    "right": 25
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd0.10",
+    "failed": [
+     "footfalls_alternate"
+    ],
+    "left": 12,
+    "passed": false,
+    "qualified": 25,
+    "right": 13
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd0.15",
+    "failed": [],
+    "left": 20,
+    "passed": true,
+    "qualified": 39,
+    "right": 19
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd0.20",
+    "failed": [
+     "footfalls_alternate"
+    ],
+    "left": 25,
+    "passed": false,
+    "qualified": 51,
+    "right": 26
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd0.10",
+    "failed": [],
+    "left": 12,
+    "passed": true,
+    "qualified": 24,
+    "right": 12
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd0.15",
+    "failed": [],
+    "left": 19,
+    "passed": true,
+    "qualified": 38,
+    "right": 19
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd0.20",
+    "failed": [],
+    "left": 26,
+    "passed": true,
+    "qualified": 52,
+    "right": 26
+   }
+  ],
+  "label": "ACCEPTED \u00b7 audit 10/12",
+  "passed": 10,
+  "source": "evidence/walking-accepted-20260901/acceptance.json (4-seed audit)",
+  "total": 12,
+  "wall_s": 0.0
+ },
+ "verdict:humanoid-generalist-gru-r2:230c155f506a8df86fbeab735a3c121286dfe1454e7ad11584aba21175e0cb05": {
+  "accepted": false,
+  "cells": [
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd0.50",
+    "failed": [],
+    "left": 6,
+    "passed": true,
+    "qualified": 12,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd0.75",
+    "failed": [],
+    "left": 10,
+    "passed": true,
+    "qualified": 19,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd1.00",
+    "failed": [],
+    "left": 13,
+    "passed": true,
+    "qualified": 25,
+    "right": 12
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd0.50",
+    "failed": [],
+    "left": 6,
+    "passed": true,
+    "qualified": 12,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd1.00",
+    "failed": [],
+    "left": 13,
+    "passed": true,
+    "qualified": 25,
+    "right": 12
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd0.50",
+    "failed": [],
+    "left": 6,
+    "passed": true,
+    "qualified": 12,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd0.75",
+    "failed": [],
+    "left": 10,
+    "passed": true,
+    "qualified": 19,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd1.00",
+    "failed": [
+     "footfalls_alternate"
+    ],
+    "left": 11,
+    "passed": false,
+    "qualified": 23,
+    "right": 12
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd0.50",
+    "failed": [
+     "footfalls_alternate"
+    ],
+    "left": 7,
+    "passed": false,
+    "qualified": 12,
+    "right": 5
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd1.00",
+    "failed": [],
+    "left": 12,
+    "passed": true,
+    "qualified": 24,
+    "right": 12
+   }
+  ],
+  "label": "10/12",
+  "passed": 10,
+  "source": "recomputed: walk/eval/humanoid_acceptance.py (serial lane)",
+  "total": 12,
+  "wall_s": 4.4
+ },
+ "verdict:humanoid-h11-accepted:01e051c7e5edcc923d473358afef2d891174f7ad231b24b157d2853f7de7b5b4": {
+  "accepted": true,
+  "cells": [
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd0.50",
+    "failed": [],
+    "left": 6,
+    "passed": true,
+    "qualified": 12,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd1.00",
+    "failed": [],
+    "left": 13,
+    "passed": true,
+    "qualified": 25,
+    "right": 12
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd0.50",
+    "failed": [],
+    "left": 6,
+    "passed": true,
+    "qualified": 12,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd1.00",
+    "failed": [],
+    "left": 13,
+    "passed": true,
+    "qualified": 25,
+    "right": 12
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd0.50",
+    "failed": [],
+    "left": 6,
+    "passed": true,
+    "qualified": 12,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd0.75",
+    "failed": [],
+    "left": 10,
+    "passed": true,
+    "qualified": 19,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd1.00",
+    "failed": [],
+    "left": 12,
+    "passed": true,
+    "qualified": 24,
+    "right": 12
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd0.50",
+    "failed": [],
+    "left": 7,
+    "passed": true,
+    "qualified": 13,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd1.00",
+    "failed": [],
+    "left": 12,
+    "passed": true,
+    "qualified": 24,
+    "right": 12
+   }
+  ],
+  "label": "12/12",
+  "passed": 12,
+  "source": "recomputed: walk/eval/humanoid_acceptance.py (serial lane)",
+  "total": 12,
+  "wall_s": 4.6
+ },
+ "verdict:humanoid-stocky-accepted:200f3140a3dce503f92cb9178a64d4c1e5dfaff6827b03a99a92aa2972d19669": {
+  "accepted": true,
+  "cells": [
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd0.50",
+    "failed": [],
+    "left": 6,
+    "passed": true,
+    "qualified": 12,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd1.00",
+    "failed": [],
+    "left": 13,
+    "passed": true,
+    "qualified": 25,
+    "right": 12
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd0.50",
+    "failed": [],
+    "left": 6,
+    "passed": true,
+    "qualified": 12,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd1.00",
+    "failed": [],
+    "left": 13,
+    "passed": true,
+    "qualified": 25,
+    "right": 12
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd0.50",
+    "failed": [],
+    "left": 6,
+    "passed": true,
+    "qualified": 12,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd0.75",
+    "failed": [],
+    "left": 10,
+    "passed": true,
+    "qualified": 19,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd1.00",
+    "failed": [],
+    "left": 12,
+    "passed": true,
+    "qualified": 25,
+    "right": 13
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd0.50",
+    "failed": [],
+    "left": 7,
+    "passed": true,
+    "qualified": 13,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd1.00",
+    "failed": [],
+    "left": 12,
+    "passed": true,
+    "qualified": 24,
+    "right": 12
+   }
+  ],
+  "committed": {
+   "matches": true,
+   "passed": 12,
+   "path": "evidence/humanoid-stocky-accepted-20260902/acceptance-cpu-authority.json",
+   "total": 12
+  },
+  "label": "12/12",
+  "passed": 12,
+  "source": "recomputed: walk/eval/humanoid_acceptance.py (serial lane)",
+  "total": 12,
+  "wall_s": 5.2
+ },
+ "verdict:humanoid-stocky-candidate:962bc9cdd0a48f37b5bef32dd96cd46ed3739a93dc1489fc9a17b298a8faf4ab": {
+  "accepted": false,
+  "cells": [
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd0.50",
+    "failed": [],
+    "left": 6,
+    "passed": true,
+    "qualified": 12,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd1.00",
+    "failed": [
+     "footfalls_alternate"
+    ],
+    "left": 13,
+    "passed": false,
+    "qualified": 22,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd0.50",
+    "failed": [],
+    "left": 6,
+    "passed": true,
+    "qualified": 12,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd1.00",
+    "failed": [
+     "footfalls_alternate"
+    ],
+    "left": 13,
+    "passed": false,
+    "qualified": 24,
+    "right": 11
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd0.50",
+    "failed": [],
+    "left": 6,
+    "passed": true,
+    "qualified": 12,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd0.75",
+    "failed": [],
+    "left": 10,
+    "passed": true,
+    "qualified": 19,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd1.00",
+    "failed": [],
+    "left": 12,
+    "passed": true,
+    "qualified": 25,
+    "right": 13
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd0.50",
+    "failed": [],
+    "left": 7,
+    "passed": true,
+    "qualified": 13,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd1.00",
+    "failed": [],
+    "left": 12,
+    "passed": true,
+    "qualified": 24,
+    "right": 12
+   }
+  ],
+  "committed": {
+   "matches": true,
+   "passed": 10,
+   "path": "evidence/humanoid-stocky-candidate-20260902/cpu-harness/acceptance.json",
+   "total": 12
+  },
+  "label": "10/12",
+  "passed": 10,
+  "source": "recomputed: walk/eval/humanoid_acceptance.py (serial lane)",
+  "total": 12,
+  "wall_s": 4.8
+ },
+ "verdict:humanoid-tall-6of12:d578e9078171a184526506e16b875c9808956b6fa2d7008565f3eeada70cac81": {
+  "accepted": false,
+  "cells": [
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd0.50",
+    "failed": [],
+    "left": 6,
+    "passed": true,
+    "qualified": 12,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd1.00",
+    "failed": [
+     "footfalls_alternate"
+    ],
+    "left": 9,
+    "passed": false,
+    "qualified": 19,
+    "right": 10
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd0.50",
+    "failed": [],
+    "left": 4,
+    "passed": true,
+    "qualified": 8,
+    "right": 4
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd1.00",
+    "failed": [
+     "footfalls_alternate"
+    ],
+    "left": 11,
+    "passed": false,
+    "qualified": 20,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd0.50",
+    "failed": [
+     "footfalls_alternate"
+    ],
+    "left": 5,
+    "passed": false,
+    "qualified": 11,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd0.75",
+    "failed": [],
+    "left": 10,
+    "passed": true,
+    "qualified": 19,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd1.00",
+    "failed": [
+     "footfalls_alternate"
+    ],
+    "left": 10,
+    "passed": false,
+    "qualified": 19,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd0.50",
+    "failed": [
+     "footfalls_alternate"
+    ],
+    "left": 6,
+    "passed": false,
+    "qualified": 12,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd1.00",
+    "failed": [
+     "footfalls_alternate"
+    ],
+    "left": 9,
+    "passed": false,
+    "qualified": 20,
+    "right": 11
+   }
+  ],
+  "committed": {
+   "matches": true,
+   "passed": 6,
+   "path": "evidence/humanoid-tall-20260902/acceptance-6of12.json",
+   "total": 12
+  },
+  "label": "6/12",
+  "passed": 6,
+  "source": "recomputed: walk/eval/humanoid_acceptance.py (serial lane)",
+  "total": 12,
+  "wall_s": 5.7
+ },
+ "verdict:humanoid-walks-075:f699913368f524ef9b3d56405139f0b3fb6c9510300e31e847fcce2f64340b21": {
+  "accepted": false,
+  "cells": [
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd0.50",
+    "failed": [
+     "single_episode_no_reset_or_failure"
+    ],
+    "left": 0,
+    "passed": false,
+    "qualified": 0,
+    "right": 0
+   },
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed4242-cmd1.00",
+    "failed": [
+     "translation_60_to_150_percent"
+    ],
+    "left": 13,
+    "passed": false,
+    "qualified": 25,
+    "right": 12
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd0.50",
+    "failed": [
+     "single_episode_no_reset_or_failure"
+    ],
+    "left": 0,
+    "passed": false,
+    "qualified": 0,
+    "right": 0
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed7-cmd1.00",
+    "failed": [
+     "translation_60_to_150_percent"
+    ],
+    "left": 13,
+    "passed": false,
+    "qualified": 25,
+    "right": 12
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd0.50",
+    "failed": [
+     "footfalls_alternate"
+    ],
+    "left": 4,
+    "passed": false,
+    "qualified": 10,
+    "right": 6
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd0.75",
+    "failed": [],
+    "left": 10,
+    "passed": true,
+    "qualified": 19,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed1913-cmd1.00",
+    "failed": [
+     "translation_60_to_150_percent"
+    ],
+    "left": 12,
+    "passed": false,
+    "qualified": 24,
+    "right": 12
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd0.50",
+    "failed": [
+     "single_episode_no_reset_or_failure"
+    ],
+    "left": 0,
+    "passed": false,
+    "qualified": 0,
+    "right": 0
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd0.75",
+    "failed": [],
+    "left": 9,
+    "passed": true,
+    "qualified": 18,
+    "right": 9
+   },
+   {
+    "acquired": null,
+    "cell": "seed90210-cmd1.00",
+    "failed": [
+     "translation_60_to_150_percent"
+    ],
+    "left": 12,
+    "passed": false,
+    "qualified": 24,
+    "right": 12
+   }
+  ],
+  "label": "4/12",
+  "passed": 4,
+  "source": "recomputed: walk/eval/humanoid_acceptance.py (serial lane)",
+  "total": 12,
+  "wall_s": 3.9
+ }
+}

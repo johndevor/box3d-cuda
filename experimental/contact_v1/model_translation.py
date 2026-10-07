@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 GOLDEN_SHA='e52ba7d0f79434499d8fb6c2d611eb46ee12e2f32cb36258b38cd22959d0b08b'
 RECORD_SHA='a6d578064b433e730612d7144742b706471e63a37e3c81bcbc24acb7a7203a58'
 XML_SHA='968b18de4e3f55b31252155f52779fa490989f5da92bc9b308e0bb4e81d6bb5c'
-DEFAULT_REFERENCE=Path(__file__).resolve().parents[2]/'duck_model/reference'
+DEFAULT_REFERENCE=Path('/Users/john/Code/box3d-cuda-voxel-gate-c1/evidence')
 F=C.c_float;U=C.c_uint32;P=C.POINTER(F)
 class Body(C.Structure):_fields_=[('state',F*13),('inverse_mass',F),('inverse_inertia',F*3)]
 class Shape(C.Structure):_fields_=[('caller_id',U),('kind',U),('vertex_count',U),('fixed',U),('vertices',(F*3)*32),('plane_normal',F*3),('plane_offset',F)]

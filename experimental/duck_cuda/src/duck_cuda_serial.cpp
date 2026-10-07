@@ -9,34 +9,59 @@
 #include "duck_cuda_kernel.h"
 
 #include <algorithm>
+#include <memory>
 #include <new>
 #include <vector>
 
 struct dwc1_scene {
   uint32_t E = 0;
   DwParams params{};
+  uint64_t rsi_rng = 0x9E3779B97F4A7C15ull;  // dwc1_set_rsi draw stream
+  dwc1_randomization rand{};  // creation-time ranges (all zero = off)
   std::vector<DwState> state, initial;
-  std::vector<float> scratch;  // [E, DW_SCRATCH_FLOATS] solver K + response
+  std::vector<DwWork> work;  // [E] per-env cooperative workspaces
 };
+
+namespace {
+// deterministic scene-level uniform [0,1) for the RSI draw (xorshift64)
+double rsi_draw(uint64_t* st) {
+  uint64_t x = *st;
+  x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+  *st = x;
+  return (double)(x >> 11) * 0x1p-53;
+}
+}  // namespace
 
 extern "C" {
 
 int dwc1_abi_version(void) { return DWC1_ABI_VERSION; }
+int dwc1_env_kind(void) { return DW_ENV_KIND; }
+int dwc1_obs_width(void) { return DWP_OBS; }
+int dwc1_action_mode(void) { return DW_ENV_ACTION_MODE; }
 
 int dwc1_create(uint32_t environments, const float* joint_offsets,
-                dwc1_scene** out) {
+                const dwc1_randomization* randomization, dwc1_scene** out) {
   if (!out || environments < 1 || environments > 65536) return DWC1_INVALID;
   *out = nullptr;
   if (joint_offsets && !dw_finite(joint_offsets, (int)environments * DW_J))
     return DWC1_INVALID;
+  if (!dw_rand_config_valid(randomization)) return DWC1_INVALID;
   try {
     auto s = new dwc1_scene;
     s->E = environments;
-    if (!dw_reference_weights(s->params.refweight)) { delete s; return DWC1_DYNAMICS; }
+    if (randomization) s->rand = *randomization;
+    s->state.resize(environments);
+    s->work.resize(environments);
+    if (!dw_reference_weights(s->params.refweight, &s->work[0])) {
+      delete s;
+      return DWC1_DYNAMICS;
+    }
     s->params.tolerance = DW_SOLVE_TOLERANCE;
     s->params.max_iterations = DW_MAX_ITERATIONS;
-    s->state.resize(environments);
-    s->scratch.resize((size_t)environments * DW_SCRATCH_FLOATS);
+    s->params.fast_termination = 0;
+    s->params.gate_first_deadline_ticks = 0;
+    s->params.gate_max_alt_violations = 0;
+    s->params.rsi_fraction = 0.0;
     for (uint32_t e = 0; e < environments; e++)
       dw_init_state(&s->state[e],
                     joint_offsets ? joint_offsets + (size_t)e * DW_J : nullptr);
@@ -56,6 +81,15 @@ int dwc1_info_get(const dwc1_scene* s, dwc1_info* info) {
   return DWC1_OK;
 }
 
+int dwc1_device_info_get(const dwc1_scene* s, dwc1_device_info* info) {
+  if (!s || !info) return DWC1_INVALID;
+  *info = dwc1_device_info{};   // serial: no device; GPU fields stay zero
+  info->lanes_per_env = 1;
+  info->threads_per_block = 1;
+  info->workspace_bytes_per_env = sizeof(DwWork);
+  return DWC1_OK;
+}
+
 int dwc1_step(dwc1_scene* s, const float* targets, uint32_t n_ticks,
               dwc1_diagnostic* diagnostics) {
   if (!s || !targets || !diagnostics || n_ticks < 1 || n_ticks > 1000)
@@ -67,7 +101,7 @@ int dwc1_step(dwc1_scene* s, const float* targets, uint32_t n_ticks,
     *d = dwc1_diagnostic{};
     d->environment = e;
     dw_step_env(&s->state[e], targets + (size_t)e * DW_J, n_ticks, &s->params,
-                s->scratch.data() + (size_t)e * DW_SCRATCH_FLOATS, d);
+                &s->work[e], d);
     if (d->status != DWC1_OK && rc == DWC1_OK) rc = (int)d->status;
   }
   return rc;
@@ -121,20 +155,38 @@ int dwc1_query(const dwc1_scene* s, dwc1_manifold* out) {
 }
 
 int dwc1_reset_policy(dwc1_scene* s, const uint8_t* mask,
-                      const double* commands) {
+                      const double* commands, const double* phase_offsets) {
   if (!s) return DWC1_INVALID;
-  if (commands && !std::all_of(commands, commands + s->E,
-                               [](double c) { return c == c; }))
-    return DWC1_INVALID;
+  auto finite_all = [&](const double* p) {
+    return !p || std::all_of(p, p + s->E, [](double c) { return c == c; });
+  };
+  if (!finite_all(commands) || !finite_all(phase_offsets)) return DWC1_INVALID;
   for (uint32_t e = 0; e < s->E; e++)
-    if (!mask || mask[e])
+    if (!mask || mask[e]) {
       dw_policy_reset_env(&s->state[e], &s->initial[e],
-                          commands ? commands + e : nullptr);
+                          commands ? commands + e : nullptr,
+                          phase_offsets ? phase_offsets + e : nullptr);
+      // RSI (default 0.0 = OFF: no draw, resets bit-identical to today)
+      if (s->params.rsi_fraction > 0.0
+          && rsi_draw(&s->rsi_rng) < s->params.rsi_fraction)
+        dw_policy_rsi_init(&s->state[e]);
+    }
   return DWC1_OK;
 }
 
 int dwc1_reset(dwc1_scene* s, const uint8_t* mask) {
-  return dwc1_reset_policy(s, mask, nullptr);
+  return dwc1_reset_policy(s, mask, nullptr, nullptr);
+}
+
+int dwc1_set_randomization(dwc1_scene* s, const uint8_t* mask,
+                           const dwc1_env_random* randoms) {
+  if (!s || !randoms) return DWC1_INVALID;
+  for (uint32_t e = 0; e < s->E; e++)
+    if ((!mask || mask[e]) && !dw_env_random_valid(&s->rand, &randoms[e]))
+      return DWC1_INVALID;
+  for (uint32_t e = 0; e < s->E; e++)
+    if (!mask || mask[e]) dw_policy_set_random(&s->state[e], &randoms[e]);
+  return DWC1_OK;
 }
 
 int dwc1_step_policy(dwc1_scene* s, const float* actions, uint32_t n_ticks,
@@ -149,8 +201,7 @@ int dwc1_step_policy(dwc1_scene* s, const float* actions, uint32_t n_ticks,
     *d = dwc1_diagnostic{};
     d->environment = e;
     dw_step_policy_env(&s->state[e], actions + (size_t)e * DW_J, n_ticks,
-                       &s->params,
-                       s->scratch.data() + (size_t)e * DW_SCRATCH_FLOATS,
+                       &s->params, &s->work[e],
                        obs + (size_t)e * DWP_OBS, reward + e, done + e, d);
   }
   return DWC1_OK;  // per-env faults surface via diagnostics + done flags
@@ -165,10 +216,77 @@ int dwc1_observe(const dwc1_scene* s, float* obs) {
 
 int dwc1_set_command(dwc1_scene* s, const double* commands) {
   if (!s || !commands) return DWC1_INVALID;
+#if DW_ENV_KIND != DW_ENV_KIND_LOCOMOTION
+  return DWC1_INVALID;                     // no command channel (reach)
+#else
   for (uint32_t e = 0; e < s->E; e++) {
     if (!(commands[e] == commands[e])) return DWC1_INVALID;  // NaN
     s->state[e].command = commands[e];
   }
+  return DWC1_OK;
+#endif
+}
+
+// ---- REACH kind (ABI v8) ------------------------------------------------
+int dwc1_reach_set_targets(dwc1_scene* s, const uint8_t* mask,
+                           const double* active, const double* next) {
+  if (!s || (!active && !next)) return DWC1_INVALID;
+#if DW_ENV_KIND != DW_ENV_KIND_REACH
+  (void)mask;
+  return DWC1_INVALID;
+#else
+  for (uint32_t e = 0; e < s->E; e++) {
+    if (mask && !mask[e]) continue;
+    for (int i = 0; i < 3; i++) {
+      if (active && !(active[e * 3 + i] == active[e * 3 + i])) return DWC1_INVALID;
+      if (next && !(next[e * 3 + i] == next[e * 3 + i])) return DWC1_INVALID;
+    }
+  }
+  for (uint32_t e = 0; e < s->E; e++)
+    if (!mask || mask[e])
+      dw_reach_push(&s->state[e], active ? active + (size_t)e * 3 : nullptr,
+                    next ? next + (size_t)e * 3 : nullptr);
+  return DWC1_OK;
+#endif
+}
+
+int dwc1_reach_get(const dwc1_scene* s, dwc1_reach_state* out) {
+  if (!s || !out) return DWC1_INVALID;
+#if DW_ENV_KIND != DW_ENV_KIND_REACH
+  return DWC1_INVALID;
+#else
+  for (uint32_t e = 0; e < s->E; e++) dw_reach_fill(&s->state[e], &out[e]);
+  return DWC1_OK;
+#endif
+}
+
+int dwc1_set_fast_termination(dwc1_scene* s, uint32_t enable) {
+  if (!s) return DWC1_INVALID;
+  s->params.fast_termination = enable ? 1u : 0u;
+  return DWC1_OK;
+}
+
+int dwc1_set_gate_termination(dwc1_scene* s, uint32_t first_deadline_ticks,
+                              uint32_t max_alternation_violations) {
+  if (!s) return DWC1_INVALID;
+  s->params.gate_first_deadline_ticks = first_deadline_ticks;
+  s->params.gate_max_alt_violations = max_alternation_violations;
+  return DWC1_OK;
+}
+
+int dwc1_set_rsi(dwc1_scene* s, double fraction) {
+  if (!s || !(fraction == fraction) || fraction < 0.0 || fraction > 1.0)
+    return DWC1_INVALID;
+#if DW_ENV_KIND != DW_ENV_KIND_LOCOMOTION
+  if (fraction > 0.0) return DWC1_INVALID;   // no reference gait (reach)
+#endif
+  s->params.rsi_fraction = fraction;
+  return DWC1_OK;
+}
+
+int dwc1_gate_proxy_get(const dwc1_scene* s, dwc1_gate_proxy* out) {
+  if (!s || !out) return DWC1_INVALID;
+  for (uint32_t e = 0; e < s->E; e++) dw_gate_proxy_fill(&s->state[e], &out[e]);
   return DWC1_OK;
 }
 
@@ -181,6 +299,10 @@ int dwc1_set_state(dwc1_scene* s, uint32_t environment, const float* qpos21,
       || !dw_finite(warm42, DW_JROWS))
     return DWC1_INVALID;
   DwState next{};
+  {  // neutral randomization + reset latency ring (new fields must not be 0)
+    dwc1_env_random neutral{1.0, 1.0, 1.0, 1.0, 1.0, 0, 0};
+    dw_policy_set_random(&next, &neutral);
+  }
   for (int k = 0; k < DW_Q; k++) next.q[k] = qpos21[k];
   dw_qnormalize(next.q + 3);
   for (int k = 0; k < DW_N; k++) next.v[k] = velocity20[k];
@@ -206,8 +328,9 @@ int dwc1_debug_eval(const float* q, const float* v, float* mass /*[N,N]*/,
                     float* jac /*[B,6,N]*/, float* smooth /*[N]*/,
                     const float* target /*[J] or NULL*/) {
   if (!q || !v) return DWC1_INVALID;
-  DwEval e;
-  if (!dw_evaluate(q, v, DW_GRAVITY_Z, &e)) return DWC1_DYNAMICS;
+  auto wk = std::make_unique<DwWork>();
+  if (!dw_evaluate(q, v, DW_GRAVITY_Z, 1.0, wk.get())) return DWC1_DYNAMICS;
+  const DwEval& e = wk->e;
   if (mass) memcpy(mass, &e.M[0][0], sizeof(e.M));
   if (bias) memcpy(bias, e.bias, sizeof(e.bias));
   if (pose)
@@ -217,13 +340,15 @@ int dwc1_debug_eval(const float* q, const float* v, float* mass /*[N,N]*/,
     }
   if (jac) memcpy(jac, &e.J[0][0][0], sizeof(e.J));
   if (smooth && target) {
-    float L[DW_N][DW_N];
+    float (*L)[DW_N] = wk->L;
     if (!dw_chol(e.M, L)) return DWC1_DYNAMICS;
     for (int n = 0; n < DW_N; n++) smooth[n] = -e.bias[n];
     for (int j = 0; j < DW_J; j++) {
       float tj = dw_clampf(target[j], DW_LIMIT_LOWER[j], DW_LIMIT_UPPER[j]);
-      float motor = DW_KP * (tj - q[7 + j]) + DW_KV * (0.0f - v[6 + j]);
-      smooth[6 + j] += dw_clampf(motor, -DW_EFFORT_CAP, DW_EFFORT_CAP)
+      float motor = DW_KP_TABLE[j] * (tj - q[7 + j])
+                  + DW_KV_TABLE[j] * (0.0f - v[6 + j]);
+      smooth[6 + j] += dw_clampf(motor, -DW_EFFORT_CAP_TABLE[j],
+                                 DW_EFFORT_CAP_TABLE[j])
                      - DW_DAMPING * v[6 + j];
     }
     dw_chol_solve(L, smooth);

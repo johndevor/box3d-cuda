@@ -1,0 +1,13 @@
+{
+ "schema": "duckgridwalk.humanoid-milestone/1",
+ "date": "2026-09-02",
+ "actor": "actor-humanoid-walks-075.pt",
+ "judge": "walk/eval/humanoid_gait.py (frozen)",
+ "result": "ALL 4 SEEDS PASS at cmd 0.75 (18-19 qualified, L/R symmetric, strict alternation, 8s)",
+ "gaps": {
+  "cmd_1.00": "walks (24-25 qualified alternating) but translation <60% of command",
+  "cmd_0.50": "falls early / alternation break \u2014 longest single-support regime"
+ },
+ "lineage": "BC(v3.2 ref, H1.1 gains) -> tech-tree curriculum -> RSI 0.5 -> 6 chained 10-min legs at E=16384",
+ "run": "runs/gpu/20260902-020511-humanoid-tree-continue"
+}

@@ -10,7 +10,40 @@ walk.train.ppo.ppo_update with the PPOConfig defaults.
     python -B -m walk.train.gpu_train --envs 4096 --horizon 32 --updates 300 \
         --seed 917 --device cuda --library <path-to-libduck_cuda.so> \
         --out <dir> [--resume <ckpt>] [--max-wall-s 900] [--lr 3e-4] \
-        [--perturbation 0.02]
+        [--perturbation 0.02] [--policy {ff,gru}] [--gamma G] [--gae-lambda L] \
+        [--robot {duck,humanoid}] [--variant NAME]
+
+--variant NAME (humanoid only) selects a FAMILY member (humanoid/h1_family.py:
+h1_tall, h1_stocky): robot_classes binds the humanoid lane/env classes to the
+variant (its header/dylib, gains, reference table); --library must then be a
+build against humanoid/variants/<name>/include. Unset = the accepted H1.1.
+
+--robot selects the env/lane contract (robot_classes): duck (default) is
+byte-identical to the pre-switch trainer (same classes, same OBS/ACT 58/14,
+same RNG streams); humanoid wires FlatFloorHumanoidEnv / CudaHumanoidLane
+(OBS/ACT 3*J+16 / J) over the robot-generic dwc1 kernel; arm wires
+ArmReachEnv / CudaArmLane. --randomization (the shared dwc1 DR contract, walk/env/cuda_lane.py: mass,
+friction, kp, damping, command latency and the ABI-v7 one-sided gravity
+scale) is accepted for every robot on the device policy path (--lane-env).
+
+--policy gru swaps in the tiny recurrent policy (walk.train.ppo
+RecurrentActor/RecurrentCritic: 1-layer GRU + reduced MLP head) for implicit
+system ID: hidden state [E, H] is carried across steps, zeroed for envs that
+reset, and the update is recurrent PPO with truncated BPTT over the rollout
+window using the stored window-initial hidden states (sequence minibatches =
+env slices). --policy ff (default) is byte-identical to the pre-gru trainer.
+
+FF -> GRU WARM START (generalist recipe): with --policy gru, an --init-actor
+or --resume source that is a FEED-FORWARD actor/checkpoint is not an error:
+the recurrent nets are built with a residual feed-forward trunk of the FF
+nets' sizes and ppo.warm_start_recurrent_from_ff copies the FF weights into
+it and zeroes the GRU heads (policy bit-identical to the FF specialist at
+step 0; critic likewise when the source is a full checkpoint). For --resume
+the update/env_steps/wall counters continue and the optimizer/generators
+start fresh (an FF Adam state cannot drive GRU parameters). Resuming a GRU
+checkpoint that carries a trunk rebuilds the trunk automatically
+(ppo.trunk_hidden_from_state_dict). walk/train/gru_warmstart.py writes such
+a warm-started update-0 GRU checkpoint offline.
 
 Solver faults: a SolverFault anywhere in a rollout poisons that whole rollout
 window (no update is applied), the fault artifact is copied into <out>/faults/
@@ -20,10 +53,59 @@ Checkpoints: <out>/ckpt_NNNNNN.pt every --checkpoint-every updates, plus
 <out>/latest.pt at every checkpoint and at exit. <out>/actor_final.pt (a plain
 cpu state_dict of the actor) is ALWAYS written at exit for local evaluation.
 --max-wall-s stops the update loop cleanly (checkpoint + actor_final, exit 0).
+
+--accept-every N (0 = off): every N updates (and once at the very end) the
+current deterministic policy is judged by the robot's STRICT frozen judge.
+  duck (unchanged, byte-identical path): fresh non-randomized E=1 env —
+    PROBE_SEEDS x commands (0.10/0.15/0.20) m/s, 8 s each; if all pass, a
+    stability confirmation runs 11 s episodes per command at seed 4242 (no
+    fall through 11 s AND the exact-8 s prefix still passes). Prints the
+    WALKING ACCEPTED line.
+  humanoid / arm (run_robot_probe): the SAME protocol as the CPU harness
+    (walk/eval/humanoid_acceptance.py: seeds 4242/7/1913/90210 x commands
+    0.50/0.75/1.00 m/s, 8 s; walk/eval/arm_acceptance.py: the same 4 seeds
+    x 3 tiers), judged by walk/eval/humanoid_gait.py / arm_reach_judge.py
+    (FROZEN), executed as ONE E=12 batch on the TRAINING LANE CLASS
+    (robot_classes: the CUDA build named by --library on the sandbox, the
+    serial build locally) in a FRESH lane instance with every training-only
+    knob at its factory default -- randomization off, fast termination off,
+    gate terminations off, RSI off, perturbation 0 -- so the trainer's own
+    lane (its DR, curriculum knobs, RSI, episode counters, physics state)
+    is never touched and needs no restoration (proven by
+    humanoid/tests/test_humanoid_accept_probe.py: a probing run's train
+    metrics stream equals a no-probe run's). Per-tick traces come from the
+    harnesses' own capture code (walk/eval/capture.py / capture_arm_episodes)
+    through BatchedCellEnv adapters that pin each cell's harness initial
+    conditions; on a cpu device the policy is evaluated row by row, so
+    locally the probe's traces and verdict are bit-identical to the CPU
+    harness's (measured: a batched matmul's 5e-7 action difference flipped a
+    marginal cell). On the CUDA lane the physics is the fp32 device build --
+    parity with the serial judge lane holds at the certificate level, not
+    bitwise -- and the CPU harness stays the acceptance authority (gpu/
+    chain.py re-judges every leg's actor locally). No 11 s confirmation
+    stage (none exists in those harnesses).
+    AUTHORITY RULE (_probe_lane_is_authority). On a cpu device the probe
+    lane IS the harness lane (serial build; bit-identical, proven), so one
+    12/12 probe writes <out>/accepted/{actor_accepted.pt, acceptance.json},
+    prints HUMANOID WALKING ACCEPTED / ARM REACH ACCEPTED and exits 0. On a
+    cuda device the fp32 device physics is NOT the authority: the first real
+    use (stocky leg 20260902-155451) self-stopped at an on-device 12/12 that
+    the CPU harness scored 10/12 (two 1.0 m/s alternation cells flipped).
+    There the probe requires CONSECUTIVE_PASSES_CUDA (2) consecutive 12/12
+    probes to declare an ACCEPTED-CANDIDATE, saves it (the first as
+    accepted/{actor_accepted.pt, acceptance.json}, every candidate as
+    accepted/candidate_<update>.{pt,json}, the last MAX_CANDIDATES kept),
+    prints "<ROBOT> ACCEPTED-CANDIDATE at update N" and KEEPS TRAINING to
+    --max-wall-s so the leg returns several candidates; gpu/chain.py
+    re-judges every accepted/*.pt with the CPU harness and only a
+    CPU-confirmed 12/12 stops a chain.
+Every probe logs a "kind": "accept" metrics row with per-cell records and
+its wall cost; probe time never counts toward the reported training wall.
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import shutil
@@ -36,20 +118,32 @@ import torch
 from walk.env.contract import ACT, OBS, SolverFault
 from walk.env.cuda_lane import CudaDuckLane
 from walk.env.flat import FlatFloorDuckEnv
+from walk.eval.capture import capture_episodes
+from walk.eval.gait import evaluate_episode
 from walk.train.ppo import (
     PPOConfig,
     compute_gae,
     make_nets,
+    make_recurrent_nets,
     ppo_update,
+    recurrent_ppo_update,
     tanh_gaussian_log_prob,
+    trunk_hidden_from_state_dict,
+    unpack_actor_file,
+    warm_start_recurrent_from_ff,
 )
 from walk.train.vec import derive_seed
 
 
 @dataclasses.dataclass
 class GpuTrainConfig:
+    robot: str = "duck"              # "duck" (default, byte-identical) or "humanoid"
+    variant: str | None = None       # humanoid family member (None = H1.1 base)
+    curriculum: str | None = None    # tech-tree ladder (builtin name or JSON
+    #                                  path); None = today's exact behavior
     envs: int = 4096
     lane_env: bool = False
+    randomization: dict | None = None
     horizon: int = 32
     updates: int = 300
     seed: int = 917
@@ -57,13 +151,20 @@ class GpuTrainConfig:
     library: str | None = None
     out: str = "runs/gpu-train"
     resume: str | None = None
+    init_actor: str | None = None    # actor-only warm start (e.g. BC pretrain)
+    rsi_fraction: float = 0.0        # reference-state-init reset fraction
     max_wall_s: float = 0.0          # 0 disables the wall-clock stop
+    policy: str = "ff"               # "ff" (feed-forward) or "gru" (recurrent)
     lr: float = 3e-4
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
     perturbation: float = 0.0
+    accept_every: int = 0            # 0 = off; N = strict-acceptance probe every N updates
     checkpoint_every: int = 25
     preflight_steps: int = 100
     torch_threads: int = 4
     quiet: bool = False
+    validate_only: bool = False      # config/flag validation, then exit 0
 
 
 @dataclasses.dataclass
@@ -79,27 +180,100 @@ class Rollout:
     episodes: list          # list[(return, length)] finished this window
 
 
-class LanePolicyEnv:
-    """Duck-typed drop-in for FlatFloorDuckEnv over the ABI-v3 device policy
-    path: one kernel launch + tiny transfers per policy step. Solver faults
-    freeze the env in-kernel and raise here so the entire rollout is rejected."""
+def robot_classes(robot: str, variant: str | None = None):
+    """(obs_dim, act_dim, lane_cls, flat_env_cls) for a robot.
 
-    OBS, ACT = 58, 14
+    The duck row returns exactly the module-level contract dims and the
+    classes the pre-robot-switch trainer used, so --robot duck (the default)
+    is behavior-identical to the old hardcoded path. Humanoid classes import
+    lazily (they build/load the humanoid serial dylib on first use).
+
+    `variant` (humanoid only): a family member name (humanoid/h1_family.py)
+    binds the lane/env classes to that member via functools.partial
+    (variant=...); None/"h1" returns the bare classes exactly as before."""
+    if robot == "duck":
+        if variant not in (None, "", "h1"):
+            raise SystemExit("--variant is humanoid-only (family variants)")
+        return OBS, ACT, CudaDuckLane, FlatFloorDuckEnv
+    if robot == "humanoid":
+        from walk.env import humanoid_flat
+        from walk.env.humanoid_cuda_lane import CudaHumanoidLane
+        if variant in (None, "", "h1"):
+            return (humanoid_flat.OBS, humanoid_flat.ACT, CudaHumanoidLane,
+                    humanoid_flat.FlatFloorHumanoidEnv)
+        import functools
+        import h1_family
+        if variant not in h1_family.MORPHOLOGIES:
+            raise SystemExit(f"--variant must be one of "
+                             f"{sorted(h1_family.MORPHOLOGIES)}, got {variant!r}")
+        lane_cls = functools.partial(CudaHumanoidLane, variant=variant)
+        env_cls = functools.partial(humanoid_flat.FlatFloorHumanoidEnv,
+                                    variant=variant)
+        return humanoid_flat.OBS, humanoid_flat.ACT, lane_cls, env_cls
+    if robot == "arm":
+        # fixed-base 6-axis reach family (arm/arm_lowering.py): the variant
+        # ("kr240" default | "lite") is bound into both classes. Without
+        # --lane-env obs/reward run python-side over dwc1_step; with it the
+        # kernel's DW_ENV_KIND_REACH device policy layer (ABI v8) runs the
+        # whole step in-kernel (CudaArmLane.step_policy / reset_policy).
+        import functools
+        from walk.env import arm_reach
+        from walk.env.arm_cuda_lane import CudaArmLane
+        import arm_lowering
+        variant = variant or "kr240"
+        if variant not in arm_lowering.VARIANTS:
+            raise SystemExit(f"--variant must be one of "
+                             f"{sorted(arm_lowering.VARIANTS)}, got {variant!r}")
+        return (arm_reach.OBS, arm_reach.ACT,
+                functools.partial(CudaArmLane, variant=variant),
+                functools.partial(arm_reach.ArmReachEnv, variant=variant))
+    raise SystemExit(f"--robot must be duck, humanoid or arm, got {robot!r}")
+
+
+class LanePolicyEnv:
+    """Duck-typed drop-in for the flat env over the ABI-v3 device policy
+    path: one kernel launch + tiny transfers per policy step. Solver faults
+    freeze+finish the env in-kernel (no exception); counted in fault_count."""
+
+    OBS, ACT = 58, 14                # legacy duck defaults (class-level)
 
     def __init__(self, cfg):
-        from walk.env.cuda_lane import CudaDuckLane
+        robot = getattr(cfg, "robot", "duck")
+        self.OBS, self.ACT, lane_cls, _ = robot_classes(
+            robot, getattr(cfg, "variant", None))
         self.E = cfg.envs
-        self._lane = CudaDuckLane(
-            self.E,
+        kwargs = dict(
             joint_offsets=_perturbation_offsets(cfg) if cfg.perturbation else None,
             library_path=cfg.library)
+        # every dwc1 lane shares the duck's DR contract (cuda_lane.py):
+        # None = off = bit-identical physics
+        kwargs["randomization"] = cfg.randomization
+        if robot != "duck":          # training lane: freeze fallen envs
+            kwargs["fast_termination"] = True
+        self._lane = lane_cls(self.E, **kwargs)
+        rsi = float(getattr(cfg, "rsi_fraction", 0.0) or 0.0)
+        if rsi > 0.0:
+            if not hasattr(self._lane, "set_rsi"):
+                raise SystemExit("--rsi-fraction requires a lane with RSI "
+                                 "support (humanoid)")
+            self._lane.set_rsi(rsi)
         self._seed = cfg.seed
         self.fault_count = 0
-        self._fault_dir = Path(cfg.out) / "native-faults"
+        # curriculum hook: a stage may pin resets to a command pool. None
+        # (the default, and always for the duck) leaves reset_policy's own
+        # counter-stream draw untouched -- byte-identical behavior.
+        self.command_override = None
+        self._cmd_rng = np.random.default_rng(derive_seed(cfg.seed, 0xC0DE))
 
     def reset(self, mask=None, seed=None):
-        return self._lane.reset_policy(mask=mask, seed=seed
-                                       if seed is not None else self._seed)
+        if self.command_override is None:
+            return self._lane.reset_policy(mask=mask, seed=seed
+                                           if seed is not None else self._seed)
+        pool = np.asarray(self.command_override, np.float64)
+        commands = pool[self._cmd_rng.integers(0, len(pool), self.E)]
+        return self._lane.reset_policy(
+            mask=mask, seed=seed if seed is not None else self._seed,
+            commands=commands)
 
     def step(self, action):
         obs, reward, done, diag = self._lane.step_policy(
@@ -107,25 +281,6 @@ class LanePolicyEnv:
         n_fault = int((diag["status"] != 0).sum())
         if n_fault:
             self.fault_count += n_fault
-            failed = np.flatnonzero(diag["status"] != 0)
-            self._fault_dir.mkdir(parents=True, exist_ok=True)
-            path = self._fault_dir / f"policy-{time.time_ns()}-{self.fault_count}.json"
-            record = {
-                "schema": "duckgridwalk.cuda-policy-fault/1",
-                "failed_environments": failed.tolist(),
-                "actions": np.asarray(action).tolist(),
-                "diagnostics": {k: np.asarray(diag[k]).tolist()
-                                for k in (diag.dtype.names if isinstance(diag, np.ndarray) else diag)},
-                "state_boundary": "last accepted native tick; policy repeat may be partial",
-                "exact_replay_available": False,
-                "states": {str(int(e)): self._lane.state_dump(int(e)) for e in failed},
-                "rollout_accepted": False,
-            }
-            with path.open("x") as stream:
-                json.dump(record, stream)
-                stream.write("\n")
-            raise SolverFault(int(failed[0]), str(path),
-                              "device policy solver fault: reject the whole rollout")
         return obs, reward, done.astype(bool), {"faults": n_fault}
 
     def set_command(self, commands):
@@ -137,19 +292,23 @@ class LanePolicyEnv:
 
 def _perturbation_offsets(cfg):
     import numpy as _np
+    act = robot_classes(getattr(cfg, "robot", "duck"),
+                        getattr(cfg, "variant", None))[1]   # duck: 14, as before
     return _np.stack([
         _np.random.default_rng([cfg.seed & 0xFFFFFFFF, e, 0]).uniform(
-            -cfg.perturbation, cfg.perturbation, 14) for e in range(cfg.envs)])
+            -cfg.perturbation, cfg.perturbation, act) for e in range(cfg.envs)])
 
 
 def make_env(cfg: GpuTrainConfig):
     if cfg.lane_env:
         return LanePolicyEnv(cfg)
-    return FlatFloorDuckEnv(
+    _, _, lane_cls, flat_env_cls = robot_classes(
+        getattr(cfg, "robot", "duck"), getattr(cfg, "variant", None))
+    return flat_env_cls(
         environments=cfg.envs,
         seed=cfg.seed,
         perturbation_rad=cfg.perturbation,
-        lane_factory=lambda E, offsets: CudaDuckLane(
+        lane_factory=lambda E, offsets: lane_cls(
             E, joint_offsets=offsets, library_path=cfg.library),
     )
 
@@ -215,6 +374,83 @@ def make_batch(ro: Rollout, critic, gamma: float, lam: float) -> dict[str, torch
             "val": flat(ro.val), "adv": flat(adv), "ret": flat(ret)}
 
 
+# ---------------------------------------------------------------------------
+# Recurrent (--policy gru) path. The feed-forward path above is untouched.
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class RecurrentRollout(Rollout):
+    h0_actor: torch.Tensor = None    # [E, H] hidden at the START of the window
+    h0_critic: torch.Tensor = None   # [E, H]
+    h_actor: torch.Tensor = None     # [E, H] hidden AFTER the window (carried)
+    h_critic: torch.Tensor = None    # [E, H]
+
+
+def collect_rollout_recurrent(env, actor, critic, obs_np: np.ndarray,
+                              h_a: torch.Tensor, h_c: torch.Tensor,
+                              horizon: int, gen: torch.Generator,
+                              device: torch.device,
+                              ep_ret: np.ndarray, ep_len: np.ndarray) -> RecurrentRollout:
+    """Recurrent twin of collect_rollout: carries actor/critic hidden state
+    [E, H] across steps, zeroing the rows of envs that reset (done mask) so a
+    fresh episode always starts from h = 0. Stores the window-initial hidden
+    states for the truncated-BPTT update."""
+    T, E = horizon, env.E
+    obs_b = torch.zeros((T, E, env.OBS), dtype=torch.float32, device=device)
+    raw_b = torch.zeros((T, E, env.ACT), dtype=torch.float32, device=device)
+    logp_b = torch.zeros((T, E), dtype=torch.float32, device=device)
+    val_b = torch.zeros((T, E), dtype=torch.float32, device=device)
+    rew_b = torch.zeros((T, E), dtype=torch.float32, device=device)
+    done_b = torch.zeros((T, E), dtype=torch.float32, device=device)
+    episodes: list[tuple[float, int]] = []
+    h0_a, h0_c = h_a.clone(), h_c.clone()
+    with torch.no_grad():
+        for t in range(T):
+            obs_t = torch.from_numpy(np.ascontiguousarray(obs_np)).to(device)
+            mu, std, h_a = actor.dist(obs_t, h_a)
+            u = mu + std * torch.randn(mu.shape, generator=gen,
+                                       dtype=mu.dtype, device=device)
+            a = torch.tanh(u)
+            obs_b[t] = obs_t
+            raw_b[t] = u
+            logp_b[t] = tanh_gaussian_log_prob(mu, std, u)
+            val_b[t], h_c = critic(obs_t, h_c)
+            next_obs, rew, done, _info = env.step(a.cpu().numpy())
+            rew_b[t] = torch.from_numpy(np.ascontiguousarray(rew)).to(device)
+            done_b[t] = torch.from_numpy(done.astype(np.float32)).to(device)
+            ep_ret += rew
+            ep_len += 1
+            if done.any():
+                for e in np.flatnonzero(done):
+                    episodes.append((float(ep_ret[e]), int(ep_len[e])))
+                ep_ret[done] = 0.0
+                ep_len[done] = 0
+                next_obs = env.reset(mask=done)
+                keep = torch.from_numpy((~done).astype(np.float32)).to(device)
+                h_a = h_a * keep.unsqueeze(1)   # fresh episodes start at h = 0
+                h_c = h_c * keep.unsqueeze(1)
+            obs_np = next_obs
+    last_obs = torch.from_numpy(np.ascontiguousarray(obs_np)).to(device)
+    return RecurrentRollout(obs=obs_b, raw_act=raw_b, logp=logp_b, val=val_b,
+                            rew=rew_b, done=done_b, last_obs=last_obs,
+                            next_obs_np=obs_np, episodes=episodes,
+                            h0_actor=h0_a, h0_critic=h0_c,
+                            h_actor=h_a, h_critic=h_c)
+
+
+def make_batch_recurrent(ro: RecurrentRollout, critic, gamma: float,
+                         lam: float) -> dict[str, torch.Tensor]:
+    """GAE identical to the ff path; keeps [T, N] sequence layout plus the
+    window-initial hidden states (minibatches are env slices)."""
+    with torch.no_grad():
+        last_val, _h = critic(ro.last_obs, ro.h_critic)
+    adv, ret = compute_gae(ro.rew, ro.done, ro.val, last_val, gamma, lam)
+    return {"obs": ro.obs, "raw_act": ro.raw_act, "logp": ro.logp, "val": ro.val,
+            "adv": adv, "ret": ret, "done": ro.done,
+            "h0_actor": ro.h0_actor, "h0_critic": ro.h0_critic}
+
+
 def record_fault(out: Path, ff, update: int, fault: SolverFault) -> str | None:
     """Copy the fault artifact into <out>/faults/ and append a faults.jsonl line."""
     saved_copy = None
@@ -271,9 +507,393 @@ def preflight_reward_check(env, steps: int, seed: int, out: Path, ff,
     return mean, std, faults
 
 
+# ---------------------------------------------------------------------------
+# In-training strict-acceptance probe (--accept-every N): the time-to-walking
+# stopwatch. Every N updates the current deterministic policy is judged by the
+# STRICT evaluator (walk/eval/gait.py) on a fresh, non-randomized E=1 env:
+#   stage 1: seeds (4242, 7) x commands (0.10, 0.15, 0.20) m/s, 8 s each —
+#            all 6 episodes must pass;
+#   stage 2 (stability confirmation): per command at seed 4242, an 11 s
+#            episode must survive with no termination AND its exact-8 s tick
+#            prefix must still pass the evaluator.
+# On confirmed pass the trainer writes <out>/accepted/{actor_accepted.pt,
+# acceptance.json}, checkpoints, prints the WALKING ACCEPTED line and exits 0.
+# ---------------------------------------------------------------------------
+
+PROBE_SEEDS = (4242, 7, 1913, 90210)  # full anti-overfit gate
+PROBE_COMMANDS = (0.10, 0.15, 0.20)
+PROBE_EPISODE_SECONDS = 8.0
+CONFIRM_SEED = 4242
+CONFIRM_SECONDS = 11.0
+POLICY_DT = 0.02
+
+
+def _make_probe_env(cfg: GpuTrainConfig, seed: int):
+    """Judging env: E=1, zero perturbation, randomization OFF, same library."""
+    return FlatFloorDuckEnv(
+        environments=1, seed=int(seed), perturbation_rad=0.0, randomization=None,
+        lane_factory=lambda E, offsets: CudaDuckLane(
+            E, joint_offsets=offsets, library_path=cfg.library))
+
+
+def _probe_policy(actor, arch: str, device: torch.device):
+    """Deterministic policy closure for capture_episodes. gru carries hidden
+    state within the episode; a fresh closure (fresh h) is made per episode."""
+    if arch == "ff":
+        @torch.no_grad()
+        def policy(obs):
+            o = torch.from_numpy(np.ascontiguousarray(obs)).to(device)
+            return actor.deterministic(o).cpu().numpy()
+        return policy
+    state = {"h": None}
+
+    @torch.no_grad()
+    def policy(obs):
+        o = torch.from_numpy(np.ascontiguousarray(obs)).to(device)
+        if state["h"] is None:
+            state["h"] = actor.initial_state(o.shape[0], device)
+        act, state["h"] = actor.deterministic(o, state["h"])
+        return act.cpu().numpy()
+    return policy
+
+
+@contextlib.contextmanager
+def _extended_horizon(steps: int):
+    """Temporarily raise the flat env's episode horizon (module global read at
+    step time) so the 11 s stability episodes are not cut off at 8 s. The
+    trainer's own env never steps while a probe runs, and the old value is
+    always restored."""
+    from walk.env import flat as flat_mod
+    old = flat_mod.HORIZON_STEPS
+    flat_mod.HORIZON_STEPS = int(steps)
+    try:
+        yield
+    finally:
+        flat_mod.HORIZON_STEPS = old
+
+
+def truncate_trace_to_8s(trace: dict) -> dict:
+    """Exact-8 s prefix of a longer trace: the strict evaluator's translation
+    and last-step criteria are calibrated to 8 s, so re-scoring uses exactly
+    int(round(8 s / dt)) ticks, marked as a clean horizon truncation."""
+    dt = float(trace["dt"])
+    n8 = int(round(PROBE_EPISODE_SECONDS / dt))
+    out = {k: v for k, v in trace.items() if k != "ticks"}
+    out["ticks"] = {k: list(v[:n8]) for k, v in trace["ticks"].items()}
+    out["terminated"] = False
+    out["truncated_at_horizon"] = True
+    return out
+
+
+def _episode_summary(r: dict) -> dict:
+    q = [f for f in r.get("footfalls", []) if f.get("qualified")]
+    fails = [k for k, v in r.get("criteria", {}).items() if not v.get("pass")]
+    return {"passed": bool(r.get("passed")), "qualified": len(q),
+            "failed_criteria": fails}
+
+
+def run_acceptance_probe(cfg: GpuTrainConfig, actor, device: torch.device) -> dict:
+    """Run the 6-episode strict probe + 3-episode stability confirmation.
+
+    Short-circuits on the first failing episode (probe cost control: at most
+    6 + 3 episodes on E=1 with per-tick reads). A SolverFault anywhere is a
+    failed probe, never a crash. Returns stage results + probe wall seconds.
+    """
+    t0 = time.perf_counter()
+    episodes: dict[str, dict] = {}
+    confirmation: dict[str, dict] = {}
+    stage1 = True
+    confirmed = False
+    try:
+        for seed in PROBE_SEEDS:
+            if not stage1:
+                break
+            env = _make_probe_env(cfg, seed)
+            try:
+                for cmd in PROBE_COMMANDS:
+                    trace = capture_episodes(
+                        env, _probe_policy(actor, cfg.policy, device),
+                        command=cmd, seconds=PROBE_EPISODE_SECONDS, seed=seed)[0]
+                    r = evaluate_episode(trace)
+                    episodes[f"seed{seed}-cmd{cmd:.2f}"] = _episode_summary(r)
+                    if not r.get("passed"):
+                        stage1 = False
+                        break
+            finally:
+                env.close()
+        if stage1:
+            confirmed = True
+            env = _make_probe_env(cfg, CONFIRM_SEED)
+            try:
+                with _extended_horizon(int(round(CONFIRM_SECONDS / POLICY_DT))):
+                    for cmd in PROBE_COMMANDS:
+                        trace = capture_episodes(
+                            env, _probe_policy(actor, cfg.policy, device),
+                            command=cmd, seconds=CONFIRM_SECONDS,
+                            seed=CONFIRM_SEED)[0]
+                        survived = (bool(trace.get("truncated_at_horizon"))
+                                    and not trace.get("terminated")
+                                    and not trace.get("solver_fault"))
+                        r8 = (evaluate_episode(truncate_trace_to_8s(trace))
+                              if survived else None)
+                        ok = survived and bool(r8 and r8.get("passed"))
+                        confirmation[f"seed{CONFIRM_SEED}-cmd{cmd:.2f}-11s"] = {
+                            "survived_11s": survived,
+                            "prefix_8s": _episode_summary(r8) if r8 else None,
+                            "passed": ok,
+                        }
+                        if not ok:
+                            confirmed = False
+                            break
+            finally:
+                env.close()
+    except SolverFault as fault:
+        stage1 = confirmed = False
+        episodes["solver_fault"] = {"passed": False,
+                                    "detail": str(fault),
+                                    "saved_problem_path": fault.saved_problem_path}
+    return {"stage1_passed": stage1, "confirmed": confirmed,
+            "episodes": episodes, "confirmation": confirmation,
+            "probe_wall_s": time.perf_counter() - t0}
+
+
+# ---------------------------------------------------------------------------
+# --accept-every for --robot humanoid / arm: the CPU harness's protocol as one
+# batch on the training lane class. See the module docstring; the entry points
+# (run_batched_probe, BatchedCellEnv, harness_phase0 / BatchedCellArmEnv) live
+# next to the harnesses in walk/eval/{humanoid,arm}_acceptance.py so the probe
+# and the harness can never drift apart on cells, capture or record shape.
+# ---------------------------------------------------------------------------
+
+ACCEPTED_LINE = {"duck": "WALKING ACCEPTED",
+                 "humanoid": "HUMANOID WALKING ACCEPTED",
+                 "arm": "ARM REACH ACCEPTED"}
+CONSECUTIVE_PASSES_CUDA = 2   # 12/12 probes in a row before a cuda candidate
+MAX_CANDIDATES = 5            # accepted/candidate_<update>.pt kept (newest)
+
+
+def _probe_lane_is_authority(cfg: GpuTrainConfig, device: torch.device) -> bool:
+    """True when the probe's lane is the CPU harness's lane (a cpu device
+    loads the serial build; traces are bit-identical to the harness), so a
+    single 12/12 probe IS the verdict. On cuda the fp32 device physics only
+    nominates candidates (module docstring, AUTHORITY RULE)."""
+    return device.type == "cpu"
+
+
+def write_candidate(out: Path, cfg: GpuTrainConfig, actor, update: int,
+                    env_steps: int, train_wall_s: float, probe_wall_s: float,
+                    probe: dict, consecutive: int) -> Path:
+    """accepted/candidate_<update>.{pt,json} for an on-device 12/12 streak;
+    prunes to the newest MAX_CANDIDATES candidates."""
+    acc = out / "accepted"
+    acc.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {"arch": cfg.policy,
+         "state_dict": {k: v.detach().cpu()
+                        for k, v in actor.state_dict().items()}},
+        acc / f"candidate_{update:06d}.pt")
+    (acc / f"candidate_{update:06d}.json").write_text(json.dumps({
+        "schema": "duckgridwalk.training_acceptance_candidate/1",
+        "candidate": True, "cpu_confirmed": None,
+        "robot": cfg.robot,
+        "variant": probe.get("protocol", {}).get("variant"),
+        "update": int(update), "env_steps": int(env_steps),
+        "consecutive_passes": int(consecutive),
+        "train_wall_s": round(float(train_wall_s), 3),
+        "probe_wall_s": round(float(probe_wall_s), 3),
+        "probe_wall_last_s": round(float(probe["probe_wall_s"]), 3),
+        "policy": cfg.policy, "protocol": probe.get("protocol", {}),
+        "lane": "cuda training lane class (fp32 device build): NOT the "
+                "authority; the CPU harness decides",
+        "library": cfg.library,
+        "cells_passed": probe.get("cells_passed"),
+        "cells_total": probe.get("cells_total"),
+        "episodes": probe["episodes"],
+    }, indent=1, default=str) + "\n")
+    kept = sorted(acc.glob("candidate_*.pt"))
+    for old_pt in kept[:-MAX_CANDIDATES]:
+        old_pt.unlink(missing_ok=True)
+        old_pt.with_suffix(".json").unlink(missing_ok=True)
+    return acc / f"candidate_{update:06d}.pt"
+
+
+def _make_robot_probe_env(cfg: GpuTrainConfig, n_envs: int, seed: int):
+    """Judging env for --robot humanoid / arm: n_envs (one per protocol
+    cell) over the TRAINING LANE CLASS (robot_classes + cfg.library: the
+    CUDA build on the sandbox, the serial build locally) in a FRESH lane
+    instance with every training-only knob at its constructor default --
+    randomization None, fast_termination False, gate termination off, RSI
+    0, perturbation 0 -- exactly what the CPU harness's make_env builds.
+    The trainer's lane is a different object and is never touched."""
+    _, _, lane_cls, env_cls = robot_classes(cfg.robot,
+                                            getattr(cfg, "variant", None))
+    return env_cls(
+        environments=int(n_envs), seed=int(seed), perturbation_rad=0.0,
+        lane_factory=lambda E, offsets: lane_cls(
+            E, joint_offsets=offsets, library_path=cfg.library))
+
+
+def _probe_policy_exact(actor, arch: str, device: torch.device):
+    """Deterministic policy for the batched probe. On a cpu device every env
+    row is evaluated as its own batch of 1 (the E=1 harness's shape): a
+    batched CPU matmul is not bitwise equal to the row product (5e-7 on the
+    accepted humanoid actor) and that alone flipped a marginal stocky cell,
+    so harness equality needs the row shape. On cuda the batch goes through
+    in one call (the device physics is not bitwise the serial lane anyway)."""
+    if device.type != "cpu":
+        return _probe_policy(actor, arch, device)
+    if arch == "ff":
+        @torch.no_grad()
+        def policy(obs):
+            o = torch.from_numpy(np.ascontiguousarray(obs))
+            return torch.cat([actor.deterministic(o[i:i + 1])
+                              for i in range(o.shape[0])]).numpy()
+        return policy
+    state = {"h": None}
+
+    @torch.no_grad()
+    def policy(obs):
+        o = torch.from_numpy(np.ascontiguousarray(obs))
+        if state["h"] is None:
+            state["h"] = [actor.initial_state(1, device)
+                          for _ in range(o.shape[0])]
+        acts = []
+        for i in range(o.shape[0]):
+            a, state["h"][i] = actor.deterministic(o[i:i + 1], state["h"][i])
+            acts.append(a)
+        return torch.cat(acts).numpy()
+    return policy
+
+
+def run_robot_probe(cfg: GpuTrainConfig, actor, device: torch.device) -> dict:
+    """--robot humanoid / arm acceptance probe: all protocol cells in one
+    batch on the training lane class, judged by the robot's frozen judge.
+    Returns the duck probe's result shape (stage1_passed / confirmed /
+    episodes / confirmation / probe_wall_s) plus cells_passed, cells_total,
+    failed_cells and protocol. A SolverFault is a failed probe, never a
+    crash (the captures record faults into the traces; construction-time
+    faults are caught here)."""
+    t0 = time.perf_counter()
+    variant = getattr(cfg, "variant", None)
+    env_factory = lambda n, seed: _make_robot_probe_env(cfg, n, seed)  # noqa: E731
+    policy_factory = lambda: _probe_policy_exact(actor, cfg.policy, device)  # noqa: E731
+    try:
+        if cfg.robot == "humanoid":
+            from walk.eval import humanoid_acceptance as ha  # noqa: PLC0415
+            res = ha.run_batched_probe(env_factory, policy_factory,
+                                       variant=variant, quiet=True)
+            protocol = {"seeds": res["seeds"], "commands": res["commands"],
+                        "variant": res["variant"], "seconds": 8.0,
+                        "judge": "walk/eval/humanoid_gait.py"}
+        elif cfg.robot == "arm":
+            from walk.eval import arm_acceptance as aa  # noqa: PLC0415
+            res = aa.run_batched_probe(variant or "kr240", env_factory,
+                                       policy_factory, quiet=True)
+            protocol = {"seeds": res["seeds"], "tiers": res["tiers"],
+                        "variant": res["variant"], "seconds": 8.0,
+                        "judge": "walk/eval/arm_reach_judge.py"}
+        else:
+            raise SystemExit(f"no acceptance probe for --robot {cfg.robot!r}")
+        episodes = res["episodes"]
+        passed = bool(res["accepted"])
+    except SolverFault as fault:
+        episodes = {"solver_fault": {"passed": False, "detail": str(fault),
+                                     "saved_problem_path": fault.saved_problem_path}}
+        passed = False
+        protocol = {"variant": variant}
+    n_pass = sum(1 for v in episodes.values() if v.get("passed"))
+    return {"stage1_passed": passed, "confirmed": passed,
+            "episodes": episodes, "confirmation": {},
+            "cells_passed": n_pass, "cells_total": len(episodes),
+            "failed_cells": [k for k, v in episodes.items()
+                             if not v.get("passed")],
+            "protocol": protocol,
+            "probe_wall_s": time.perf_counter() - t0}
+
+
+def write_acceptance(out: Path, cfg: GpuTrainConfig, actor, update: int,
+                     env_steps: int, train_wall_s: float, probe_wall_s: float,
+                     probe: dict) -> Path:
+    acc = out / "accepted"
+    acc.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {"arch": cfg.policy,
+         "state_dict": {k: v.detach().cpu()
+                        for k, v in actor.state_dict().items()}},
+        acc / "actor_accepted.pt")
+    if cfg.robot != "duck":
+        # humanoid / arm: the harness protocol record (no confirmation stage)
+        (acc / "acceptance.json").write_text(json.dumps({
+            "schema": "duckgridwalk.training_acceptance/2",
+            "accepted": True,
+            "robot": cfg.robot,
+            "variant": probe.get("protocol", {}).get("variant"),
+            "update": int(update),
+            "env_steps": int(env_steps),
+            "train_wall_s": round(float(train_wall_s), 3),   # excludes probe time
+            "probe_wall_s": round(float(probe_wall_s), 3),   # cumulative probing
+            "probe_wall_last_s": round(float(probe["probe_wall_s"]), 3),
+            "policy": cfg.policy,
+            "protocol": probe.get("protocol", {}),
+            "lane": "training lane class, fresh instance, DR/gates/RSI off",
+            "lane_is_authority": bool(probe.get("lane_is_authority", True)),
+            "consecutive_passes": int(probe.get("consecutive_passes", 1)),
+            "library": cfg.library,
+            "cells_passed": probe.get("cells_passed"),
+            "cells_total": probe.get("cells_total"),
+            "episodes": probe["episodes"],
+        }, indent=1, default=str) + "\n")
+        return acc
+    (acc / "acceptance.json").write_text(json.dumps({
+        "schema": "duckgridwalk.training_acceptance/1",
+        "accepted": True,
+        "update": int(update),
+        "env_steps": int(env_steps),
+        "train_wall_s": round(float(train_wall_s), 3),   # excludes probe time
+        "probe_wall_s": round(float(probe_wall_s), 3),   # cumulative probing
+        "probe_wall_last_s": round(float(probe["probe_wall_s"]), 3),
+        "policy": cfg.policy,
+        "seeds": list(PROBE_SEEDS),
+        "commands": list(PROBE_COMMANDS),
+        "confirm_seed": CONFIRM_SEED,
+        "confirm_seconds": CONFIRM_SECONDS,
+        "episodes": probe["episodes"],
+        "confirmation": probe["confirmation"],
+    }, indent=1) + "\n")
+    return acc
+
+
+def _inspect_source(cfg: GpuTrainConfig) -> dict | None:
+    """Load the --init-actor / --resume source once and classify it:
+    {"path", "raw", "arch" ("ff"|"gru"), "actor" (state dict),
+    "critic" (state dict or None), "checkpoint" (bool)}. An actor file is
+    {"arch", "state_dict"} or a legacy plain FF state dict
+    (ppo.unpack_actor_file); a full checkpoint carries actor/critic/
+    optimizer and its config's policy."""
+    init_actor = getattr(cfg, "init_actor", None)
+    if init_actor and cfg.resume:
+        raise SystemExit("--init-actor and --resume are mutually exclusive")
+    if init_actor:
+        path = Path(init_actor)
+    elif cfg.resume:
+        path = (Path(cfg.out) / "latest.pt" if cfg.resume == "auto"
+                else Path(cfg.resume))
+    else:
+        return None
+    raw = torch.load(path, map_location="cpu", weights_only=False)
+    if isinstance(raw, dict) and "actor" in raw and "critic" in raw:
+        return {"path": path, "raw": raw, "checkpoint": True,
+                "arch": str(raw.get("config", {}).get("policy", "ff")),
+                "actor": raw["actor"], "critic": raw["critic"]}
+    arch, sd = unpack_actor_file(raw)
+    return {"path": path, "raw": raw, "checkpoint": False, "arch": arch,
+            "actor": sd, "critic": None}
+
+
 def save_checkpoint(path: Path, update: int, actor, critic, optimizer,
                     sample_gen: torch.Generator, perm_gen: torch.Generator,
-                    env_steps: int, faults_total: int, cfg: GpuTrainConfig) -> None:
+                    env_steps: int, faults_total: int, cfg: GpuTrainConfig,
+                    train_wall_s: float = 0.0, probe_wall_s: float = 0.0) -> None:
     tmp = path.with_suffix(".tmp")
     torch.save(
         {
@@ -286,6 +906,8 @@ def save_checkpoint(path: Path, update: int, actor, critic, optimizer,
             "perm_gen_state": perm_gen.get_state(),
             "env_steps": env_steps,
             "faults_total": faults_total,
+            "train_wall_s": float(train_wall_s),   # cumulative, excl. probes
+            "probe_wall_s": float(probe_wall_s),   # cumulative probe time
             "config": dataclasses.asdict(cfg),
         },
         tmp,
@@ -296,7 +918,8 @@ def save_checkpoint(path: Path, update: int, actor, critic, optimizer,
 def train(cfg: GpuTrainConfig) -> list[dict]:
     torch.set_num_threads(max(1, cfg.torch_threads))
     device = torch.device(cfg.device)
-    if device.type == "cuda" and not torch.cuda.is_available():
+    if (device.type == "cuda" and not cfg.validate_only
+            and not torch.cuda.is_available()):
         raise SystemExit("--device cuda requested but torch.cuda.is_available() is False")
 
     out = Path(cfg.out)
@@ -304,9 +927,52 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
     (out / "config.json").write_text(
         json.dumps(dataclasses.asdict(cfg), indent=2, default=str) + "\n")
 
-    ppo_cfg = PPOConfig(lr=cfg.lr)
+    if cfg.policy not in ("ff", "gru"):
+        raise SystemExit(f"--policy must be ff or gru, got {cfg.policy!r}")
+    obs_dim, act_dim, _, _ = robot_classes(
+        cfg.robot, getattr(cfg, "variant", None))   # duck: exactly OBS, ACT
+    if cfg.robot != "duck":
+        if cfg.randomization and not cfg.lane_env:
+            raise SystemExit("--randomization for --robot humanoid runs on "
+                             "the device policy path; add --lane-env")
+    controller = None
+    if cfg.curriculum:
+        # tech-tree curriculum (walk/train/curriculum_controller.py):
+        # imported lazily so the default path stays import-identical.
+        from walk.train.curriculum_controller import (  # noqa: PLC0415
+            CurriculumController, load_ladder)
+        if not cfg.lane_env:
+            raise SystemExit("--curriculum drives lane-level gate knobs; "
+                             "run with --lane-env")
+        controller = CurriculumController(
+            load_ladder(cfg.curriculum, cfg.robot), quiet=cfg.quiet)
+    if cfg.validate_only:
+        # Launcher preflight: every flag/robot/curriculum check above has
+        # passed from the archived payload; also require the relay files.
+        for label, path in (("--resume", cfg.resume), ("--init-actor", cfg.init_actor)):
+            if path and not Path(path).is_file():
+                raise SystemExit(f"{label} file not found: {path}")
+        print("[gpu_train] validate-only: configuration OK")
+        return []
+    recurrent = cfg.policy == "gru"
+    ppo_cfg = PPOConfig(lr=cfg.lr, gamma=cfg.gamma, lam=cfg.gae_lambda)
+    # Peek at the warm-start / resume source BEFORE building the nets: a GRU
+    # policy may need a residual feed-forward trunk (FF -> GRU warm start,
+    # or a GRU checkpoint that already carries one), and the optimizer must
+    # see every parameter at construction.
+    source = _inspect_source(cfg)
+    gru_trunk = None
+    if recurrent and source is not None:
+        if source["arch"] == "ff":
+            gru_trunk = trunk_hidden_from_state_dict(source["actor"], "mu_net.")
+        else:
+            gru_trunk = trunk_hidden_from_state_dict(source["actor"], "ff.")
     torch.manual_seed(derive_seed(cfg.seed, 0x11))       # net init (matches run.py)
-    actor, critic = make_nets(OBS, ACT, ppo_cfg)
+    if recurrent:
+        actor, critic = make_recurrent_nets(obs_dim, act_dim, ppo_cfg,
+                                            ff_hidden=gru_trunk)
+    else:
+        actor, critic = make_nets(obs_dim, act_dim, ppo_cfg)
     actor.to(device)
     critic.to(device)
     optimizer = torch.optim.Adam(
@@ -320,16 +986,58 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
     perm_gen.manual_seed(derive_seed(cfg.seed, 0x33))
 
     start_update, env_steps, faults_total = 0, 0, 0
+    prev_train_wall, prev_probe_wall = 0.0, 0.0
+    if getattr(cfg, "init_actor", None):
+        if cfg.resume:
+            raise SystemExit("--init-actor and --resume are mutually exclusive")
+        arch, sd = source["arch"], source["actor"]
+        if arch == cfg.policy:
+            actor.load_state_dict(sd)
+            note = "(critic/optimizer fresh)"
+        elif arch == "ff" and recurrent:
+            # FF -> residual GRU warm start (policy bit-identical at step 0)
+            warm_start_recurrent_from_ff(actor, sd, critic, source.get("critic"))
+            note = ("via FF->GRU residual warm start (trunk "
+                    f"{gru_trunk}, critic {'warm' if source.get('critic') else 'fresh'})")
+        else:
+            raise SystemExit(f"--init-actor is a {arch} actor but --policy "
+                             f"{cfg.policy} was requested")
+        if not cfg.quiet:
+            print(f"[gpu_train] actor initialized from {cfg.init_actor} {note}")
     if cfg.resume:
-        ck_path = out / "latest.pt" if cfg.resume == "auto" else Path(cfg.resume)
-        ck = torch.load(ck_path, map_location="cpu", weights_only=False)
-        actor.load_state_dict(ck["actor"])
-        critic.load_state_dict(ck["critic"])
-        optimizer.load_state_dict(ck["optimizer"])
+        ck_path = source["path"]
+        ck = source["raw"]
+        ck_policy = source["arch"]
+        ck_variant = ck.get("config", {}).get("variant") or "h1"
+        if cfg.robot == "humanoid" and ck_variant != (
+                getattr(cfg, "variant", None) or "h1"):
+            raise SystemExit(
+                f"checkpoint {ck_path} belongs to humanoid variant "
+                f"{ck_variant!r}, but --variant {cfg.variant!r} was requested")
+        if ck_policy == cfg.policy:
+            actor.load_state_dict(ck["actor"])
+            critic.load_state_dict(ck["critic"])
+            optimizer.load_state_dict(ck["optimizer"])
+        elif ck_policy == "ff" and recurrent:
+            # cross-arch: FF checkpoint -> residual GRU. Counters continue
+            # (lineage accounting); optimizer + generators start fresh.
+            warm_start_recurrent_from_ff(actor, ck["actor"], critic, ck["critic"])
+            if not cfg.quiet:
+                print(f"[gpu_train] cross-arch warm start: FF checkpoint "
+                      f"{ck_path} -> residual GRU (trunk {gru_trunk}; "
+                      "optimizer/generators fresh)")
+        else:
+            raise SystemExit(
+                f"checkpoint {ck_path} was trained with --policy {ck_policy}, "
+                f"but --policy {cfg.policy} was requested")
         start_update = int(ck["update"])
         env_steps = int(ck["env_steps"])
         faults_total = int(ck["faults_total"])
+        prev_train_wall = float(ck.get("train_wall_s", 0.0))
+        prev_probe_wall = float(ck.get("probe_wall_s", 0.0))
         try:
+            if ck_policy != cfg.policy:
+                raise ValueError("cross-arch warm start: fresh generators")
             if ck.get("sample_gen_device", "cpu") == str(sample_gen.device):
                 sample_gen.set_state(ck["sample_gen_state"])
             else:
@@ -342,6 +1050,18 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
             print(f"[gpu_train] resumed from {ck_path} at update {start_update}")
 
     env = make_env(cfg)
+    if controller is not None:
+        lane = getattr(env, "_lane", None)
+        if lane is None or not hasattr(lane, "set_gate_termination") \
+                or not hasattr(lane, "gate_proxy"):
+            env.close()
+            raise SystemExit("--curriculum requires a lane exposing "
+                             "gate_proxy + set_gate_termination (this lane "
+                             "predates commit 65d99b8?)")
+        controller.apply(env)
+        if not cfg.quiet:
+            print(f"[curriculum] stage '{controller.stage.name}' "
+                  f"(entry, update {start_update})")
     E = env.E
     metrics: list[dict] = []
     metrics_path = out / "metrics.jsonl"
@@ -349,8 +1069,107 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
     t_start = time.perf_counter()
     stopped_by_wall = False
     last_update = start_update
+    probe_wall_proc = 0.0            # probe seconds spent in THIS process
+    last_probe_update = -1
+    accepted = False
+    consecutive_passes = 0           # cuda candidate streak (non-duck)
+    candidates = 0                   # on-device candidates written this run
+    authority = cfg.robot == "duck" or _probe_lane_is_authority(cfg, device)
+
+    def train_wall() -> float:
+        """Cumulative training wall seconds, probes excluded."""
+        return prev_train_wall + (time.perf_counter() - t_start) - probe_wall_proc
+
+    def probe_wall() -> float:
+        """Cumulative probe wall seconds."""
+        return prev_probe_wall + probe_wall_proc
+
     try:
         with metrics_path.open("a") as mf, faults_path.open("a") as ff:
+
+            def do_probe(u: int) -> bool:
+                """Acceptance probe at update u; returns True on CONFIRMED
+                pass (training must stop). Time is booked as probe wall."""
+                nonlocal probe_wall_proc, last_probe_update, accepted
+                nonlocal consecutive_passes, candidates
+                if cfg.robot == "duck":
+                    probe = run_acceptance_probe(cfg, actor, device)
+                else:
+                    probe = run_robot_probe(cfg, actor, device)
+                probe_wall_proc += probe["probe_wall_s"]
+                last_probe_update = u
+                consecutive_passes = (consecutive_passes + 1
+                                      if probe["confirmed"] else 0)
+                probe["consecutive_passes"] = consecutive_passes
+                probe["lane_is_authority"] = authority
+                line = {
+                    "kind": "accept", "update": u, "env_steps": env_steps,
+                    "stage1_passed": probe["stage1_passed"],
+                    "accepted": probe["confirmed"],
+                    "probe_wall_s": round(probe["probe_wall_s"], 3),
+                    "probe_wall_total_s": round(probe_wall(), 3),
+                    "train_wall_s": round(train_wall(), 3),
+                    "episodes": probe["episodes"],
+                    "confirmation": probe["confirmation"],
+                }
+                if cfg.robot != "duck":
+                    line.update({"robot": cfg.robot,
+                                 "variant": probe["protocol"].get("variant"),
+                                 "cells_passed": probe["cells_passed"],
+                                 "cells_total": probe["cells_total"],
+                                 "failed_cells": probe["failed_cells"],
+                                 "consecutive_passes": consecutive_passes,
+                                 "lane_is_authority": authority})
+                mf.write(json.dumps(line, default=str) + "\n")
+                mf.flush()
+                metrics.append(line)
+                if not cfg.quiet:
+                    n_pass = sum(1 for v in probe["episodes"].values()
+                                 if v.get("passed"))
+                    # the "[accept uN] ..." prefix is gpu/chain.py's PROBE
+                    # regex for every robot; the failed-cell tail is extra
+                    tail = ""
+                    if cfg.robot != "duck" and probe["failed_cells"]:
+                        tail = f" failed={probe['failed_cells']}"
+                    print(f"[accept u{u}] stage1={probe['stage1_passed']} "
+                          f"({n_pass}/{len(probe['episodes'])} episodes) "
+                          f"confirmed={probe['confirmed']} "
+                          f"probe_wall={probe['probe_wall_s']:.1f}s" + tail)
+                if not probe["confirmed"]:
+                    return False
+                if not authority:
+                    # cuda lane (humanoid/arm): nominate, never decide.
+                    if consecutive_passes < CONSECUTIVE_PASSES_CUDA:
+                        if not cfg.quiet:
+                            print(f"[accept u{u}] on-device 12/12 #"
+                                  f"{consecutive_passes}: need "
+                                  f"{CONSECUTIVE_PASSES_CUDA} consecutive "
+                                  "before a candidate")
+                        return False
+                    candidates += 1
+                    if not (out / "accepted" / "actor_accepted.pt").is_file():
+                        write_acceptance(out, cfg, actor, u, env_steps,
+                                         train_wall(), probe_wall(), probe)
+                    path = write_candidate(out, cfg, actor, u, env_steps,
+                                           train_wall(), probe_wall(), probe,
+                                           consecutive_passes)
+                    line["candidate"] = str(path)
+                    print(f"{ACCEPTED_LINE[cfg.robot]}-CANDIDATE at update {u} "
+                          f"after {train_wall():.1f} s ({probe_wall():.1f} s "
+                          f"probing): {consecutive_passes} consecutive on-device "
+                          f"12/12 -> {path.name}; CPU harness decides, "
+                          "training continues")
+                    return False
+                accepted = True
+                write_acceptance(out, cfg, actor, u, env_steps,
+                                 train_wall(), probe_wall(), probe)
+                save_checkpoint(out / "latest.pt", u, actor, critic, optimizer,
+                                sample_gen, perm_gen, env_steps, faults_total,
+                                cfg, train_wall(), probe_wall())
+                print(f"{ACCEPTED_LINE[cfg.robot]} at update {u} after "
+                      f"{train_wall():.1f} s ({probe_wall():.1f} s probing)")
+                return True
+
             if cfg.preflight_steps > 0 and not cfg.resume:
                 mean, std, pf_faults = preflight_reward_check(
                     env, cfg.preflight_steps, cfg.seed, out, ff, cfg.quiet)
@@ -359,6 +1178,9 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
             obs = env.reset(seed=cfg.seed)   # clean deterministic start
             ep_ret = np.zeros(E, np.float64)
             ep_len = np.zeros(E, np.int64)
+            if recurrent:                    # fresh episodes start at h = 0
+                h_a = actor.initial_state(E, device)
+                h_c = critic.initial_state(E, device)
 
             for u in range(start_update + 1, cfg.updates + 1):
                 if cfg.max_wall_s and time.perf_counter() - t_start >= cfg.max_wall_s:
@@ -369,8 +1191,14 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                     break
                 t0 = time.perf_counter()
                 try:
-                    ro = collect_rollout(env, actor, critic, obs, cfg.horizon,
-                                         sample_gen, device, ep_ret, ep_len)
+                    if recurrent:
+                        ro = collect_rollout_recurrent(
+                            env, actor, critic, obs, h_a, h_c, cfg.horizon,
+                            sample_gen, device, ep_ret, ep_len)
+                        h_a, h_c = ro.h_actor, ro.h_critic
+                    else:
+                        ro = collect_rollout(env, actor, critic, obs, cfg.horizon,
+                                             sample_gen, device, ep_ret, ep_len)
                 except SolverFault as fault:
                     # Poison the whole rollout window: no update, full reset.
                     faults_total += 1
@@ -378,6 +1206,9 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                     obs = env.reset()
                     ep_ret[:] = 0.0
                     ep_len[:] = 0
+                    if recurrent:            # every env restarted: zero hidden
+                        h_a = actor.initial_state(E, device)
+                        h_c = critic.initial_state(E, device)
                     line = {
                         "kind": "train", "update": u, "skipped": "solver_fault",
                         "env_steps": env_steps, "faults": 1,
@@ -398,8 +1229,13 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                 env_steps += E * cfg.horizon
 
                 t1 = time.perf_counter()
-                batch = make_batch(ro, critic, ppo_cfg.gamma, ppo_cfg.lam)
-                stats = ppo_update(actor, critic, optimizer, batch, ppo_cfg, perm_gen)
+                if recurrent:
+                    batch = make_batch_recurrent(ro, critic, ppo_cfg.gamma, ppo_cfg.lam)
+                    stats = recurrent_ppo_update(actor, critic, optimizer, batch,
+                                                 ppo_cfg, perm_gen)
+                else:
+                    batch = make_batch(ro, critic, ppo_cfg.gamma, ppo_cfg.lam)
+                    stats = ppo_update(actor, critic, optimizer, batch, ppo_cfg, perm_gen)
                 t_upd = time.perf_counter() - t1
 
                 ep_rets = [r for r, _l in ro.episodes]
@@ -426,6 +1262,37 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                     "faults": 0,
                     "faults_total": faults_total + getattr(env, "fault_count", 0),
                 }
+                # gate_proxy_*: in-kernel judge-shadow gait counters (means
+                # over each env's LAST COMPLETED episode; robot-generic --
+                # any lane exposing gate_proxy()). Metrics only; see the
+                # honesty note in duck_cuda.h: tick-resolution clause
+                # shadow, never a substitute for the frozen judge.
+                lane = getattr(env, "_lane", None)
+                if lane is not None and hasattr(lane, "gate_proxy"):
+                    try:
+                        gp = lane.gate_proxy()
+                        line["gate_proxy_ep_qualified_l"] = round(
+                            float(gp["episode_qualified_left"].mean()), 3)
+                        line["gate_proxy_ep_qualified_r"] = round(
+                            float(gp["episode_qualified_right"].mean()), 3)
+                        line["gate_proxy_ep_alt_violations"] = round(
+                            float(gp["episode_alternation_violations"].mean()),
+                            3)
+                    except Exception:
+                        pass                 # metrics must never kill training
+                if controller is not None:
+                    line["curriculum_stage"] = controller.stage.name
+                    event = controller.observe(line)
+                    if event is not None:
+                        controller.apply(env)     # knobs at update boundary
+                        stage_line = {"kind": "curriculum", **event,
+                                      "env_steps": env_steps}
+                        mf.write(json.dumps(stage_line) + "\n")
+                        metrics.append(stage_line)
+                        if not cfg.quiet:
+                            print(f"[curriculum] {event['direction']} -> "
+                                  f"'{event['name']}' at u{u} "
+                                  f"({event['reason']})")
                 mf.write(json.dumps(line) + "\n")
                 mf.flush()
                 metrics.append(line)
@@ -443,31 +1310,61 @@ def train(cfg: GpuTrainConfig) -> list[dict]:
                 if u % cfg.checkpoint_every == 0:
                     ck = out / f"ckpt_{u:06d}.pt"
                     save_checkpoint(ck, u, actor, critic, optimizer, sample_gen,
-                                    perm_gen, env_steps, faults_total, cfg)
+                                    perm_gen, env_steps, faults_total, cfg,
+                                    train_wall(), probe_wall())
                     shutil.copy2(ck, out / "latest.pt")
+
+                if cfg.accept_every > 0 and u % cfg.accept_every == 0:
+                    if do_probe(u):
+                        break        # WALKING ACCEPTED: stop training, exit 0
+
+            # One last probe at the very end (wall stop or updates exhausted),
+            # unless the final update was already probed or already accepted.
+            if (cfg.accept_every > 0 and not accepted
+                    and last_update > start_update
+                    and last_probe_update != last_update):
+                do_probe(last_update)
     finally:
         # Always checkpoint at exit and always write the cpu actor for local
         # evaluation, even after a wall-clock stop or an exception.
         try:
             save_checkpoint(out / "latest.pt", last_update, actor, critic,
                             optimizer, sample_gen, perm_gen, env_steps,
-                            faults_total, cfg)
-            torch.save({k: v.detach().cpu() for k, v in actor.state_dict().items()},
-                       out / "actor_final.pt")
+                            faults_total, cfg, train_wall(), probe_wall())
+            # Self-describing actor file: {"arch": "ff"|"gru", "state_dict": ...}
+            # (legacy consumers of plain ff state_dicts: see ppo.unpack_actor_file)
+            torch.save(
+                {"arch": cfg.policy,
+                 "state_dict": {k: v.detach().cpu()
+                                for k, v in actor.state_dict().items()}},
+                out / "actor_final.pt")
         finally:
             env.close()
     if not cfg.quiet:
         print(f"[gpu_train] done: updates={last_update} env_steps={env_steps} "
               f"faults={faults_total} wall={time.perf_counter() - t_start:.1f}s "
-              f"stopped_by_wall={stopped_by_wall}")
+              f"stopped_by_wall={stopped_by_wall} accepted={accepted}"
+              + (f" candidates={candidates}" if candidates else ""))
     return metrics
 
 
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="walk.train.gpu_train",
-        description="Single-process PPO trainer over the batched CUDA duck lane")
+        description="Single-process PPO trainer over the batched CUDA lane")
     d = GpuTrainConfig()
+    p.add_argument("--robot", choices=("duck", "humanoid", "arm"), default=d.robot,
+                   help="robot contract: env/lane classes and OBS/ACT dims "
+                        "(duck = the original byte-identical path)")
+    p.add_argument("--variant", default=d.variant, metavar="NAME",
+                   help="robot FAMILY member (validated per robot by "
+                        "robot_classes): humanoid -> h1_tall | h1_stocky "
+                        "(unset = the accepted H1.1 base, humanoid/"
+                        "h1_family.py); arm -> kr240 | lite; duck: none")
+    p.add_argument("--curriculum", default=d.curriculum, metavar="LADDER",
+                   help="tech-tree curriculum: builtin ladder name (e.g. "
+                        "humanoid-walk) or a JSON ladder file; requires "
+                        "--lane-env; off by default (exact legacy behavior)")
     p.add_argument("--envs", type=int, default=d.envs)
     p.add_argument("--horizon", type=int, default=d.horizon)
     p.add_argument("--updates", type=int, default=d.updates)
@@ -478,27 +1375,56 @@ def build_argparser() -> argparse.ArgumentParser:
                         "DUCK_CUDA_LIBRARY env or local serial build)")
     p.add_argument("--lane-env", action="store_true",
                    help="use the ABI-v3 device policy path (1 launch/step)")
+    p.add_argument("--randomization", default=None,
+                   help='JSON DR config, e.g. {"r_mass":0.1,"max_latency_steps":1}')
     p.add_argument("--out", required=True)
     p.add_argument("--resume", nargs="?", const="auto", default=None,
                    help="checkpoint path, or bare flag for <out>/latest.pt")
+    p.add_argument("--init-actor", default=None,
+                   help="actor file (or full checkpoint) for weights-only "
+                        "init; critic/optimizer start fresh. With --policy "
+                        "gru an FF source triggers the residual FF->GRU "
+                        "warm start (see module docstring)")
+    p.add_argument("--rsi-fraction", type=float, default=0.0,
+                   help="fraction of resets initialized from reference-gait "
+                        "states (DeepMimic RSI); requires a lane with set_rsi")
     p.add_argument("--max-wall-s", type=float, default=0.0,
                    help="stop cleanly (checkpoint + actor_final.pt) after this many seconds")
+    p.add_argument("--policy", choices=("ff", "gru"), default=d.policy,
+                   help="ff: feed-forward MLP (default); gru: tiny recurrent "
+                        "policy (implicit system ID), trained with truncated BPTT")
     p.add_argument("--lr", type=float, default=d.lr)
+    p.add_argument("--gamma", type=float, default=d.gamma)
+    p.add_argument("--gae-lambda", type=float, default=d.gae_lambda)
     p.add_argument("--perturbation", type=float, default=d.perturbation,
                    help="per-env joint perturbation bound in rad (<= 0.02)")
+    p.add_argument("--accept-every", type=int, default=d.accept_every, metavar="N",
+                   help="0 = off; every N updates run the strict-acceptance "
+                        "probe with the robot's FROZEN judge (duck: 12 x 8 s "
+                        "episodes + 3 x 11 s stability confirmation; humanoid/"
+                        "arm: the CPU harness's 12 cells as one batch on the "
+                        "training lane class) and STOP with exit 0 on a pass")
     p.add_argument("--checkpoint-every", type=int, default=d.checkpoint_every)
     p.add_argument("--preflight-steps", type=int, default=d.preflight_steps,
                    help="random-action reward-sensitivity steps; 0 skips")
     p.add_argument("--torch-threads", type=int, default=d.torch_threads)
     p.add_argument("--quiet", action="store_true")
+    p.add_argument("--validate-only", action="store_true",
+                   help="validate flags/robot/curriculum/relay files, then exit 0 "
+                        "(launcher preflight from the archived payload)")
     return p
 
 
 def config_from_args(args: argparse.Namespace) -> GpuTrainConfig:
     return GpuTrainConfig(
+        robot=args.robot,
+        variant=args.variant,
+        curriculum=args.curriculum,
         envs=args.envs, horizon=args.horizon, updates=args.updates, seed=args.seed,
-        device=args.device, library=args.library, lane_env=args.lane_env, out=args.out, resume=args.resume,
-        max_wall_s=args.max_wall_s, lr=args.lr, perturbation=args.perturbation,
+        device=args.device, library=args.library, lane_env=args.lane_env, randomization=(json.loads(args.randomization) if args.randomization else None), out=args.out, resume=args.resume, init_actor=args.init_actor, rsi_fraction=args.rsi_fraction, validate_only=args.validate_only,
+        max_wall_s=args.max_wall_s, policy=args.policy, lr=args.lr,
+        gamma=args.gamma, gae_lambda=args.gae_lambda, perturbation=args.perturbation,
+        accept_every=args.accept_every,
         checkpoint_every=args.checkpoint_every, preflight_steps=args.preflight_steps,
         torch_threads=args.torch_threads, quiet=args.quiet,
     )

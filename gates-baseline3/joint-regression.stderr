@@ -1,0 +1,28 @@
+EF................
+======================================================================
+ERROR: test_all_16_hinge_cases_48_rows_from_initial_conditions (__main__.NativeJoint.test_all_16_hinge_cases_48_rows_from_initial_conditions)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/john/Code/duck-grid-walk/tests/test_experimental_joint_v1.py", line 81, in test_all_16_hinge_cases_48_rows_from_initial_conditions
+    self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),'05db2648c6db27fc6eb18892aa4e5a57fb2faa9de66ec61c97db0fd4ab6ca183')
+                                    ^^^^^^^^^^^^^^^^^
+  File "/Users/john/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py", line 1019, in read_bytes
+    with self.open(mode='rb') as f:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/john/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/Users/john/Code/duck-grid-walk/tests/fixtures/experimental_joint_v1/hinge-result.json'
+
+======================================================================
+FAIL: test_all_existing_tracked_sources_unchanged (__main__.NativeJoint.test_all_existing_tracked_sources_unchanged)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/john/Code/duck-grid-walk/tests/test_experimental_joint_v1.py", line 206, in test_all_existing_tracked_sources_unchanged
+    self.assertEqual(r.returncode,0,r.stdout)
+AssertionError: 128 != 0 : 
+
+----------------------------------------------------------------------
+Ran 18 tests in 1.221s
+
+FAILED (failures=1, errors=1)

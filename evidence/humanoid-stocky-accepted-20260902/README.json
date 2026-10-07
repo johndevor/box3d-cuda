@@ -1,0 +1,7 @@
+{
+ "status": "ACCEPTED",
+ "authority": "CPU serial harness (walk/eval/humanoid_acceptance.py --variant h1_stocky), 12/12",
+ "robustness": "all 6 checkpoints from the 3-leg chain (3 in-run candidates + 3 leg finals) pass 12/12 on the authority",
+ "legs_total": 16,
+ "lineage": "h1_stocky BC seed -> tech tree -> RSI -> 16 ten-minute legs; in-run probe (2 consecutive on-device 12/12) nominated the checkpoint"
+}

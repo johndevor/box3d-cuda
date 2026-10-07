@@ -1,10 +1,5 @@
 # duck-grid-walk: Open Duck learns to walk on a grid of cube rigid bodies (CPU-first)
 
-Historical branch work plan, retained for provenance. This is not a statement
-that walking or the larger CUDA-world goal has been achieved. For the merged
-track's current scope, verification commands and evidence limits, see
-[Experimental Duck](docs/experimental-duck.md).
-
 Goal: the Open Duck plain-14 biped learns to walk across a grid of cube rigid
 bodies, trained fast via parallel PPO on this Mac (Apple M5 Pro, no CUDA).
 Higher body/joint/contact limits than the upstream 32/16/16. CUDA port later.

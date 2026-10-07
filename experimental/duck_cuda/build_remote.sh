@@ -10,11 +10,21 @@
 #
 # Point walk/env/cuda_lane.py at the result:
 #   DUCK_CUDA_LIBRARY=$PWD/build-remote/libduck_cuda.so python ...
+#
+# The CUDA library is WARP-PER-ENV (32 lanes cooperate on one env; best at
+# E=8192-16384). Add -DDW_WARP_LANES=1 to the nvcc lines (or
+# -DDUCK_CUDA_THREAD_PER_ENV=ON to cmake) for the legacy thread-per-env
+# layout. After any rebuild run tests/remote_gpu_parity.py -- its windowed
+# tolerance gates + bitwise on-device determinism are the cross-build
+# contract for the lane-cooperative reductions.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# One explicit build path; CMakeLists.txt is an alternative, not a prerequisite
-# followed by a second compilation of the same libraries.
+# --- Option A: cmake ---------------------------------------------------------
+cmake -B build-remote -DCMAKE_BUILD_TYPE=Release -DDUCK_CUDA=ON
+cmake --build build-remote -j
+
+# --- Option B: raw nvcc (equivalent, no cmake needed) -------------------------
 mkdir -p build-remote
 nvcc -std=c++17 -O3 --fmad=false \
     -gencode arch=compute_89,code=sm_89 \

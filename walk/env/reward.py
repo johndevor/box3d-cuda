@@ -17,9 +17,20 @@ State dicts (numpy arrays over E envs):
 """
 from __future__ import annotations
 
+import json as _json
+from pathlib import Path as _Path
+
 import numpy as np
 
 CONTROL_DT = 0.02
+
+# Phase-indexed reference gait (self-imitation): extracted from our own best
+# verified 44-step alternating cycle (u5212 actor at 0.20 m/s). The policy is
+# rewarded for joint poses near the reference AT ITS OWN CLOCK PHASE, which
+# teaches the stepping shape at every speed. Modest weight: a guide, not a rail.
+_REF = _json.loads((_Path(__file__).parent / "reference_gait.json").read_text())
+REF_GAIT = np.asarray(_REF["table"], dtype=np.float64)      # [BINS, 14]
+REF_BINS = int(_REF["bins"])
 
 # ---- weights (one-line rationale each) -----------------------------------
 W_TRACK = 1.0            # primary objective: match commanded forward speed.
@@ -38,13 +49,16 @@ AIR_TIME_MIN = 0.08      # evaluator floor is 60 ms; leave margin above it.
 AIR_TIME_MAX = 0.40      # above this the duck is hopping/ballistic, not walking.
 PLACEMENT_MIN_M = 0.030  # evaluator: forward placement >= 30 mm per footfall.
 OPP_SUPPORT_FRAC = 0.90  # evaluator: opposite foot supports >= 90% of the swing.
-W_CHATTER = 0.2          # penalty per touchdown after a sub-60 ms micro-swing;
+W_CHATTER = 1.0          # penalty per touchdown after a sub-60 ms micro-swing;
                          # contact chatter destroys the 40 ms support windows.
 CHATTER_MAX_S = 0.06
-W_FLICKER = 0.3          # penalty per foot in stance at both step boundaries but
+W_FLICKER = 2.5          # penalty per foot in stance at both step boundaries but
                          # not in contact for all 10 native ticks: marginal
                          # loading flickers at 2 ms scale and breaks the
-                         # evaluator's 40 ms continuous-support windows.
+                         # evaluator's 40 ms continuous-support windows. Raised
+                         # 0.3 -> 1.5 (price of a full step): forensics at u2430
+                         # showed ALL remaining alternation breaks at 0.10 are
+                         # single-tick touchdown bounces voiding support windows.
 TICKS_FULL = 10          # native ticks per policy step
 STANCE_MIN_S = 0.06      # a step qualifies only after >=60 ms of stance before
                          # liftoff (median stance was 77-88 ms and flicker-cut).
@@ -57,7 +71,9 @@ W_SAME_FOOT = 2.0        # penalty when a qualified touchdown REPEATS the last
                          # foot. At 0.5 a repeat still netted +1.0 with the step
                          # bonus (u2400: symmetric gait, repeats persisted); at
                          # 2.0 a repeat nets -0.5 vs +2.0 for alternating.
-W_PHASE = 0.5            # per foot whose stance matches the observed 2.5 Hz
+W_IMIT = 0.5             # imitation: exp(-msq(q - ref(phase))/IMIT_SIGMA_SQ).
+IMIT_SIGMA_SQ = 0.04     # ~0.2 rad rms tolerance before the bonus halves.
+W_PHASE = 0.5            # per foot whose stance matches the observed 1.25 Hz
                          # phase clock (left: sin>=0, right: sin<0); breaks the
                          # one-legged-limp optimum where alternation never fires.
 
@@ -156,10 +172,15 @@ def reward(prev_state: dict, state: dict, action: np.ndarray, command: np.ndarra
         tracker.opp_support[airborne, foot] += contact[airborne, 1 - foot] * dt
         tracker.pre_swing_stance[liftoff[:, foot], foot] = \
             tracker.stance_time[liftoff[:, foot], foot]
-    tracker.stance_time = np.where(contact, tracker.stance_time + dt, 0.0)
+    # stance credit accrues only on FULL-contact steps (all native ticks in
+    # contact): tick-scale flicker inside a stance resets it, mirroring the
+    # evaluator's 40 ms CONTINUOUS-support requirement (leg-10 diagnosis:
+    # right-foot steps failed almost solely on flickered pre-liftoff stance).
+    ct = state.get("contact_ticks")
+    solid = contact if ct is None else contact & (np.asarray(ct) >= TICKS_FULL)
+    tracker.stance_time = np.where(solid, tracker.stance_time + dt, 0.0)
 
     # 6c. flicker penalty: stance at both boundaries but partial tick contact
-    ct = state.get("contact_ticks")
     if ct is not None:
         flicker = prev_contact & contact & (np.asarray(ct) < TICKS_FULL)
         r -= W_FLICKER * flicker.sum(1)
@@ -169,12 +190,23 @@ def reward(prev_state: dict, state: dict, action: np.ndarray, command: np.ndarra
     # 7. foot-clearance bonus: swing foot whose whole sole clears >= 10 mm
     r += W_CLEARANCE * ((~contact) & (sole >= CLEARANCE_M)).sum(1)
 
+    # 8a. self-imitation: joint pose near the reference cycle at own phase
+    jq = state.get("joint_q")
+    if jq is not None and phase is not None:
+        bins = (np.mod(np.asarray(phase, np.float64) / (2.0 * np.pi), 1.0)
+                * REF_BINS).astype(int) % REF_BINS
+        err = np.mean(np.square(np.asarray(jq, np.float64) - REF_GAIT[bins]), axis=1)
+        r += W_IMIT * np.exp(-err / IMIT_SIGMA_SQ) * (np.abs(cmd) > 0)
+
     # 8b. phase-locked stance: while commanded, each foot is rewarded for
     # matching its half of the observed gait clock (left stance sin>=0).
     # Absent phase (older callers/tests) skips the term.
     if phase is not None:
-        match = (contact[:, 0] == stance_left).astype(np.float64) \
-            + (contact[:, 1] == ~stance_left).astype(np.float64)
+        # signed: mismatched contact PAYS -W_PHASE, so planting one foot
+        # through both clock windows nets zero instead of half pay (the
+        # standing subsidy that funded every limp attractor).
+        match = np.where(contact[:, 0] == stance_left, 1.0, -1.0) \
+            + np.where(contact[:, 1] == ~stance_left, 1.0, -1.0)
         r += W_PHASE * match * (np.abs(cmd) > 0)
 
     # 8. double-support penalty beyond the duty grace while commanded to move

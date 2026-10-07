@@ -28,9 +28,13 @@ obs, reward, done, info = env.step(action)               # action [E, 14] in [-1
   snapshot. `seed` (when changed) rebuilds the lane so the snapshot embeds
   fresh deterministic per-env joint perturbations.
 - `perturbation_rad` (constructor, default **0.0**, bound 0.02): deterministic
-  per-env uniform joint-q perturbations drawn from the seed. Solver repairs
-  are included; tests cover a formerly failing perturbed reset and a separate
-  injected fault. This is not a universal convergence claim.
+  per-env uniform joint-q perturbations drawn from the seed. Default is zero
+  because, until the workstream-A civ1 repair lands, *any* nonzero joint
+  perturbation (even 1e-4 rad) makes `civ1_solve` stall
+  (CIV1_NO_CONVERGENCE, diagnostic `native_status=3`, phase 3) during the
+  foot-settling impact ~0.23 s after reset — the degenerate contact-block
+  failure documented in PLAN.md. The fault path itself is exercised by
+  `walk/env/tests/test_flat.py::TestSolverFaultPath`.
 - Solver faults: if `idv1_step` rejects a tick, the failing env's complete
   state (idv1_read fields incl. both manifold sets), the step inputs and all
   diagnostics are persisted to `runs/faults/<timestamp>-env<i>.json` and
@@ -58,7 +62,7 @@ kp/kv/effort_cap`). Nothing else in flat.py touches the backend.
 | 48:51 | 3  | root linear velocity, body frame (m/s) |
 | 51:54 | 3  | commanded velocity [vx, vy=0, wyaw=0]; vx sampled per episode from {0.10, 0.15, 0.20} m/s (deterministic per seed/env/episode) |
 | 54:56 | 2  | foot contact flags (left, right) from the foot-vs-floor solve-cache manifolds |
-| 56:58 | 2  | phase clock: sin/cos of a fixed 2.5 Hz clock over episode time |
+| 56:58 | 2  | phase clock: sin/cos of a fixed 1.25 Hz clock over episode time |
 
 Body indices (verified against the pinned geometry goldens): left foot =
 contact body 6, right foot = contact body 15; foot-vs-floor manifolds are
@@ -74,17 +78,10 @@ vertices per foot; the floor is the z = 0 plane.
 | lateral/yaw penalty | `W_LATERAL = 0.5` | `-(vy^2 + wz^2)` |
 | action-rate penalty | `W_ACTION_RATE = 0.01` | `-sum((a - a_prev)^2)` |
 | torque penalty | `W_TORQUE = 2e-4` | `-sum(tau^2)`, tau = boundary PD estimate (clipped at 3.23) |
-| air-time bonus | `W_AIR_TIME = 1.5` | qualified touchdown with duration, clearance, advance, support and phase checks |
+| air-time bonus | `W_AIR_TIME = 1.0` | on touchdown, if swing lasted 0.10-0.40 s |
 | foot-clearance bonus | `W_CLEARANCE = 0.1` | per swing foot per step whose whole sole clears >= 10 mm |
 | double-support penalty | `W_DOUBLE_SUPPORT = 0.5` | after > 0.25 s continuous double support while `cmd != 0` |
 | alternation bonus | `W_ALTERNATE = 0.5` | qualified touchdown on the opposite foot to the previous one |
-| same-foot repeat penalty | `W_SAME_FOOT = 2.0` | qualified touchdown repeats the previous foot |
-| phase shaping | `W_PHASE = 0.5` | stance matches the observed 2.5 Hz clock |
-| chatter / flicker penalties | `W_CHATTER = 0.2`, `W_FLICKER = 0.3` | short swings and tick-level contact flicker |
-
-The v6 implementation in `reward.py` is authoritative. Velocity tracking uses
-the rolling velocity estimate, not instantaneous speed. Reward alone is not
-accepted walking; the separate gait evaluator still applies.
 
 The gait terms exist because prior runs proved survival-only rewards produce
 a lunge with feet never leaving the ground. `GaitTracker` keeps per-env air

@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -107,10 +106,6 @@ class FakeProvider:
 
 class LauncherTestCase(unittest.TestCase):
     def setUp(self):
-        # Fake-provider retries must not consume real provider polling time.
-        sleep_patch = patch.object(rd.time, "sleep", return_value=None)
-        self.mock_sleep = sleep_patch.start()
-        self.addCleanup(sleep_patch.stop)
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
         self.repo = make_git_repo(self.tmp / "repo")
@@ -180,8 +175,8 @@ class TestSpecValidation(unittest.TestCase):
                             / "specs" / "compile-duck-cuda.json")
         self.assertEqual(spec.name, "compile-duck-cuda")
         self.assertEqual([j.name for j in spec.jobs],
-                         ["gpu-info", "build"])
-        self.assertTrue(all(not job.continue_on_error for job in spec.jobs))
+                         ["gpu-info", "build", "smoke-test"])
+        self.assertTrue(spec.jobs[2].continue_on_error)
 
 
 class TestTarBuild(LauncherTestCase):
@@ -244,7 +239,10 @@ class TestJobSequencing(LauncherTestCase):
     def test_continue_on_error(self):
         provider = FakeProvider(exec_results={"run-b": (7, "boom\n")})
         code = self.run_spec(make_spec(jobs=self.jobs3(coe_second=True)), provider)
-        self.assertEqual(code, rd.EXIT_JOB_FAILED)  # still nonzero overall
+        # 2026-09-02 contract: a continue_on_error job's failure is a recorded
+        # RESULT (e.g. an acceptance verdict of "not accepted"), not a run
+        # failure -- the run exits 0 and later jobs still execute.
+        self.assertEqual(code, rd.EXIT_OK)
         self.assertTrue(any("run-c" in c for c in provider.commands))
 
     def test_concurrency_guard(self):

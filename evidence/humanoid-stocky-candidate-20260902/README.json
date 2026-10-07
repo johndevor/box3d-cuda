@@ -1,0 +1,4 @@
+{
+ "note": "On-device (CUDA fp32) in-run probe reported 12/12 and self-stopped; CPU authority harness gives 10/12 (seed 4242 & 7 at cmd 1.00 fail footfalls_alternate). NOT an acceptance. Marginal-cell divergence between CUDA and serial physics; probe protocol being hardened (CPU confirmation required, consecutive passes, candidate retention).",
+ "status": "candidate, authority 10/12"
+}

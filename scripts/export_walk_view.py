@@ -9,11 +9,9 @@ Usage:
   .venv/bin/python -B scripts/export_walk_view.py \
       --checkpoint runs/flat-003/latest.pt --command 0.15 \
       --library build/libintegrated_duck-pinned-97c3d37.dylib \
-      --asset-root /absolute/path/to/historical-cad-bundle \
       --out runs/walk-view
 """
 import argparse
-import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -23,6 +21,9 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+OLD = Path("/Users/john/Code/box3d-cuda-voxel-gate-c1")
+VIEW_JSON = OLD / "evidence/open-duck-zero-hold-view-v1/open-duck-zero-hold-view.json"
+XML = OLD / "evidence/open-duck-zero-hold-cpu-v1/model/open_duck_mini_v2.xml"
 
 from walk.env.flat import FlatFloorDuckEnv  # noqa: E402
 from walk.train.ppo import Actor  # noqa: E402
@@ -37,30 +38,19 @@ def main():
     ap.add_argument("--seed", type=int, default=4242)
     ap.add_argument("--library", default=None)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--asset-root", type=Path, required=True,
-                    help="historical CAD bundle root containing scripts/ and evidence/")
     ap.add_argument("--grid", default=None,
                     help="JSON grid spec: render duck on a cube grid, e.g. "
                          "'{\"nx\":8,\"nz\":8,\"cube_size\":0.06,\"spacing\":0.06,\"height_jitter\":0.005}'")
     a = ap.parse_args()
 
-    old = a.asset_root.resolve()
-    view_json = old / "evidence/open-duck-zero-hold-view-v1/open-duck-zero-hold-view.json"
-    xml = old / "evidence/open-duck-zero-hold-cpu-v1/model/open_duck_mini_v2.xml"
-    helper = old / "scripts/export_open_duck_recorded_view.py"
-    for path in [view_json, xml, helper]:
-        if not path.is_file():ap.error(f"missing CAD input: {path}")
-    if a.grid and json.loads(a.grid).get('dynamic', False):
-        ap.error('dynamic cubes require per-frame poses; this exporter supports static grids only')
-    sys.path.insert(0, str(old))
-    spec = importlib.util.spec_from_file_location("duck_cad_export_helper", helper)
-    cad = importlib.util.module_from_spec(spec);spec.loader.exec_module(cad)
-    fk_bodies, _, _ = cad.load_model(xml)
-    base_view = json.loads(view_json.read_text())
-
-    ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
+    from walk.train.ppo import unpack_actor_file
+    raw = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
+    if isinstance(raw, dict) and "actor" in raw:
+        raw = raw["actor"]
+    arch, sd = unpack_actor_file(raw)
+    ck = {"update": "accepted"}
     actor = Actor(58, 14)
-    actor.load_state_dict(ck["actor"])
+    actor.load_state_dict(sd)
     actor.eval()
 
     @torch.no_grad()
@@ -87,6 +77,12 @@ def main():
         obs, _, done, _ = env.step(policy(obs), on_tick=on_tick)
         if done.all():
             break
+
+    # sealed FK over the source CAD (same helpers the sealed exporter uses)
+    sys.path.insert(0, str(OLD))
+    from scripts import export_open_duck_recorded_view as cad
+    fk_bodies, _, _ = cad.load_model(XML)
+    base_view = json.loads(VIEW_JSON.read_text())
 
     frames = []
     kept = ticks[:: a.every]
@@ -138,7 +134,7 @@ def main():
     data = {"schema": "duckgridwalk.walk-cad-view/v1",
             "checkpoint": str(a.checkpoint), "update": ck.get("update"),
             "command_mps": a.command, "frame_dt_s": 0.002 * a.every,
-            "physics_backend": "Box3D cube-grid CPU lane (dwv1/civ1)" if a.grid else "Box3D integrated duck CPU lane (idv1/civ1)",
+            "physics_backend": "Box3D integrated duck CPU lane (idv1/civ1)",
             "asset_notice": base_view["asset_notice"],
             "bodies": base_view["bodies"] + ([extra_body] if extra_body else []),
             "geometry": base_view["geometry"] + extra_geometry,
@@ -150,7 +146,6 @@ def main():
     tag = "-grid" if a.grid else ""
     name = f"walk-u{ck.get('update')}-cmd{a.command:.2f}{tag}.html"
     (out / name).write_text(html)
-    env.close()
     print(out / name)
 
 

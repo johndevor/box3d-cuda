@@ -1,0 +1,54 @@
+{
+  "name": "humanoid-tree-stocky",
+  "tar_globs": [],
+  "upload_extra": [
+    "humanoid/variants/h1_stocky/include/duck_model.h",
+    "humanoid/variants/h1_stocky/reference_gait.json",
+    "humanoid/variants/h1_stocky/bc_init_ckpt.pt"
+  ],
+  "jobs": [
+    {
+      "name": "gpu-info",
+      "command": "nvidia-smi | tee gpu-info.txt && nvcc --version | tee -a gpu-info.txt",
+      "timeout_s": 60,
+      "artifacts": [
+        "gpu-info.txt"
+      ],
+      "continue_on_error": false
+    },
+    {
+      "name": "build-humanoid-stocky",
+      "command": "set -o pipefail; mkdir -p experimental/duck_cuda/build-humanoid-stocky; nvcc -std=c++17 -O3 --fmad=false -gencode arch=compute_89,code=sm_89 -gencode arch=compute_120,code=sm_120 -Ihumanoid/variants/h1_stocky/include -Iexperimental/duck_cuda/include -Xcompiler -fPIC -shared experimental/duck_cuda/src/duck_cuda.cu -o experimental/duck_cuda/build-humanoid-stocky/libhumanoid_cuda.so 2>&1 | tee build-humanoid-stocky.log; nvcc -std=c++17 -O3 --fmad=true -gencode arch=compute_89,code=sm_89 -gencode arch=compute_120,code=sm_120 -Ihumanoid/variants/h1_stocky/include -Iexperimental/duck_cuda/include -Xcompiler -fPIC -shared experimental/duck_cuda/src/duck_cuda.cu -o experimental/duck_cuda/build-humanoid-stocky/libhumanoid_cuda_fast.so 2>&1 | tee -a build-humanoid-stocky.log; g++ -std=c++17 -O2 -Wall -Wextra -ffp-contract=off -Ihumanoid/variants/h1_stocky/include -Iexperimental/duck_cuda/include -fPIC -shared experimental/duck_cuda/src/duck_cuda_serial.cpp -o experimental/duck_cuda/build-humanoid-stocky/libhumanoid_cuda_serial.so 2>&1 | tee -a build-humanoid-stocky.log; ls -la experimental/duck_cuda/build-humanoid-stocky | tee -a build-humanoid-stocky.log",
+      "timeout_s": 600,
+      "artifacts": [
+        "build-humanoid-stocky.log"
+      ],
+      "continue_on_error": false
+    },
+    {
+      "name": "train",
+      "command": "set -o pipefail; PY=$(command -v python3); $PY -c 'import numpy' 2>/dev/null || $PY -m pip install --quiet numpy; $PY -B -m walk.train.gpu_train --robot humanoid --variant h1_stocky --envs 16384 --horizon 64 --updates 99999 --seed 917 --device cuda --library experimental/duck_cuda/build-humanoid-stocky/libhumanoid_cuda_fast.so --lane-env --curriculum humanoid-walk --rsi-fraction 0.5 --policy ff --resume humanoid/variants/h1_stocky/bc_init_ckpt.pt --out gpu-train-out --lr 3e-4 --max-wall-s 600 2>&1 | tee gpu-train.log",
+      "timeout_s": 900,
+      "artifacts": [
+        "gpu-train.log",
+        "gpu-train-out/metrics.jsonl",
+        "gpu-train-out/actor_final.pt",
+        "gpu-train-out/latest.pt"
+      ],
+      "continue_on_error": false
+    }
+  ],
+  "resources": {
+    "cpu": 4,
+    "memory_gib": 16,
+    "disk_gib": 20,
+    "gpu": 1,
+    "gpu_types": [
+      "RTX-5090"
+    ],
+    "spot": false,
+    "ttl_minutes": 22,
+    "image": "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
+  },
+  "use_snapshot": true
+}

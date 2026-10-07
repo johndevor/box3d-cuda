@@ -12,13 +12,12 @@ import shutil
 import sys
 
 ROOT=Path(__file__).resolve().parents[2]
+OLD=Path('/Users/john/Code/box3d-cuda-voxel-gate-c1')
+CAD=OLD/'evidence/open-duck-zero-hold-view-v1/open-duck-zero-hold-view.json'
 CAD_SHA='6cbb12676d0dec4f83af64a7ab6911943bde135cb1a5a50fc83e49de5eeba84e'
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--result',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
-    p.add_argument('--asset-root',type=Path,required=True,help='historical CAD/FK bundle root (scripts/ and evidence/)');a=p.parse_args()
-    OLD=a.asset_root.resolve()
-    CAD=OLD/'evidence/open-duck-zero-hold-view-v1/open-duck-zero-hold-view.json'
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--result',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
     if not a.result.is_absolute() or not a.output.is_absolute() or a.output.exists():raise SystemExit('absolute result and fresh output required')
     if sha(CAD)!=CAD_SHA:raise ValueError('sealed CAD replay drift')
     data=json.loads(a.result.read_text());base=json.loads(CAD.read_text())

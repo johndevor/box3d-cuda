@@ -199,3 +199,41 @@ class TestIndividualQualifiers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DebounceAmendmentTest(unittest.TestCase):
+    def test_two_ms_dropout_no_longer_voids_support(self):
+        """A single-tick contact dropout inside a stance (touchdown bounce)
+        must not break the 40 ms support windows; a real 60 ms swing must
+        still be detected as a swing."""
+        import numpy as np
+        from walk.eval import gait
+        n = 4000
+        dt = 0.002
+        contact = np.ones((n, 2), bool)
+        sole = np.zeros((n, 2))
+        pos = np.zeros((n, 2, 3))
+        # left performs one clean qualified swing at 1.0s (100 ticks = 200ms)
+        s0, s1 = 500, 600
+        contact[s0:s1, 0] = False
+        sole[s0:s1, 0] = 0.02
+        pos[s1:, 0, 0] = 0.04           # 40 mm forward placement
+        # and a single-tick bounce right after touchdown (the artifact)
+        contact[s1 + 5, 0] = False
+        trace = {"schema": gait.SCHEMA, "dt": dt, "policy_dt": 0.02,
+                 "command_mps": 0.10, "seed": 1, "env_index": 0, "resets": 0,
+                 "terminated": False, "truncated_at_horizon": True,
+                 "solver_fault": False,
+                 "ticks": {"time_s": (np.arange(n) * dt).tolist(),
+                           "base_pos": [[0, 0, 0.16]] * n,
+                           "base_quat_xyzw": [[0, 0, 0, 1]] * n,
+                           "tilt_deg": [0.0] * n,
+                           "foot_pos": pos.tolist(),
+                           "sole_height": sole.tolist(),
+                           "contact": contact.tolist()}}
+        qualified, swings = gait._qualified_footfalls(trace)
+        # the bounce tick is debounced away: no 2 ms swing candidate exists
+        self.assertTrue(all(s["swing_s"] >= 0.05 for s in swings))
+        # the real swing qualifies (support windows intact despite the bounce)
+        self.assertEqual(len(qualified), 1)
+        self.assertEqual(qualified[0]["foot"], "left")

@@ -16,6 +16,7 @@ Usage: .venv/bin/python -B experimental/duck_cuda/tools/generate_model.py \
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -52,6 +53,15 @@ def load_fixture():
 
 
 def emit(native, fixture, cm) -> str:
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from walk.env import flat  # noqa: PLC0415  (gait-clock contract source)
+    from walk.eval import gait as judge  # noqa: PLC0415 (frozen judge)
+    from walk.env import reward as reward_mod  # noqa: PLC0415 (imitation ref)
+
+    ref = np.asarray(reward_mod.REF_GAIT, dtype=np.float64)
+    assert ref.shape == (int(reward_mod.REF_BINS), 14), "REF_GAIT shape drift"
+
     J, B = fixture.J, fixture.B
     assert (J, B) == (14, 16)
     frame = cm.record["frames"][0]
@@ -107,12 +117,32 @@ def emit(native, fixture, cm) -> str:
         "#define DW_FOOT_VERTS 18   // baked convex sole vertices per foot",
         f"#define DW_DT {f32(0.002)}",
         f"#define DW_GRAVITY_Z {f32(-9.81)}",
+        "// walk/env/flat.py affine gait clock (f64): phase_hz = BASE +",
+        "// PER_MPS * command. Imported from flat.py at generation time (which",
+        "// reads DUCK_PHASE_HZ_BASE / DUCK_PHASE_HZ_PER_MPS env vars -- the",
+        "// sweep mechanism bakes whatever is set when generating), so the env",
+        "// and the device policy layer cannot silently diverge: the",
+        "// header-drift test pins env <-> kernel agreement automatically.",
+        f"#define DW_PHASE_HZ_BASE {float(flat.PHASE_HZ_BASE)!r}",
+        f"#define DW_PHASE_HZ_PER_MPS {float(flat.PHASE_HZ_PER_MPS)!r}",
         f"#define DW_ARMATURE {f32(shared['armature'])}",
         f"#define DW_DAMPING {f32(shared['damping'])}",
         f"#define DW_FRICTION_LOSS {f32(shared['loss'])}",
         f"#define DW_KP {f32(shared['kp'])}",
         f"#define DW_KV {f32(shared['kv'])}",
+        "// per-joint PD gain tables (H1.1 spec: gains differ per joint on",
+        "// the humanoid); the duck's are uniform broadcasts of the scalar",
+        "// gains above, so duck kernel behavior is BIT-IDENTICAL.",
+        "DW_MODEL_CONST float DW_KP_TABLE[DW_J] = "
+        + row([shared['kp']] * J) + ";",
+        "DW_MODEL_CONST float DW_KV_TABLE[DW_J] = "
+        + row([shared['kv']] * J) + ";",
         f"#define DW_EFFORT_CAP {f32(shared['cap'])}",
+        "// per-joint effort caps: the duck's are uniform, so the table is a",
+        "// broadcast of DW_EFFORT_CAP and kernel behavior is BIT-IDENTICAL;",
+        "// the H0 humanoid emits its authored 180/140/70 tiers here.",
+        "DW_MODEL_CONST float DW_EFFORT_CAP_TABLE[DW_J] = "
+        + row([shared['cap']] * J) + ";",
         f"#define DW_FRICTION_D0 {f32(shared['d0'])}",
         f"#define DW_FRICTION_DWIDTH {f32(shared['dw'])}",
         f"#define DW_FRICTION_TIMECONST {f32(shared['tc'])}",
@@ -153,6 +183,69 @@ def emit(native, fixture, cm) -> str:
         "// chain runs in f64 to mirror walk/env/flat.py's HOME bit for bit.",
         "DW_MODEL_CONST double DW_HOME_TARGETS_F64[DW_J] = {"
         + ",".join(f"{float(x):.17g}" for x in frame["motor_targets"]) + "};",
+        "// ALL reward.py weights/constants the kernel consumes, imported from",
+        "// walk/env/reward.py at generation time so any weight change fails",
+        "// the header-drift test until regenerated (reward <-> kernel pin).",
+        *[f"#define DW_RW_{name} {float(getattr(reward_mod, name))!r}"
+          for name in [
+              "W_TRACK", "TRACK_SIGMA_SQ", "TRACK_EMA_S", "W_ALIVE",
+              "W_LATERAL", "W_ACTION_RATE", "W_TORQUE", "W_AIR_TIME",
+              "AIR_TIME_MIN", "AIR_TIME_MAX", "PLACEMENT_MIN_M",
+              "OPP_SUPPORT_FRAC", "W_CHATTER", "CHATTER_MAX_S", "W_FLICKER",
+              "STANCE_MIN_S", "W_CLEARANCE", "CLEARANCE_M",
+              "W_DOUBLE_SUPPORT", "DOUBLE_SUPPORT_GRACE", "W_ALTERNATE",
+              "W_SAME_FOOT", "W_PHASE"]],
+        f"#define DW_RW_TICKS_FULL {int(reward_mod.TICKS_FULL)}u",
+        "// ENV contract pins (walk/env/flat.py), same generation-time",
+        "// import: the kernel's device policy layer consumes these",
+        "// (obs width/offsets, action->target chain, termination), so the",
+        "// SAME kernel source serves any generated model header. Obs",
+        "// layout (3*J + 16): [0:J] q-HOME, [J:2J] QDOT_OBS_SCALE*qdot,",
+        "// [2J:3J] prev action, then gravity(3) / R^T omega(3) / R^T v(3) /",
+        "// command / 2 zeros / 2 contacts / phase sin+cos.",
+        f"#define DW_ENV_OBS {int(flat.OBS)}",
+        f"#define DW_ENV_ACT {int(flat.ACT)}",
+        f"#define DW_ENV_TICKS_PER_STEP {int(flat.TICKS_PER_STEP)}u",
+        f"#define DW_ENV_CONTROL_DT {float(flat.CONTROL_DT)!r}",
+        f"#define DW_ENV_ACTION_SCALE {float(flat.ACTION_SCALE)!r}",
+        "#define DW_ENV_MAX_TARGET_INCREMENT "
+        + f"{float(flat.MAX_TARGET_INCREMENT)!r}",
+        f"#define DW_ENV_QDOT_OBS_SCALE {float(flat.QDOT_OBS_SCALE)!r}",
+        f"#define DW_ENV_HORIZON_STEPS {int(flat.HORIZON_STEPS)}u",
+        "#define DW_ENV_MIN_HEIGHT_FRACTION "
+        + f"{float(flat.MIN_HEIGHT_FRACTION)!r}",
+        f"#define DW_ENV_MAX_TILT_RAD {float(flat.MAX_TILT_RAD)!r}",
+        "// termination up-scalar = cos(MAX_TILT), pinned in f64 here so the",
+        "// kernel never calls libm cos() on it (bit-identical across libms).",
+        "#define DW_ENV_COS_MAX_TILT "
+        + f"{float(math.cos(flat.MAX_TILT_RAD))!r}",
+        "// Which BODY axis is 'up' for the tilt test: 2 = body +Z (duck,",
+        "// up = R[2][2] = 1-2(qx^2+qy^2)); 1 = body +Y (H0 humanoid,",
+        "// up = R[2][1] = 2(qy*qz+qx*qw), humanoid_native_lane.tilt).",
+        "#define DW_ENV_UP_AXIS 2",
+        "DW_MODEL_CONST double DW_ENV_COMMANDS_MPS[3] = {"
+        + ",".join(f"{float(c)!r}" for c in flat.COMMANDS_MPS) + "};",
+        "// gate_proxy_* thresholds: the FROZEN judge's footfall clauses",
+        "// (walk/eval/gait.py), generation-time imported so judge and",
+        "// kernel shadow counters cannot silently diverge (drift-pinned).",
+        "// HONESTY: the in-kernel counters approximate the judge's",
+        "// swing-duration / whole-sole-clearance / placement clauses at",
+        "// raw tick resolution WITHOUT the 20 ms contact-debounce sensor",
+        "// model or the support/slip clauses -- a cheap culling/monitoring",
+        "// shadow, never a substitute for the frozen CPU judge.",
+        f"#define DW_GATE_SWING_MIN_S {float(judge.SWING_MIN_S)!r}",
+        f"#define DW_GATE_SWING_MAX_S {float(judge.SWING_MAX_S)!r}",
+        f"#define DW_GATE_CLEARANCE_M {f32(judge.CLEARANCE_M)}",
+        f"#define DW_GATE_CLEARANCE_MIN_S {float(judge.CLEARANCE_MIN_S)!r}",
+        f"#define DW_GATE_PLACEMENT_MIN_M {f32(judge.PLACEMENT_MIN_M)}",
+        "// reward.py v12 self-imitation: phase-indexed reference joint cycle",
+        "// (walk/env/reference_gait.json), same generation-time pinning.",
+        f"#define DW_REF_BINS {int(reward_mod.REF_BINS)}",
+        f"#define DW_IMIT_W {float(reward_mod.W_IMIT)!r}",
+        f"#define DW_IMIT_SIGMA_SQ {float(reward_mod.IMIT_SIGMA_SQ)!r}",
+        "DW_MODEL_CONST double DW_REF_GAIT[DW_REF_BINS][DW_J] = {"
+        + ",".join("{" + ",".join(repr(float(x)) for x in row_vals) + "}"
+                   for row_vals in ref) + "};",
         "DW_MODEL_CONST unsigned DW_PAIR_BODY_A[DW_PAIRS] = {6u,15u};",
         "DW_MODEL_CONST unsigned DW_PAIR_BODY_B[DW_PAIRS] = {0u,0u};",
         "DW_MODEL_CONST float DW_PAIR_MU[DW_PAIRS] = " + row(cm.mu[:2]) + ";",
