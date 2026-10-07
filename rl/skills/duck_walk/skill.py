@@ -46,7 +46,7 @@ GAIT = dict(kind="gait", args=dict(n_in=43 * HISTORY, n_act=LEGS, sin_idx=41, cm
                                    stride_l=[0, 0, 0.3, 0, 0, 0, 0, 0.3, 0, 0], stride_r=[0, 0, -0.3, 0, 0, 0, 0, -0.3, 0, 0],
                                    amp=1.0, stride=1.0, v_ref=0.15, w_ref=0.4))
 FAST = dict(kind="asymmetric", envs=32768, eval_n=64, eval_seed=10_000, graphs=False, ppo=dict(PPO, ent=0.003, max_minutes=5.0, max_steps=3e9, minibatches=8),
-            model=dict(prior=GAIT, log_std=math.log(0.15)), env=dict(substeps=8, iterations=6, clock_hz=2.5, clearance_m=0.035))
+            model=dict(prior=GAIT, log_std=math.log(0.15)), env=dict(substeps=8, iterations=6, clock_hz=2.5, clearance_m=0.035, dr_ramp=0.5))
 CRITERIA = dict(window_s=10.0, vx=0.15, settle_s=1.0, min_forward_m=0.5, max_lateral_m=0.5, min_liftoffs=4, sole_clearance_m=0.004,
                 sole_down_m=0.003,   # (World2's judge: on the floor under 1 mm; box3d's sole height reads 1.5-2 mm in stance)
                 heading_gain=1.0, heading_max=0.3)
@@ -88,7 +88,8 @@ def evaluate(act_fn, cfg, n, seed, device, env=None):
     cfg = dict(cfg or {})
     dr_on = cfg.pop("dr_on", True)
     over = {**cfg, **dict(push_p=0.0, cmd_zero_p=0.0, cmd_vx=(C["vx"], C["vx"]), episode_s=1e9, init_yaw=0.0, cmd_wz=0.0)}
-    e = DuckWalkEnv(n, device=device, seed=seed, dr=SPEC.override(over) if dr_on else over, dr_on=dr_on, **(env or {}))
+    env = {k: v for k, v in (env or {}).items() if k != "dr_ramp"}         # (the evaluation is at full randomization)
+    e = DuckWalkEnv(n, device=device, seed=seed, dr=SPEC.override(over) if dr_on else over, dr_on=dr_on, **env)
     e.cmd[:, 0] = C["vx"]
     for _ in range(int(C["settle_s"] * RATE_HZ)):
         e.step(torch.zeros(n, LEGS, device=e.dev), autoreset=False)

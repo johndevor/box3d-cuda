@@ -88,10 +88,38 @@ def default_dr(**over):
     return SPEC.override(over)
 
 
+class RampedDR:
+    """A randomization between the nominal robot (s = 0) and the full spec (s = 1): each NOMINAL entry's range moves
+    linearly from its nominal value to its full range; the rest (commands, episode length) stay as specified. The duck's
+    open-loop gait prior walks the nominal robot but falls on most randomized ones, so a residual policy started under
+    full randomization learned to cancel the prior and stand; ramping it in keeps the policy walking while it learns to
+    correct (DuckWalkEnv(dr_ramp=f): s = min(1, training fraction / f))."""
+
+    def __init__(self, full, s=0.0):
+        self.full, self.s = full, float(s)
+        self.nom = full.override(NOMINAL)
+
+    def __getitem__(self, k):
+        a = self.full[k]
+        if k not in NOMINAL or self.s >= 1.0:
+            return a
+        b, s = self.nom[k], self.s
+        if isinstance(a, tuple):
+            out = tuple(y + s * (x - y) for x, y in zip(a, b))
+            return tuple(int(round(v)) for v in out) if all(isinstance(x, int) for x in a + b) else out
+        return b + s * (a - b) if isinstance(a, (int, float)) and not isinstance(a, bool) else a
+
+    def __contains__(self, k):
+        return k in self.full
+
+    def __getattr__(self, k):
+        return getattr(self.full, k)
+
+
 class DuckWalkEnv(EnvBase):
     """E batched duck worlds (rl/common/skill.py env protocol). step(action) -> obs, priv, reward, done, info."""
 
-    def __init__(self, n_envs, device="cpu", seed=0, dr=None, substeps=4, iterations=8, model_file=MODEL_FILE, dr_on=True, clock_hz=0.0, clearance_m=0.03, alive_bonus=0.1):
+    def __init__(self, n_envs, device="cpu", seed=0, dr=None, substeps=4, iterations=8, model_file=MODEL_FILE, dr_on=True, clock_hz=0.0, clearance_m=0.03, alive_bonus=0.1, dr_ramp=0.0):
         # clock_hz > 0: the v2 interface: the frame adds foot_contact (2: the foot switches) and gait_clock (2: sin, cos of
         # 2*pi*clock_hz*t from the episode's start), and the reward follows a periodic reference gait (each foot swings up
         # to clearance_m in its half of the cycle, stands in the other; both stand when the command is zero)
@@ -100,6 +128,9 @@ class DuckWalkEnv(EnvBase):
         self.obs_size = self.frame * HISTORY
         self.E, self.device = n_envs, torch.device(device)
         self.dr = (dr if isinstance(dr, Spec) else default_dr(**(dr or {}))) if dr_on else default_dr(**NOMINAL).override(dr if isinstance(dr, dict) else None)
+        self.dr_ramp = float(dr_ramp) if dr_on else 0.0
+        if self.dr_ramp > 0:
+            self.dr = RampedDR(self.dr, 0.0)
         self.n = n_envs
         self.g = torch.Generator(device="cpu").manual_seed(seed)
         self.gs = torch.Generator(device=self.device).manual_seed(seed + 7919)    # (the steps' randomness, on the device)
@@ -340,7 +371,15 @@ class DuckWalkEnv(EnvBase):
 
     def iteration_info(self):
         T = self.trunk()
-        return dict(vx=round(T["vx"].mean().item(), 3), cmd=round(self.cmd[:, 0].mean().item(), 3))
+        return dict(vx=round(T["vx"].mean().item(), 3), cmd=round(self.cmd[:, 0].mean().item(), 3),
+                    **({"dr_scale": round(self.dr.s, 3)} if self.dr_ramp > 0 else {}))
+
+    def on_iteration(self, phase=None, it=0, frac=0.0):
+        if self.dr_ramp > 0:
+            self.dr.s = min(1.0, float(frac) / self.dr_ramp)
+
+    def best_allowed(self):
+        return self.dr_ramp <= 0 or self.dr.s >= 1.0
 
     # -------------------------------------------------------------- step
     def step(self, action, autoreset=True):
