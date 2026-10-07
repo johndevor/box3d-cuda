@@ -15,6 +15,8 @@ void step(std::vector<torch::Tensor> mf, std::vector<torch::Tensor> mi, int64_t 
   const c10::cuda::CUDAGuard guard(ef[0].device());
   duck::Model M = duck::make_model(mf, mi, imu_b, dt, substeps, iterations, baumgarte, slop, contact_beta, contact_slop, max_bias);
   duck::Env E = duck::make_env(ef, rng, goal_delay, torque_on);
+  M.nb = (int)ef[0].size(1);
+  TORCH_CHECK(M.nj <= duck::MAXJ && M.nf <= duck::MAXF, "too many joints or contact boxes for the kernel");
   const int n = (int)ef[0].size(0), T = 64;
   step_kernel<<<(n + T - 1) / T, T, 0, at::cuda::getCurrentCUDAStream()>>>(M, E, n, (int)n_outer);
   C10_CUDA_KERNEL_LAUNCH_CHECK();

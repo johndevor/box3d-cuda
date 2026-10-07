@@ -178,7 +178,7 @@ class Skill:
     recipes: dict = field(default_factory=dict)     # alternative recipes by name (python -m rl.train --recipe NAME)
 
 
-SKILLS = ("peg_insert", "connector_mate", "screw_drive", "duck_walk")
+SKILLS = ("peg_insert", "connector_mate", "screw_drive", "duck_walk", "locomotion")
 
 
 def load_skill(name: str) -> Skill:

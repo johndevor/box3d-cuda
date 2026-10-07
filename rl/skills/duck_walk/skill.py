@@ -154,13 +154,13 @@ def squat(k):
     return a
 
 
-def sim_match(w2, device):
+def sim_match(w2, device, env=None):
     """The open-loop 1 Hz squat after a 1 s stand, the nominal robot (DR off), compared tick by tick with World2's: the
     encoder angles the policy would read, and the trunk's height and tilt (each from its first frame)."""
     import numpy as np
     from rl.common.simmatch import check, lag_ticks, rms
     e = DuckWalkEnv(1, device=device, seed=0, dr_on=False, dr=dict(push_p=0.0, cmd_zero_p=0.0, cmd_vx=(0.0, 0.0), episode_s=1e9), clock_hz=0.0,
-                    **RECIPE["env"])
+                    **{**RECIPE["env"], **{k: v for k, v in (env or {}).items() if k == "model_file"}})
     for _ in range(int(w2["settle_s"] * RATE_HZ)):
         e.step(torch.zeros(1, LEGS, device=e.dev), autoreset=False)
     q, y, up = [], [], []

@@ -97,6 +97,8 @@ RECIPES = dict(teacher_student=teacher_student, asymmetric=asymmetric)
 
 def run(skill, R, cfg, out, log, make_env):
     """R: the recipe settings (kind, its phases, device, eval_n, eval_seed); cfg: randomization overrides."""
+    if getattr(skill, "prepare", None):                  # (a skill may settle recipe settings on the device first, e.g. a probed prior)
+        skill.prepare(R, cfg, out, log)
     stages = R.get("stages")
     cfg = dict(R.get("cfg", {}), **cfg)                 # (the recipe's own randomization, under the run's overrides)
     graphs = R.get("graphs", False)

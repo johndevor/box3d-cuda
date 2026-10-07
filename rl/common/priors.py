@@ -8,6 +8,9 @@ GaitPrior (locomotion, reusable): a phase clock and parametric stepping. From th
   cycle), scaled by how much the robot is asked to move, a = clip(|vx|/v_ref + |wz|/w_ref, 0, 1); the action is
   amp * a * (lift_L s_L + lift_R s_R) + stride * a * vx/v_ref * (stride_L s_L + stride_R s_R): per-joint coefficients
   for lifting a foot (hip, knee, ankle flexion) and for carrying it forward. A robot gives its joints' coefficients.
+OscillatorPrior (locomotion, any robot): one sinusoid per driven joint on the gait clock, a = clip(|vx|/v_ref, 0, 1);
+  action_j = a * (S_j sin + C_j cos) + O_j (amplitude and phase per joint, an offset): the open-loop pattern a generated
+  robot's probe picks (rl/skills/locomotion: World2's judge on random patterns of the nominal robot).
 ScriptedInsertPrior (World2's insert contract): the scripted insertion re-expressed per tick: centre on the believed
   target and descend at fixed stiffness; when stuck at the mouth (axial push over contact_n before the hole), a spiral
   search: the previous lateral action turned by a fixed angle and grown, kept within the search radius by the clip.
@@ -49,6 +52,21 @@ class GaitPrior(nn.Module):
         a = torch.clamp(torch.abs(vx) * (1 / self.v_ref) + torch.abs(wz) * (1 / self.w_ref), 0.0, 1.0)
         fwd = vx * (1 / self.v_ref)
         return a * (sl * self.lift_l + sr * self.lift_r) + a * fwd * (sl * self.stride_l + sr * self.stride_r)
+
+
+class OscillatorPrior(nn.Module):
+    def __init__(self, n_in, n_act, sin_idx, cos_idx, cmd_vx_idx, S, C, O=None, v_ref=0.15):
+        super().__init__()
+        self.args = dict(n_in=n_in, n_act=n_act, sin_idx=sin_idx, cos_idx=cos_idx, cmd_vx_idx=cmd_vx_idx, S=list(S), C=list(C), O=list(O or [0.0] * n_act), v_ref=v_ref)
+        self.register_buffer("Sel", selector(n_in, [sin_idx, cos_idx, cmd_vx_idx]))
+        self.register_buffer("W", torch.tensor([list(S), list(C)], dtype=torch.float32))          # [2, n_act]
+        self.register_buffer("off", torch.tensor([self.args["O"]], dtype=torch.float32))
+        self.v_ref = v_ref
+
+    def forward(self, obs):
+        z = obs @ self.Sel
+        a = torch.clamp(torch.abs(z[:, 2:3]) * (1 / self.v_ref), 0.0, 1.0)
+        return a * (z[:, 0:2] @ self.W) + self.off
 
 
 class ScriptedInsertPrior(nn.Module):
@@ -107,7 +125,7 @@ class ScriptedScrewPrior(nn.Module):
         return self.const + lat @ self.Exy + tilt @ self.Etilt + far @ self.Espin
 
 
-PRIORS = dict(gait=GaitPrior, scripted_insert=ScriptedInsertPrior, scripted_screw=ScriptedScrewPrior)
+PRIORS = dict(gait=GaitPrior, oscillator=OscillatorPrior, scripted_insert=ScriptedInsertPrior, scripted_screw=ScriptedScrewPrior)
 
 
 def build_prior(spec):

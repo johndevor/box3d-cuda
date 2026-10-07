@@ -18,9 +18,11 @@
 
 namespace duck {
 
-constexpr int NB = 15;          // bodies
-constexpr int NJ = 14;          // servo joints
-constexpr int NF = 2;           // feet
+// (the counts are the model's (Model nb, nj, nf: any articulated robot, skills/robot-model.mjs in World2 generates the
+// model); these are the most one environment holds: per-thread arrays are sized by them)
+constexpr int MAXB = 24;        // bodies
+constexpr int MAXJ = 20;        // servo joints
+constexpr int MAXF = 16;        // ground contact boxes (the feet first)
 constexpr int NC = 8;           // corners per foot box
 constexpr int SW = 13;          // body state: p3 q4(xyzw) v3 w3 (centre of mass, principal frame)
 constexpr int NSERVO = 8;       // servo state: theta_m omega_m target_fw goal engaged vt q_prev pending_goal
@@ -34,7 +36,8 @@ struct Model {                  // shared by all environments (device pointers)
   const float *foot_c, *foot_h, *foot_q;            // [NF*3] body-local centre, half extents, rotation (xyzw)
   const int *foot_b;                                // [NF]
   const float *imu_p, *imu_q;                       // body-local mount (trunk)
-  int imu_b;
+  const float *foot_mu;                             // [NF] each box's own friction, averaged with the world's mu (Rapier's default combine; null: mu alone)
+  int imu_b, nb, nj, nf;
   float dt; int substeps, iterations;
   float baumgarte, slop, contact_beta, contact_slop, max_bias;
 };
@@ -58,13 +61,16 @@ struct Env {                    // per-environment arrays (device pointers), ind
   const uint8_t *torque_on;     // [E]
   float *out;                   // [E,NOUT] per-call outputs (see OUT_*)
 };
-constexpr int OUT_CONTACT = 0;     // [2] foot contact (any corner loaded during the last outer step)
-constexpr int OUT_FORCE = 2;       // [2] mean normal force over the call (N)
-constexpr int OUT_SLIP = 4;        // [2] mean tangential speed of loaded corners (m/s)
-constexpr int OUT_POWER = 6;       // [1] mean electrical power proxy sum |tau_m * omega_m|
-constexpr int OUT_SOLE = 7;        // [2] lowest sole corner height (m) at the end
-constexpr int OUT_TAU = 9;         // [NJ] motor torque at the end
-constexpr int NOUT = 9 + NJ;
+// per-call outputs, offsets for nf boxes and nj joints (nf = 2, nj = 14: 0, 2, 4, 6, 7, 9; NOUT 23):
+//   contact [nf] (any corner loaded during the last outer step), force [nf] mean normal force over the call (N), slip [nf]
+//   mean tangential speed of loaded corners (m/s), power [1] mean |tau_m * omega_m|, sole [nf] lowest corner height (m) at
+//   the end, tau [nj] motor torque at the end
+HD int out_force(const Model &M) { return M.nf; }
+HD int out_slip(const Model &M) { return 2 * M.nf; }
+HD int out_power(const Model &M) { return 3 * M.nf; }
+HD int out_sole(const Model &M) { return 3 * M.nf + 1; }
+HD int out_tau(const Model &M) { return 4 * M.nf + 1; }
+HD int n_out(const Model &M) { return 4 * M.nf + 1 + M.nj; }
 
 // ------------------------------------------------------------------ small vector algebra
 HD float dot3(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
@@ -173,6 +179,7 @@ HD void imu_step(float *S, const float *par, const float *bias, uint32_t &rng, c
 
 // ------------------------------------------------------------------ one environment, one policy call (n_outer steps)
 HD void step_env(int e, const Model &M, Env &E, int n_outer) {
+  const int NB = M.nb, NJ = M.nj, NF = M.nf, NOUT = n_out(M);
   float *st = E.state + (size_t)e * NB * SW;
   const float *im = E.inv_mass + (size_t)e * NB, *ii = E.inv_inertia + (size_t)e * NB * 3;
   float *sv = E.servo + (size_t)e * NJ * NSERVO, *jl = E.jl + (size_t)e * NJ * 8, *cl = E.cl + (size_t)e * NF * NC * 3;
@@ -182,9 +189,10 @@ HD void step_env(int e, const Model &M, Env &E, int n_outer) {
   const bool on = E.torque_on[e] != 0;
   for (int k = 0; k < NOUT; k++) out[k] = 0;
   const float dt = M.dt, h = dt / M.substeps;
-  float force_acc[2] = {0, 0}, slip_acc[2] = {0, 0}, power = 0; int contact_last[2] = {0, 0};
+  float force_acc[MAXF], slip_acc[MAXF], power = 0; int contact_last[MAXF];
+  for (int f = 0; f < NF; f++) { force_acc[f] = 0; slip_acc[f] = 0; contact_last[f] = 0; }
   for (int outer = 0; outer < n_outer; outer++) {
-    for (int k = 0; k < 2; k++) contact_last[k] = 0;
+    for (int k = 0; k < NF; k++) contact_last[k] = 0;
     // ---- the rigid-body step (World2: one Rapier step of 1/120 s with the motors as the servo step left them)
     for (int ss = 0; ss < M.substeps; ss++) {
       // external forces: gravity, the push (first substep of the call), damping
@@ -196,7 +204,7 @@ HD void step_env(int e, const Model &M, Env &E, int n_outer) {
       }
       if (outer == 0 && ss == 0) { float *t = st; for (int k = 0; k < 3; k++) t[7 + k] += E.push[6 * e + k] * im[0]; float aj[3] = {E.push[6 * e + 3], E.push[6 * e + 4], E.push[6 * e + 5]}; apply_aimp(t, ii, aj); }
       // contact candidates: the corners of each sole box under a small margin
-      float cpt[NF][NC][3]; int cact[NF][NC];
+      float cpt[MAXF][NC][3]; int cact[MAXF][NC];
       for (int f = 0; f < NF; f++) {
         const float *b = st + M.foot_b[f] * SW;
         for (int c = 0; c < NC; c++) {
@@ -273,7 +281,7 @@ HD void step_env(int e, const Model &M, Env &E, int n_outer) {
           pointvel(b, r, v);
           for (int t = 0; t < 2; t++) {
             float d[3] = {t == 0 ? 1.f : 0.f, 0, t == 1 ? 1.f : 0.f}; const float kt = lin_k(b, im[bi], iib, r, d);
-            float dt2 = -v[t == 0 ? 0 : 2] / kt; const float lim = mu * L[0], nt = clampf(L[1 + t] + dt2, -lim, lim); dt2 = nt - L[1 + t]; L[1 + t] = nt;
+            float dt2 = -v[t == 0 ? 0 : 2] / kt; const float lim = (M.foot_mu ? 0.5f * (mu + M.foot_mu[f]) : mu) * L[0], nt = clampf(L[1 + t] + dt2, -lim, lim); dt2 = nt - L[1 + t]; L[1 + t] = nt;
             float Jt[3] = {d[0] * dt2, 0, d[2] * dt2}; apply_imp(b, im[bi], iib, r, Jt);
             pointvel(b, r, v);
           }
@@ -291,20 +299,20 @@ HD void step_env(int e, const Model &M, Env &E, int n_outer) {
       // goals written at the policy tick apply after goal_delay outer steps (World2: write time + command delay <= time)
       if (outer + 1 == E.goal_delay[e]) s[3] = E.goal_new[e * NJ + j];
       const float *p = st + M.jp[j] * SW, *c = st + M.jc[j] * SW; JG g = joint_geometry(p, c, M, j);
-      float tau; servo_step(s, P, g.coord, on, dt, &tau, power); out[OUT_TAU + j] = tau;
+      float tau; servo_step(s, P, g.coord, on, dt, &tau, power); out[out_tau(M) + j] = tau;
     }
     // ---- the IMU (World2's sensing hook, after the servo step)
     imu_step(E.imu + (size_t)e * NIMU, E.imu_par + 8 * e, E.imu_bias + 6 * e, rng, st + M.imu_b * SW, M, dt);
   }
   const float steps = (float)(n_outer * M.substeps);
   for (int f = 0; f < NF; f++) {
-    out[OUT_CONTACT + f] = (float)contact_last[f]; out[OUT_FORCE + f] = force_acc[f] / steps; out[OUT_SLIP + f] = force_acc[f] > 1e-6f ? slip_acc[f] / force_acc[f] : 0.f;
+    out[f] = (float)contact_last[f]; out[out_force(M) + f] = force_acc[f] / steps; out[out_slip(M) + f] = force_acc[f] > 1e-6f ? slip_acc[f] / force_acc[f] : 0.f;
     // lowest corner height of the sole now
     const float *b = st + M.foot_b[f] * SW; float lo = 1e9f;
     for (int c = 0; c < NC; c++) { float lc[3] = {M.foot_h[3 * f] * ((c & 1) ? 1.f : -1.f), M.foot_h[3 * f + 1] * ((c & 2) ? 1.f : -1.f), M.foot_h[3 * f + 2] * ((c & 4) ? 1.f : -1.f)}, l2[3], wl[3]; rot(M.foot_q + 4 * f, lc, l2); for (int k = 0; k < 3; k++) l2[k] += M.foot_c[3 * f + k]; rot(b + 3, l2, wl); lo = fminf(lo, b[1] + wl[1]); }
-    out[OUT_SOLE + f] = lo;
+    out[out_sole(M) + f] = lo;
   }
-  out[OUT_POWER] = power / n_outer;
+  out[out_power(M)] = power / n_outer;
   E.rng[e] = rng;
 }
 

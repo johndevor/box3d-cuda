@@ -117,6 +117,8 @@ class RampedDR:
 
 
 class DuckWalkEnv(EnvBase):
+    action_scale = ACTION_SCALE
+    box_friction = False          # (True: each contact box's friction from the model, the world's mu a multiplier)
     """E batched duck worlds (rl/common/skill.py env protocol). step(action) -> obs, priv, reward, done, info."""
 
     def __init__(self, n_envs, device="cpu", seed=0, dr=None, substeps=4, iterations=8, model_file=MODEL_FILE, dr_on=True, clock_hz=0.0, clearance_m=0.03, alive_bonus=0.1, dr_ramp=0.0):
@@ -124,8 +126,6 @@ class DuckWalkEnv(EnvBase):
         # 2*pi*clock_hz*t from the episode's start), and the reward follows a periodic reference gait (each foot swings up
         # to clearance_m in its half of the cycle, stands in the other; both stand when the command is zero)
         self.clock_hz, self.clearance, self.alive_bonus = float(clock_hz), float(clearance_m), float(alive_bonus)   # (alive_bonus: a standing-first curriculum stage)
-        self.frame = FRAME + (4 if self.clock_hz > 0 else 0)
-        self.obs_size = self.frame * HISTORY
         self.E, self.device = n_envs, torch.device(device)
         self.dr = (dr if isinstance(dr, Spec) else default_dr(**(dr or {}))) if dr_on else default_dr(**NOMINAL).override(dr if isinstance(dr, dict) else None)
         self.dr_ramp = float(dr_ramp) if dr_on else 0.0
@@ -138,6 +138,15 @@ class DuckWalkEnv(EnvBase):
         self.substeps, self.iterations = substeps, iterations
         m = json.loads(Path(model_file).read_text())
         self.m = m
+        # (sizes from the model: the duck's hand-made model drives 10 of 14 joints and has 2 soles with switches; a
+        # generated model (World2 skills/robot-model.mjs) states policy_joints, its contact boxes and how many have switches)
+        self.legs = int(m.get("policy_joints", LEGS))
+        self.nf = len(m["feet"])
+        self.nsw = int(m.get("n_switches", self.nf))
+        self.frame = 3 + 3 + 3 * self.legs + 3 + ((self.nsw + 2) if self.clock_hz > 0 else 0)
+        self.obs_size = self.frame * HISTORY
+        self.act_size = self.legs
+        self.priv_size = 3 + 3 + 3 + 1 + self.nf + self.nf + 1 + 1 + self.nf + 1
         self._build_model(m)
         self._alloc()
         self.reset()
@@ -160,6 +169,8 @@ class DuckWalkEnv(EnvBase):
         T = lambda x: torch.tensor(x, dtype=torch.float32, device=d).reshape(-1).contiguous()
         I = lambda x: torch.tensor(x, dtype=torch.int32, device=d).reshape(-1).contiguous()
         self.mf = [T(pa), T(ca), T(axis), T(ref), T(lo), T(hi), T(foot_c), T(foot_h), T(foot_q), T(imu_p), T(imu_q)]
+        if self.box_friction:      # (each box's own friction, averaged with the floor's (the world's mu) in the kernel)
+            self.mf.append(T([f.get("friction", 0.8) for f in F]))
         self.mi = [I([j["parent"] for j in J]), I([j["child"] for j in J]), I([f["body"] for f in F])]
         self.imu_b = imu["body"]
         self.dt = m["dt"]
@@ -190,21 +201,21 @@ class DuckWalkEnv(EnvBase):
         E, d, NB, NJ = self.E, self.device, self.NB, self.NJ
         z = lambda *s: torch.zeros(*s, dtype=torch.float32, device=d)
         self.state, self.inv_mass, self.inv_inertia = z(E, NB, 13), z(E, NB), z(E, NB, 3)
-        self.servo, self.sp, self.jl, self.cl = z(E, NJ, 8), z(E, NJ, 14), z(E, NJ, 8), z(E, 2, 8, 3)
+        self.servo, self.sp, self.jl, self.cl = z(E, NJ, 8), z(E, NJ, 14), z(E, NJ, 8), z(E, self.nf, 8, 3)
         self.mu, self.damp, self.imu, self.imu_par, self.imu_bias = z(E), z(E, 2), z(E, 32), z(E, 8), z(E, 6)
-        self.goal_new, self.push, self.out = z(E, NJ), z(E, 6), z(E, 9 + NJ)
+        self.goal_new, self.push, self.out = z(E, NJ), z(E, 6), z(E, 4 * self.nf + 1 + NJ)
         self.rng = torch.randint(1, 2**31 - 1, (E,), generator=self.g, dtype=torch.int32).to(d)
         self.goal_delay = torch.ones(E, dtype=torch.int32, device=d)
         self.torque_on = torch.ones(E, dtype=torch.uint8, device=d)
         self.cal = z(E, NJ)                       # encoder calibration error (steps), policy order
-        self.prev_action, self.q_obs_prev, self.cmd = z(E, LEGS), z(E, LEGS), z(E, 3)
+        self.prev_action, self.q_obs_prev, self.cmd = z(E, self.legs), z(E, self.legs), z(E, 3)
         self.hist = z(E, HISTORY, self.frame)
-        self.switch = torch.zeros(E, 2, dtype=torch.bool, device=d)
-        self.t, self.next_push, self.air, self.contact_prev = z(E), z(E), z(E, 2), z(E, 2)
-        self.stance = z(E, 2)
+        self.switch = torch.zeros(E, self.nsw, dtype=torch.bool, device=d)
+        self.t, self.next_push, self.air, self.contact_prev = z(E), z(E), z(E, self.nf), z(E, self.nf)
+        self.stance = z(E, self.nf)
         self.yaw_ref = z(E)
         self.ep_ret, self.ep_len = z(E), z(E)
-        self.last_touch_x = z(E, 2)
+        self.last_touch_x = z(E, self.nf)
         self.base_mass, self.fric_now = z(E), z(E)
 
     def _u(self, lo, hi, n):
@@ -312,7 +323,7 @@ class DuckWalkEnv(EnvBase):
         coord = self._coord()
         present = torch.round(2048 + self.home_steps + self.cal + coord * STEPS_PER_RAD) + torch.randint(-1, 2, coord.shape, generator=self.gs, device=self.device)
         q = self.sign * (present - 2048) / STEPS_PER_RAD
-        return (q - self.home)[:, :LEGS]
+        return (q - self.home)[:, :self.legs]
 
     def _frame(self):
         gyro, grav = self.imu[:, 28:31], self.imu[:, 10:13]
@@ -324,7 +335,7 @@ class DuckWalkEnv(EnvBase):
         if self.clock_hz <= 0:
             return []
         # foot switches (World2 contact_switch: closes over 2 N, opens under 1.5 N; force sigma 0.2 N) and the gait clock
-        f = self.out[:, 2:4] + 0.2 * torch.randn(self.E, 2, generator=self.gs, device=self.device)
+        f = self.o_force[:, :self.nsw] + 0.2 * torch.randn(self.E, self.nsw, generator=self.gs, device=self.device)
         self.switch = torch.where(self.switch, f > 1.5, f > 2.0)
         ph = 2 * math.pi * self.clock_hz * self.t
         return [self.switch.float(), torch.stack([torch.sin(ph), torch.cos(ph)], -1)]
@@ -357,11 +368,18 @@ class DuckWalkEnv(EnvBase):
 
     def priv(self):
         T = self.trunk()
-        return torch.cat([T["v"], T["w"], T["up"], T["h"][:, None] - self.trunk_y0, self.out[:, 0:2], self.out[:, 7:9], self.mu[:, None], self.base_mass[:, None] - 2.0,
+        return torch.cat([T["v"], T["w"], T["up"], T["h"][:, None] - self.trunk_y0, self.o_contact, self.o_sole, self.mu[:, None], self.base_mass[:, None] - 2.0,
                           self.air, self.sp[:, :1, 0] / 7.4 - 1], -1)
 
     PRIV_SIZE = 3 + 3 + 3 + 1 + 2 + 2 + 1 + 1 + 2 + 1
     priv_size, act_size = PRIV_SIZE, LEGS
+
+    # the kernel's per-call outputs (duck_sim.h out_*): per contact box, then power, then the motor torques
+    o_contact = property(lambda self: self.out[:, 0:self.nf])
+    o_force = property(lambda self: self.out[:, self.nf:2 * self.nf])
+    o_slip = property(lambda self: self.out[:, 2 * self.nf:3 * self.nf])
+    o_power = property(lambda self: self.out[:, 3 * self.nf])
+    o_sole = property(lambda self: self.out[:, 3 * self.nf + 1:4 * self.nf + 1])
 
     # -------------------------------------------------------------- the shared pipeline's protocol
     dev = property(lambda self: self.device)
@@ -393,7 +411,8 @@ class DuckWalkEnv(EnvBase):
         E, d, dr = self.E, self.device, self.dr
         a = action.clamp(-1, 1)
         target = self.home[None].repeat(E, 1)
-        target[:, :LEGS] = (self.home[None, :LEGS] + ACTION_SCALE * a).clamp(self.lim_lo[None, :LEGS], self.lim_hi[None, :LEGS])
+        L = self.legs
+        target[:, :L] = (self.home[None, :L] + self.action_scale * a).clamp(self.lim_lo[None, :L], self.lim_hi[None, :L])
         self.goal_new.copy_(self._goal_from_target(target))
         # (the step's randomness from a generator on the device, no host branches: a captured CUDA graph replays it)
         R = lambda: torch.rand(E, generator=self.gs, device=d)
@@ -428,9 +447,9 @@ class DuckWalkEnv(EnvBase):
     def _reward(self, a):
         T, dt = self.trunk(), 1.0 / RATE_HZ
         cmd = self.cmd
-        contact = self.out[:, 0:2]
+        contact = self.o_contact
         # gait bookkeeping on real lifts: a foot is in the air only with its whole sole over 6 mm (World2's judge counts 4 mm)
-        lifted = (self.out[:, 7:9] > 0.006).float()
+        lifted = (self.o_sole > 0.006).float()
         touch = (lifted < 0.5) & (self.contact_prev > 0.5)        # contact_prev holds the previous `lifted`
         self.air += dt * lifted
         moving = (cmd[:, 0].abs() > 0.02).float()
@@ -439,7 +458,7 @@ class DuckWalkEnv(EnvBase):
         self.stance = torch.where(lifted > 0.5, torch.zeros_like(self.stance), self.stance + dt)
         self.contact_prev = lifted.clone()
         single = (lifted.sum(-1) == 1).float()
-        swing_h = (self.out[:, 7:9] * lifted).clamp(max=0.03)
+        swing_h = (self.o_sole * lifted).clamp(max=0.03)
         terms = dict(
             track_vx=2.0 * torch.exp(-(T["vx"] - cmd[:, 0]) ** 2 / 0.01),
             track_vy=1.0 * torch.exp(-(T["vy"] - cmd[:, 1]) ** 2 / 0.01),
@@ -451,10 +470,10 @@ class DuckWalkEnv(EnvBase):
             single=0.6 * single * moving,
             stance=-1.0 * (self.stance > 0.6).float().sum(-1) * moving,
             clearance=10.0 * swing_h.sum(-1) * moving,
-            still=-0.5 * (1 - moving) * (self.out[:, 4:6].sum(-1) + (contact < 0.5).float().sum(-1) * 0.5),
+            still=-0.5 * (1 - moving) * (self.o_slip.sum(-1) + (contact < 0.5).float().sum(-1) * 0.5),
             action_rate=-0.02 * ((a - self.prev_action) ** 2).sum(-1),
-            power=-0.002 * self.out[:, 6],
-            slip=-0.5 * (self.out[:, 4:6] * contact).sum(-1),
+            power=-0.002 * self.o_power,
+            slip=-0.5 * (self.o_slip * contact).sum(-1),
             ang_vel=-0.05 * (T["w"][:, 0] ** 2 + T["w"][:, 2] ** 2),
             hip_pose=-0.3 * (a[:, [0, 1, 5, 6]] ** 2).sum(-1),
             heading=-2.0 * torch.atan2(torch.sin(T["yaw"] - self.yaw_ref), torch.cos(T["yaw"] - self.yaw_ref)) ** 2,
@@ -463,7 +482,7 @@ class DuckWalkEnv(EnvBase):
             ph = 2 * math.pi * self.clock_hz * (self.t - dt)
             swing = torch.stack([torch.sin(ph), torch.sin(ph + math.pi)], -1).clamp(min=0) * moving[:, None]
             h_ref = self.clearance * swing
-            h = self.out[:, 7:9].clamp(min=0)
+            h = self.o_sole.clamp(min=0)
             stance_ref = swing <= 0
             for k in ("air", "single", "clearance", "stance"):
                 terms.pop(k, None)
