@@ -32,3 +32,23 @@ SKILL = Skill(
     description="connector mating with a latch (World2 insert contract)",
 )
 SKILL.code_names = CODE_NAMES
+
+
+# ---------------------------------------------------------------- sim-match (World2 scripts/sim-match.mjs connector_mate)
+def sim_match(w2, device):
+    """The sliding fit and the controller: World2 latches a connector by rule (a push at depth), so the detent is off here
+    (detent=0) and the check is the same insert probe as the peg's on the plug-in-pocket geometry."""
+    from rl.common.simmatch import insert_checks, insert_descend
+    from rl.skills.peg_insert.skill import pinned_insert_cfg
+    c, mm = w2["case"], 1000.0
+    cfg = dict(pinned_insert_cfg(w2), w_mm=c["w_m"] * mm, t_mm=c["t_m"] * mm, length_mm=c["L_m"] * mm, depth_mm=c["depth_m"] * mm, floor_extra_mm=0.0,
+               floor_flush_p=1.0, funnel_mm=c["host_chamfer_m"] * mm, yaw_err_deg=0.0, max_force_n=w2.get("max_force_n", 40.0), physical_p=0.0,
+               feature_known_p=1.0, detent=0.0, density=c["mass_kg"] / (c["w_m"] * c["t_m"] * c["L_m"]))
+    cfg.pop("host_chamfer_mm")
+    env = make_env(1, device=device, seed=0, cfg=cfg)
+    T, end = insert_descend(env, w2)
+    checks = insert_checks(w2, T, end, c["depth_m"] * mm, seated_codes=("depth", "policy", "stop", "NOT_LATCHED"), need_success=False)
+    return checks, dict(trace=T, end=end, cfg=cfg, note="detent off: World2 has no latch force (it latches by rule); the detent kernel is checked against its CPU oracle (rl/ext/test_detent.py)")
+
+
+SKILL.sim_match = sim_match

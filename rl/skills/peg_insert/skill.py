@@ -49,3 +49,34 @@ SKILL = Skill(
     description="peg-in-hole insertion (World2 insert contract)",
 )
 SKILL.code_names = CODE_NAMES
+
+
+# ---------------------------------------------------------------- sim-match (rl/common/simmatch.py; World2 scripts/sim-match.mjs peg_insert)
+def pinned_insert_cfg(w2):
+    """Every randomization pinned to World2's probe case: no belief errors, no latency or lag, the 2 kg virtual mass, its
+    F/T sensor profile, its friction."""
+    import math
+    c, mm = w2["case"], 1000.0
+    sig = w2.get("estimate_sigma", [0.0005] * 3 + [0.005] * 3)
+    f = ((w2.get("ft_sigma") or {}).get("force_n") or [2.5])
+    f = f[0] if isinstance(f, list) else f
+    prof = 2 if f < 0.5 else 1 if f < 2.0 else 0          # FT_PROFILES: ur12e 2.5 N, ur5e 1.75 N, ft300s 0.1 N
+    return dict(start_height_mm=w2["start_offset_m"][1] * mm, start_lateral_mm=0.0, start_tilt_deg=0.0,
+                target_sigma_mm=sig[0] * mm, target_sigma_rot_deg=math.degrees(sig[3]), in_hand_sigma_mm=w2.get("in_hand_sigma_m", 0.0005) * mm,
+                target_err_z_mm=0.0, in_hand_err_z_mm=0.0, max_force_n=w2.get("max_force_n", 40.0), ft_profile=prof, ft_extra_delay_s=0.0,
+                ft_gain_err=0.0, ft_noise_mult=1.0, flange_h=0.1, action_latency_p=0.0, motor_lag_s=0.0, vmass=2.0, friction=c["friction"],
+                pose_scale=0.0, belief_error_scale=0.0, clearance_mm=c["clearance_m"] * mm, host_chamfer_mm=c["host_chamfer_m"] * mm)
+
+
+def sim_match(w2, device):
+    from rl.common.simmatch import insert_checks, insert_descend
+    c, mm = w2["case"], 1000.0
+    d, L, D = c["d_m"] * mm, c["L_m"] * mm, c["depth_m"] * mm
+    cfg = dict(pinned_insert_cfg(w2), d_mm=d, length_over_d=L / d, depth_over_d=D / d, part_chamfer_mm=c.get("part_chamfer_m", 0.0) * mm,
+               density=c["mass_kg"] / (c["d_m"] ** 2 * c["L_m"] * 3.141592653589793 / 4))
+    env = make_env(1, device=device, seed=0, cfg=cfg)
+    T, end = insert_descend(env, w2)
+    return insert_checks(w2, T, end, D), dict(trace=T, end=end, cfg=cfg)
+
+
+SKILL.sim_match = sim_match

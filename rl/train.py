@@ -48,7 +48,7 @@ def check_sim_match(path, skill, prov):
         problems.append(f"it ran on other sources ({rep.get('provenance', {}).get('rl_sources')} vs {prov['rl_sources']})")
     if problems:
         raise SystemExit(f"sim-match gate: {path}: " + "; ".join(problems) + " -> training not allowed (rerun python -m rl.simmatch, or --no-sim-match for a dev run)")
-    return dict(report=str(path), pass_=True, checks=[{k: c[k] for k in ("name", "value", "tolerance", "pass")} for c in rep["checks"]], world2=rep.get("world2", {}))
+    return {"report": str(path), "pass": True, "checks": [{k: c[k] for k in ("name", "value", "tolerance", "pass")} for c in rep["checks"]], "world2": rep.get("world2", {})}
 
 
 def main():

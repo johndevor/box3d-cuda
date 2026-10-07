@@ -120,3 +120,57 @@ SKILL = Skill(
     description="Open Duck Mini v2 walking (World2 walk contract)",
 )
 SKILL.transfer = transfer
+
+
+# ---------------------------------------------------------------- sim-match (World2 scripts/sim-match.mjs duck_walk)
+PITCH = [2, 3, 4, 7, 8, 9]          # hips, knees, ankles (policy order)
+
+
+def squat(k):
+    s = math.sin(2 * math.pi * k / 40)
+    a = torch.zeros(1, LEGS)
+    a[0, 2], a[0, 3], a[0, 4], a[0, 7], a[0, 8], a[0, 9] = -0.5 * s, s, -0.5 * s, 0.5 * s, s, -0.5 * s
+    return a
+
+
+def sim_match(w2, device):
+    """The open-loop 1 Hz squat after a 1 s stand, the nominal robot (DR off), compared tick by tick with World2's: the
+    encoder angles the policy would read, and the trunk's height and tilt (each from its first frame)."""
+    import numpy as np
+    from rl.common.simmatch import check, lag_ticks, rms
+    e = DuckWalkEnv(1, device=device, seed=0, dr_on=False, dr=dict(push_p=0.0, cmd_zero_p=0.0, cmd_vx=(0.0, 0.0), episode_s=1e9), clock_hz=0.0,
+                    **RECIPE["env"])
+    for _ in range(int(w2["settle_s"] * RATE_HZ)):
+        e.step(torch.zeros(1, LEGS, device=e.dev), autoreset=False)
+    q, y, up = [], [], []
+    obs, _ = e.observe()
+    for k in range(w2["ticks"]):
+        T = e.trunk()
+        q.append(obs[0, 6:16].tolist()); y.append(float(T["h"][0])); up.append(T["up"][0].tolist())
+        obs, _, _, _, _ = e.step(squat(k).to(e.dev), autoreset=False)
+    W = w2["trace"]
+    qw, qb = np.array(W["leg_joint_pos"])[:, PITCH], np.array(q)[:, PITCH]
+    yw, yb = np.array(W["trunk_y"]) - W["trunk_y"][0], np.array(y) - y[0]
+    u0 = np.array(up[0])
+    tb = np.degrees(np.arccos(np.clip(np.array(up) @ u0, -1, 1)))
+    tw = np.array(W["trunk_tilt_deg"])
+    p2p = lambda x: float(x[40:].max() - x[40:].min())
+    off = (qb - qw).mean(0)
+    checks = [
+        check("pitch joint static offset, worst joint (rad)", float(np.abs(off).max()), 0.03,
+              "the mean encoder difference per joint (the standing sag under load, servo statics); 0.03 rad is 12 encoder steps"),
+        check("pitch joint dynamic RMS, offsets removed (rad)", rms((qw + off).ravel(), qb.ravel()), 0.012,
+              "the motion itself, hips/knees/ankles; a one-tick (25 ms) servo lag in this 0.3 rad 1 Hz squat adds 0.033 rad RMS"),
+        check("pitch joint lag box3d vs World2, worst joint (ticks)", max((lag_ticks(qw[:, j], qb[:, j]) for j in range(6)), key=abs), 0.4,
+              "cross-correlation peak, sub-tick: |lag| under 10 ms (the servo-lag class of bug: World2's motors once lagged under 16 PGS passes)"),
+        check("pitch joint amplitude ratio - 1, worst joint", max((p2p(qb[:, j]) / p2p(qw[:, j]) - 1 for j in range(6)), key=abs), 0.1,
+              "peak-to-peak after the first second: servo gain and torque limits (the same bug: hips that barely moved)"),
+        check("trunk height RMS (mm)", rms(yw, yb) * 1000, 2.0, "the trunk's rise and fall (about 28 mm peak to peak): gravity, masses, sole contact"),
+        check("trunk tilt RMS (deg)", rms(tw, tb), 1.0,
+              "the trunk's tilt from its first frame; 1 degree is about 2 sigma of the IMU's attitude bias (accel bias 0.08 m/s2): the policy "
+              "cannot tell a smaller difference from its own sensor's"),
+    ]
+    return checks, dict(joint_pos=q, trunk_y=y, trunk_tilt_deg=tb.round(4).tolist())
+
+
+SKILL.sim_match = sim_match
