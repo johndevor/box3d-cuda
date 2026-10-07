@@ -28,8 +28,10 @@ RECIPE = dict(
     stages=[
         dict(name="balance", env=dict(clock_hz=0.0, alive_bonus=0.5), cfg=dict(push_p=0.0, cmd_wz=0.0, init_yaw=0.0),
              ppo=dict(ent=0.003, max_minutes=15, max_steps=250e6)),
-        dict(name="v1", env=dict(clock_hz=0.0), ppo=dict(ent=0.004, max_minutes=40, max_steps=600e6)),
-        dict(name="v2", env=dict(clock_hz=2.5, clearance_m=0.035), ppo=dict(ent=0.002, max_minutes=50, max_steps=1.2e9)),
+        # (v2 50 min / 900 M steps walked 26/30 in World2 against the shipped v2's 30/30, failing on sideways drift:
+        # the shipped one had ~800 M steps of v1 fine-tunes before its 440 M of v2; so v1 and v2 run longer)
+        dict(name="v1", env=dict(clock_hz=0.0), ppo=dict(ent=0.004, max_minutes=45, max_steps=800e6)),
+        dict(name="v2", env=dict(clock_hz=2.5, clearance_m=0.035), ppo=dict(ent=0.002, max_minutes=90, max_steps=2.0e9)),
     ],
 )
 CRITERIA = dict(window_s=10.0, vx=0.15, settle_s=1.0, min_forward_m=0.5, max_lateral_m=0.5, min_liftoffs=4, sole_clearance_m=0.004,
