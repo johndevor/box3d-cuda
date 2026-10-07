@@ -88,8 +88,13 @@ def main():
     ap.add_argument("--dest", required=True)
     ap.add_argument("--extra", default=None, help="JSON file merged into manifest.training")
     ap.add_argument("--allow-cpu", action="store_true")
+    ap.add_argument("--kernel-check", default=None, help="the output of the extensions' CUDA-vs-oracle tests (rl/ext/test_*.py), recorded in the manifest")
     a = ap.parse_args()
-    print(json.dumps(export(a.run, a.id, a.dest, a.extra, a.allow_cpu)))
+    extra = json.loads(Path(a.extra).read_text()) if a.extra else {}
+    if a.kernel_check:
+        lines = [ln for ln in Path(a.kernel_check).read_text().splitlines() if ln.strip()]
+        extra["kernel_oracle_check"] = [json.loads(ln) if ln.startswith("{") else ln for ln in lines][-6:]
+    print(json.dumps(export(a.run, a.id, a.dest, extra or None, a.allow_cpu)))
 
 
 if __name__ == "__main__":

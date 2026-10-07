@@ -201,7 +201,8 @@ def test_cuda_matches_oracle():
                 P[i] = torch.tensor(p)
                 Jc[i] = torch.tensor(j, device="cuda")
             Pc = P.cuda()
-    print(dict(compared=compared, branch_mismatch=mismatched, rate=mismatched / compared, **worst))
+    import json
+    print(json.dumps(dict(test="screw_joint.cu vs screw_reference.py", compared=compared, branch_mismatch=mismatched, rate=mismatched / compared, **worst)))
     assert mismatched / compared < 5e-3
     assert worst["pos"] < 5e-3 and worst["quat"] < 1e-4 and worst["vel"] < 0.05 and worst["theta"] < 1e-3 and worst["torque"] < 1e-3
 
