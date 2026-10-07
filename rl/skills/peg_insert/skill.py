@@ -21,7 +21,7 @@ MANIP_RECIPE = dict(
 # The fast recipe (default): a residual over the scripted insertion (rl/common/priors.py ScriptedInsertPrior), asymmetric
 # PPO (the policy on its observations, the critic on the privileged state too), many worlds, CUDA-graph stepping.
 def residual_recipe(minutes=4.0, envs=131072, **ppo):
-    return dict(kind="asymmetric", envs=envs, eval_n=2048, eval_seed=10_000, graphs=True,
+    return dict(kind="asymmetric", envs=envs, eval_n=2048, eval_seed=10_000, graphs=False,
                 model=dict(prior=dict(kind="scripted_insert", args={}), residual_scale=1.0, log_std=-1.2, init_bias={}, init_log_std={}),
                 ppo=dict(horizon=32, lr=3e-4, gamma=0.99, lam=0.95, clip=0.2, epochs=4, minibatches=4, ent=0.0, kl="stop", kl_target=0.03,
                          score="success", min_episodes=4000, plateau_iters=30, min_iters=20, max_minutes=minutes, max_steps=3e9, **ppo))

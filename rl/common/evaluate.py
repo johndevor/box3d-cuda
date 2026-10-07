@@ -37,8 +37,6 @@ def onnx_act(path):
 
 def episodic(skill, act_fn, cfg, n, seed, device, max_ticks=None, env=None):
     env = skill.make_env(n, device=device, seed=seed, cfg=cfg, **(env or {}))
-    if env.dev.type == "cuda":
-        env.use_graphs(True)
     obs, priv = env.observe()
     p0 = {k: v.clone() for k, v in getattr(env, "p", {}).items() if torch.is_tensor(v)}
     finished = torch.zeros(n, dtype=torch.bool, device=env.dev)
