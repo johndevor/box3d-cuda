@@ -48,7 +48,32 @@ def sim_match(w2, device):
     env = make_env(1, device=device, seed=0, cfg=cfg)
     T, end = insert_descend(env, w2)
     checks = insert_checks(w2, T, end, c["depth_m"] * mm, seated_codes=("depth", "policy", "stop", "NOT_LATCHED"), need_success=False)
-    return checks, dict(trace=T, end=end, cfg=cfg, note="detent off: World2 has no latch force (it latches by rule); the detent kernel is checked against its CPU oracle (rl/ext/test_detent.py)")
+    out = dict(trace=T, end=end, cfg=cfg, note="default probe: detent off (World2 latches by rule); the interaction probe: World2's opt-in click curve against the detent")
+    W = w2.get("interaction")
+    if W and W.get("click"):
+        # World2's opt-in connector click (operations/interaction.mjs) against the detent, pinned to its curve
+        import numpy as np
+        from rl.common.simmatch import check
+        cv = W["click"]["curve"]
+        cfg2 = dict(cfg, detent=1.0, peak_n=cv["peak"], click_before_depth_mm=(cv["depth"] - cv["x_click"]) * mm, ramp_mm=(cv["x_click"] - cv["x_ramp"]) * mm,
+                    drop_mm=cv["drop"] * mm, res_n=cv["res"], hold_over_peak=cv["hold"] / cv["peak"], jam_deg=89.0, bend_n=1e6, max_over_peak=10.0)
+        env2 = make_env(1, device=device, seed=0, cfg=cfg2)
+        T2, end2 = insert_descend(env2, W)
+        latched_b = bool(env2.v["det_state"][0, 0] > 0.5) or bool(end2 and end2["code"] in ("depth", "stop", "policy") and end2["success"])
+        wp, wf = np.array(W["trace"]["progress_mm"]), np.array(W["trace"]["push_n"])
+        bp, bf = np.array(T2["progress_mm"]), np.array(T2["push_n"])
+        zone = lambda p: (p > (cv["x_ramp"] - 0.0005) * mm) & (p < (cv["depth"] - 0.05e-3) * mm)
+        pk_w, pk_b = (wf[zone(wp)].max() if zone(wp).any() else None), (bf[zone(bp)].max() if zone(bp).any() else None)
+        at_w, at_b = (wp[zone(wp)][wf[zone(wp)].argmax()] if pk_w is not None else None), (bp[zone(bp)][bf[zone(bp)].argmax()] if pk_b is not None else None)
+        checks += [
+            check("[click] peak push through the click (N, box3d - World2)", (pk_b - pk_w) if pk_w is not None and pk_b is not None else None, max(1.0, 0.15 * cv["peak"]),
+                  "the latch's curve felt through the same impedance controller: rise to the peak, the drop (1 N or 15 % of the peak)"),
+            check("[click] depth at the peak push (mm, box3d - World2)", (at_b - at_w) if at_w is not None and at_b is not None else None, 0.6,
+                  "where the click happens (the probe advances 0.5 mm per 30 Hz tick)"),
+            check("[click] latched in both", bool(W["click"]["latched"]) and latched_b, ("equal", True), "World2: the click state at the seat; box3d: the detent's latch"),
+        ]
+        out["interaction"] = dict(trace=T2, end=end2, cfg=cfg2)
+    return checks, out
 
 
 SKILL.sim_match = sim_match

@@ -70,6 +70,8 @@ SPEC = Spec(dict(
     substeps_per_world_step=4, solver_iterations=8, timeout_s=LIMITS["timeout_s"],
     pose_scale=1.0,                           # multiplies the belief errors and offsets (hard sets)
     set_torque_nm=0.0,                        # > 0: every screw's set torque (else drawn in its size's range)
+    layout_belief_p=Bern(0.0),                # the believed hole axis is the layout's (straight down), not the insert's
+    full_wrench=0.0,                          # 1: the wrist reads the bit's full compliance wrench while driving (World2 opt-in)
     curriculum_frac=0.3,                     # the teacher's pose errors ramp 0.3 -> 1 x over this fraction of its time
 ))
 
@@ -218,6 +220,10 @@ class ScrewDriveBatch(EnvBase):
         P["rsig"] = torch.deg2rad(D("rot_sigma_deg"))
         e = torch.cat([rn(m, 2) * P["rsig"][:, None] * ps, torch.zeros(m, 1, device=d)], -1)
         P["bu"] = qrot(quat_of(e), P["uins"])
+        # (layout_belief_p: the program believes the layout's upright axis, as World2's crooked-insert cases: the insert's
+        # whole tilt is the belief's error)
+        lay = D("layout_belief_p") > 0.5
+        P["bu"] = torch.where(lay[:, None], qrot(quat_of(e), down), P["bu"])
         P["belief_err"] = torch.acos((P["bu"] * P["uins"]).sum(-1).clamp(-1, 1))
         P["ssig"] = D("seat_sigma_mm") * 1e-3
         P["ssigz"] = D("seat_sigma_z_mm") * 1e-3
@@ -424,14 +430,16 @@ class ScrewDriveBatch(EnvBase):
         self._manifold()
         C = torch.stack([v["wcmd"], fax], -1)
         self._screw(C)
-        flange = tip + qrot(q, torch.stack([0 * M, 0 * M, p["L"] + p["flange"]], -1))
+        # (the flange is on the wrist: along the commanded tool orientation nq, not the screw's own (it tilts on the compliant bit))
+        flange = tip + qrot(nq, torch.stack([0 * M, 0 * M, p["L"] + p["flange"]], -1))
         Tf = Tq + torch.cross(tip - flange, F, dim=-1)
         T = self.J[:, SR.J_TORQUE]
         free = torch.cat([-F, -Tf - ax * T[:, None]], -1)
         bu = p["bu"]
         held = torch.cat([-bu * v["fcmd"][:, None], -bu * T[:, None]], -1)
         eng = (self.J[:, SR.J_MODE] >= 0.5)[:, None]
-        return torch.where(eng, held, free)
+        # (full_wrench: World2's opt-in driving_wrench 'full': the bit's compliance stays on the wrist while the thread holds)
+        return free if self.cfg["full_wrench"] > 0.5 else torch.where(eng, held, free)
 
     def _manifold(self):
         if self.dev.type == "cuda":

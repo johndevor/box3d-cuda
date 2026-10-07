@@ -80,20 +80,26 @@ def sim_match(w2, device):
                seat_sigma_z_mm=c["seat_sigma_m"] * mm, in_hand_mm=0.0, start_height_mm=c["start_height_m"] * mm, wobble_deg=0.0, stiff_mult=1.0,
                torque_noise_nm=c["torque_sigma_nm"], torque_delay_p=0.0, ft_profile=1, ft_extra_delay_s=0.0, ft_gain_err=0.0, ft_noise_mult=1.0,
                action_latency_p=0.0, motor_lag_s=0.0, vmass=2.0, friction=0.3, pose_scale=0.0, set_torque_nm=c["torque_nm"], curriculum_frac=0.0)
-    env = make_env(1, device=device, seed=0, cfg=cfg)
-    a = torch.tensor([w2["action"]], dtype=torch.float32, device=env.dev)
-    obs, _ = env.observe()
-    T = dict(t=[], torque_nm=[], turns=[], seat_z_mm=[])
-    end = None
-    for k in range(int(env.cfg["timeout_s"] * 30) + 2):
-        T["t"].append(round(k / 30, 3)); T["torque_nm"].append(float(obs[0, 19])); T["turns"].append(float(obs[0, 20]))
-        T["seat_z_mm"].append(float((env._tip()[0, 2] + env.p["L"][0]) * mm))
-        obs, _, r, done, info = env.step(a, autoreset=False)
-        if bool(done[0]):
-            T["t"].append(round((k + 1) / 30, 3)); T["torque_nm"].append(float(obs[0, 19])); T["turns"].append(float(obs[0, 20]))
-            T["seat_z_mm"].append(float((env._tip()[0, 2] + env.p["L"][0]) * mm))
-            end = dict(code=CODE_NAMES.get(int(info["code"][0])), success=bool(info["success"][0]), torque_nm=round(float(env.J[0, SR.J_TORQUE]), 4))
-            break
+    def replay(cfg_, act):
+        env = make_env(1, device=device, seed=0, cfg=cfg_)
+        obs, _ = env.observe()
+        T = dict(t=[], torque_nm=[], turns=[], seat_z_mm=[], moment_xy_nm=[], mode=[], clicked=[])
+        end = None
+        rec = lambda k, o: (T["t"].append(round(k / 30, 3)), T["torque_nm"].append(float(o[0, 19])), T["turns"].append(float(o[0, 20])),
+                            T["seat_z_mm"].append(float((env._tip()[0, 2] + env.p["L"][0]) * mm)), T["moment_xy_nm"].append(float(math.hypot(o[0, 14], o[0, 15]))),
+                            T["mode"].append(int(env.J[0, SR.J_MODE])), T["clicked"].append(float(env.J[0, SR.J_CLICKED])))
+        for k in range(int(env.cfg["timeout_s"] * 30) + 2):
+            rec(k, obs)
+            obs, _, r, done, info = env.step(act(obs).to(env.dev), autoreset=False)
+            if bool(done[0]):
+                rec(k + 1, obs)
+                end = dict(code=CODE_NAMES.get(int(info["code"][0])), success=bool(info["success"][0]), torque_nm=round(float(env.J[0, SR.J_TORQUE]), 4),
+                           clicked=max(T["clicked"]) > 0.5, crossed=bool(env.J[0, SR.J_CROSSED] > 0.5))
+                break
+        return T, end
+
+    a = torch.tensor([w2["action"]], dtype=torch.float32)
+    T, end = replay(cfg, lambda o: a)
     W = w2["trace"]
 
     def rundown(tr):
@@ -120,7 +126,44 @@ def sim_match(w2, device):
         check("final torque reading (N m, box3d - World2)", T["torque_nm"][-1] - W["torque_nm"][-1], 0.1,
               "both stop at the clutch's set torque (0.6 N m) with the reading noise"),
     ]
-    return checks, dict(trace=T, end=end, cfg=cfg)
+    out = dict(trace=T, end=end, cfg=cfg)
+    I = w2.get("interaction")
+    if I:
+        # World2's opt-in thread catch and full driving wrench (operations/interaction.mjs) on a crooked insert, the back-turn
+        # schedule: box3d catch mode A (mode_b_p 0) and the full wrench, the insert pinned to the same tilt
+        cfg2 = dict(cfg, mode_b_p=0.0, insert_tilt_deg=I["case"]["insert_tilt_deg"], full_wrench=1.0, layout_belief_p=1.0, flange_h=I["case"].get("flange_to_tcp_m") or 0.1,
+                    **({"ft_noise_mult": 0.0, "ft_tare_offset": 0.0, "torque_noise_nm": 0.0} if (I.get("ft") or {}).get("noise") == 0 else {}))
+        base = torch.tensor([I["schedule"]["base"]], dtype=torch.float32)
+
+        def sched(o):
+            x = base.clone()
+            x[0, 5] = float(min(0.25, max(-1.0, 2.5 * float(o[0, 48]) - 3.0)))     # clamp(2.5 t - 3, -1, 0.25)
+            return x
+        T2, end2 = replay(cfg2, sched)
+        Wi = I["trace"]
+        start_b = next((T2["t"][i] for i, m in enumerate(T2["mode"]) if m >= 1), None)
+        start_w = (I.get("thread_start") or {}).get("skill_s")
+
+        def moment(tr, t0):
+            if t0 is None:
+                return None
+            z, t, m = np.array(tr["seat_z_mm"]), np.array(tr["t"]), np.array(tr["moment_xy_nm"])
+            sel = (t > t0 + 0.2) & (z > 0.3)
+            return float(m[sel].mean()) if sel.any() else None
+        mw, mb = moment(Wi, start_w), moment(T2, start_b)
+        checks += [
+            check("[catch] clicked by the back-turn in both", bool(I.get("clicked")) and bool(end2 and end2["clicked"]), ("equal", True),
+                  "turning back inside the capture drops the lead thread into the start"),
+            check("[catch] thread start time (s, box3d - World2)", (start_b - start_w) if start_b is not None and start_w is not None else None, 0.15,
+                  "the forward turn after the click catches at once (forward resumes at 1.2 s)"),
+            check("[catch] clean start on the 2-degree insert in both", (not (I.get("thread_start") or {}).get("cross_threaded", True)) and bool(end2 and not end2["crossed"]), ("equal", True),
+                  "2 degrees is under the cross-thread angle plus the click's 1 degree"),
+            check("[catch] seated in both", bool(I.get("end", {}).get("ok")) and bool(end2 and end2["code"] == "seated"), ("equal", True), ""),
+            check("[wrench] mean lateral moment while running down (N m, box3d - World2)", (mb - mw) if mb is not None and mw is not None else None, max(0.05, 0.3 * (mw or 0)),
+                  "the full driving wrench: the bit's moment of the tilt between the tool and the screw on the crooked axis, with the lateral spring about the flange (0.05 N m or 30 %)"),
+        ]
+        out["interaction"] = dict(trace=T2, end=end2, cfg=cfg2, start_s=start_b, moment_mean_nm=mb, world2_moment_mean_nm=mw)
+    return checks, out
 
 
 SKILL.sim_match = sim_match
