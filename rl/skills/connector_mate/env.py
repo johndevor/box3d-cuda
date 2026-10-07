@@ -378,14 +378,15 @@ class ConnectorMateBatch(PegInsertBatch):
         info = dict(code=code, success=success, timeout=code == 4, true_depth=tp, clear=p["clear"].clone(), d=p["d"].clone(),
                     latched=latched, phys=p["phys"] > 0.5, peak=p["fpk"].clone())
         nonfinite = ~torch.isfinite(self.state).all(-1).all(-1)
-        if nonfinite.any():
+        if True:  # (a solver blow-up ends the episode as a failure; unconditional masked updates: no host sync)
             done = done | nonfinite
             code = torch.where(nonfinite, torch.full_like(code, 9), code)
             info["code"] = code
             info["success"] = info["success"] & ~nonfinite
             r = torch.where(nonfinite, torch.full_like(r, -3.0), r)
-            self.state[nonfinite] = 0
-            self.state[nonfinite, :, 6] = 1
+            blank = torch.zeros_like(self.state)
+            blank[:, :, 6] = 1
+            self.state.copy_(torch.where(nonfinite[:, None, None], blank, self.state))
         return obs, r, done, info
 
 

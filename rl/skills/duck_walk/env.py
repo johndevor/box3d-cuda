@@ -102,6 +102,7 @@ class DuckWalkEnv(EnvBase):
         self.dr = (dr if isinstance(dr, Spec) else default_dr(**(dr or {}))) if dr_on else default_dr(**NOMINAL).override(dr if isinstance(dr, dict) else None)
         self.n = n_envs
         self.g = torch.Generator(device="cpu").manual_seed(seed)
+        self.gs = torch.Generator(device=self.device).manual_seed(seed + 7919)    # (the steps' randomness, on the device)
         self.ext = load_duck_ext(self.device)
         self.substeps, self.iterations = substeps, iterations
         m = json.loads(Path(model_file).read_text())
@@ -278,7 +279,7 @@ class DuckWalkEnv(EnvBase):
     def _q_obs(self):
         """the program's leg joint angles from the encoders (URDF convention minus the standing pose), policy order (legs)."""
         coord = self._coord()
-        present = torch.round(2048 + self.home_steps + self.cal + coord * STEPS_PER_RAD) + torch.randint(-1, 2, coord.shape, generator=self.g).to(self.device)
+        present = torch.round(2048 + self.home_steps + self.cal + coord * STEPS_PER_RAD) + torch.randint(-1, 2, coord.shape, generator=self.gs, device=self.device)
         q = self.sign * (present - 2048) / STEPS_PER_RAD
         return (q - self.home)[:, :LEGS]
 
@@ -292,7 +293,7 @@ class DuckWalkEnv(EnvBase):
         if self.clock_hz <= 0:
             return []
         # foot switches (World2 contact_switch: closes over 2 N, opens under 1.5 N; force sigma 0.2 N) and the gait clock
-        f = self.out[:, 2:4] + 0.2 * torch.randn(self.E, 2, generator=self.g).to(self.device)
+        f = self.out[:, 2:4] + 0.2 * torch.randn(self.E, 2, generator=self.gs, device=self.device)
         self.switch = torch.where(self.switch, f > 1.5, f > 2.0)
         ph = 2 * math.pi * self.clock_hz * self.t
         return [self.switch.float(), torch.stack([torch.sin(ph), torch.cos(ph)], -1)]
@@ -302,7 +303,7 @@ class DuckWalkEnv(EnvBase):
         return self._extra()
 
     def obs(self):
-        return self.hist.reshape(self.E, -1)
+        return self.hist.reshape(self.E, -1).clone()    # (a copy: hist is updated in place)
 
     def _step_physics(self):
         ef = [self.state, self.inv_mass, self.inv_inertia, self.servo, self.sp, self.jl, self.cl, self.mu, self.damp, self.imu, self.imu_par, self.imu_bias, self.goal_new, self.push, self.out]
@@ -343,7 +344,7 @@ class DuckWalkEnv(EnvBase):
 
     # -------------------------------------------------------------- step
     def step(self, action, autoreset=True):
-        obs, priv, reward, done, info = self._step(action)
+        obs, priv, reward, done, info = self._run_step(action)
         if autoreset and done.any():
             self.reset(done)
             obs, priv = self.obs(), self.priv()
@@ -355,26 +356,26 @@ class DuckWalkEnv(EnvBase):
         target = self.home[None].repeat(E, 1)
         target[:, :LEGS] = (self.home[None, :LEGS] + ACTION_SCALE * a).clamp(self.lim_lo[None, :LEGS], self.lim_hi[None, :LEGS])
         self.goal_new.copy_(self._goal_from_target(target))
-        self.goal_delay.copy_((1 + torch.randint(dr["goal_extra_delay"][0], dr["goal_extra_delay"][1] + 1, (E,), generator=self.g)).int().to(d))
+        # (the step's randomness from a generator on the device, no host branches: a captured CUDA graph replays it)
+        R = lambda: torch.rand(E, generator=self.gs, device=d)
+        self.goal_delay.copy_((1 + torch.randint(dr["goal_extra_delay"][0], dr["goal_extra_delay"][1] + 1, (E,), generator=self.gs, device=d)).int())
         # pushes: a random horizontal velocity change of the trunk (impulse = dv * duck mass)
         self.push.zero_()
-        due = (self.t >= self.next_push) & (torch.rand(E, generator=self.g).to(d) < dr["push_p"])
-        if due.any():
-            ang = torch.rand(E, generator=self.g).to(d) * 2 * math.pi
-            dv = torch.rand(E, generator=self.g).to(d) * dr["push_dv"]
-            imp = (dv * self.base_mass)[:, None] * torch.stack([torch.cos(ang), torch.zeros_like(ang), torch.sin(ang)], -1)
-            self.push[:, :3] = torch.where(due[:, None], imp, torch.zeros_like(imp))
-            self.next_push = torch.where(due, self.t + self._u(*dr["push_interval_s"], E), self.next_push)
+        due = (self.t >= self.next_push) & (R() < dr["push_p"])
+        ang, dv = R() * 2 * math.pi, R() * dr["push_dv"]
+        imp = (dv * self.base_mass)[:, None] * torch.stack([torch.cos(ang), torch.zeros_like(ang), torch.sin(ang)], -1)
+        self.push[:, :3] = torch.where(due[:, None], imp, torch.zeros_like(imp))
+        lo, hi = dr["push_interval_s"]
+        self.next_push = torch.where(due, self.t + lo + (hi - lo) * R(), self.next_push)
         self._step_physics()
         self.t += 1.0 / RATE_HZ
         # a yaw-rate command (a heading controller on the robot sends these): the command frame turns with it, and it
         # changes now and then
         self.yaw_ref = self.yaw_ref + self.cmd[:, 2] / RATE_HZ
         if dr["cmd_wz"] > 0:
-            ch = torch.rand(E, generator=self.g).to(d) < 1.0 / (dr["cmd_wz_change_s"] * RATE_HZ)
-            if ch.any():
-                nw = self._u(-dr["cmd_wz"], dr["cmd_wz"], E) * (torch.rand(E, generator=self.g).to(d) < dr["cmd_wz_p"]).float()
-                self.cmd[:, 2] = torch.where(ch, nw, self.cmd[:, 2])
+            ch = R() < 1.0 / (dr["cmd_wz_change_s"] * RATE_HZ)
+            nw = (-dr["cmd_wz"] + 2 * dr["cmd_wz"] * R()) * (R() < dr["cmd_wz_p"]).float()
+            self.cmd[:, 2] = torch.where(ch, nw, self.cmd[:, 2])
         q_obs = self._q_obs()
         fr = torch.cat([self.imu[:, 28:31], self.imu[:, 10:13], q_obs, (q_obs - self.q_obs_prev) * RATE_HZ * 0.1, a, self.cmd] + self._extra_after_tick(), -1)
         self.q_obs_prev = q_obs

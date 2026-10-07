@@ -17,6 +17,7 @@
 #include <torch/extension.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <ATen/cuda/CUDAContext.h>
 
 // params columns
 enum { P_XRAMP = 0, P_XCLICK, P_DROPW, P_FPEAK, P_FRES, P_FWD, P_THJAM, P_XJAM, P_FJAM, P_FBEND, P_XPIN, P_COUNT };
@@ -70,7 +71,7 @@ std::vector<torch::Tensor> detent_step_cuda(torch::Tensor x, torch::Tensor v, to
   auto st = state.clone();
   auto J = torch::zeros_like(x), clicked = torch::zeros_like(x);
   int threads = 256, blocks = (n + threads - 1) / threads;
-  detent_kernel<<<blocks, threads>>>(x.data_ptr<float>(), v.data_ptr<float>(), tilt.data_ptr<float>(), push.data_ptr<float>(),
+  detent_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(x.data_ptr<float>(), v.data_ptr<float>(), tilt.data_ptr<float>(), push.data_ptr<float>(),
                                      m.data_ptr<float>(), params.data_ptr<float>(), st.data_ptr<float>(), J.data_ptr<float>(),
                                      clicked.data_ptr<float>(), n, (float)h);
   return {J, st, clicked};

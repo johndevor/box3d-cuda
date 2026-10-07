@@ -26,7 +26,7 @@ import torch
 
 from rl.common.cuda import load_ext
 from rl.common.randomization import Bern, IntU, LogU, Spec, U
-from rl.common.skill import EnvBase
+from rl.common.skill import EnvBase, InPlaceDict
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -163,7 +163,8 @@ class PegInsertBatch(EnvBase):
         self.group_of = torch.arange(n, device=self.dev) * G // n
         self.group_slices = [(i * n // G, (i + 1) * n // G) for i in range(G)]
         self.group_mu = self.cfg.draw("friction", self.g, G, self.dev)
-        self.p = {}
+        self.group_mu_f = self.group_mu.tolist()       # (host floats for the kernel calls: no sync inside a captured step)
+        self.p = InPlaceDict()
         self.ft_buf = f(n, 4, 6)
         self.ft_ptr = 0
         self.all = torch.ones(n, dtype=torch.bool, device=self.dev)
@@ -172,6 +173,8 @@ class PegInsertBatch(EnvBase):
     # ------------------------------------------------------------ sampling and geometry
     def resample_friction(self):
         self.group_mu = self.cfg.draw("friction", self.g, len(self.group_slices), self.dev)
+        self.group_mu_f = self.group_mu.tolist()
+        self.graph_stale()
 
     # ------------------------------------------------------------ the shared pipeline's protocol
     code_names = property(lambda self: CODE_NAMES)
@@ -183,7 +186,7 @@ class PegInsertBatch(EnvBase):
         return self.obs(update=False), self.priv()
 
     def step(self, action, autoreset=True):
-        obs, r, done, info = self._step(action)
+        obs, r, done, info = self._run_step(action)
         if autoreset and done.any():
             self.reset(done)
             obs = torch.where(done[:, None], self.obs(update=False), obs)
@@ -350,7 +353,7 @@ class PegInsertBatch(EnvBase):
 
     def _set(self, k, idx, val):
         if not hasattr(self, "v"):
-            self.v = {}
+            self.v = InPlaceDict()
         if k not in self.v:
             self.v[k] = torch.zeros((self.n,) + tuple(val.shape[1:]), dtype=val.dtype, device=self.dev)
         self.v[k][idx] = val
@@ -414,7 +417,7 @@ class PegInsertBatch(EnvBase):
                 if b <= a:          # (fewer worlds than friction groups: the sim-match runs one)
                     continue
                 out = self.ext.manifold_step(self.state[a:b], self.inv_mass[a:b], self.half[a:b], self.inv_inertia[a:b], self.pairs,
-                                             self.cache_ids[a:b], self.cache_imp[a:b], self.h, 1, 0.0, 0.0, float(self.group_mu[gi]),
+                                             self.cache_ids[a:b], self.cache_imp[a:b], self.h, 1, 0.0, 0.0, self.group_mu_f[gi],
                                              1e-3, 0.2, 0.0, self.cfg["solver_iterations"], 1e-4)
                 self.state[a:b] = out[0]
                 self.cache_ids[a:b] = out[3]
@@ -424,7 +427,7 @@ class PegInsertBatch(EnvBase):
             for gi, (a, b) in enumerate(self.group_slices):
                 if b <= a:
                     continue
-                c = cfgc(dt=self.h, substeps=1, gravity_y=0.0, restitution=0.0, friction=float(self.group_mu[gi]), position_slop=1e-3,
+                c = cfgc(dt=self.h, substeps=1, gravity_y=0.0, restitution=0.0, friction=self.group_mu_f[gi], position_slop=1e-3,
                          position_correction=0.2, angular_damping=0.0, solver_iterations=self.cfg["solver_iterations"], sat_epsilon=1e-4)
                 out = self.mref.step_manifold_reference(self.state[a:b].tolist(), self.inv_mass[a:b].tolist(), self.half[a:b].tolist(),
                                                         self.inv_inertia[a:b].tolist(), self.pairs.tolist(), self.cache_ids[a:b].tolist(),
@@ -573,13 +576,14 @@ class PegInsertBatch(EnvBase):
         r = r + torch.where(done, torch.where(success, torch.full_like(r, 10.0), torch.full_like(r, -3.0)), torch.zeros_like(r))
         info = dict(code=code, success=success, timeout=code == 4, true_depth=tp, clear=p["clear"].clone(), d=p["d"].clone())
         nonfinite = ~torch.isfinite(self.state).all(-1).all(-1)
-        if nonfinite.any():  # a solver blow-up ends the episode, counted as a failure
+        if True:  # (a solver blow-up ends the episode as a failure; unconditional masked updates: no host sync)
             done = done | nonfinite
             code = torch.where(nonfinite, torch.full_like(code, 9), code)
             info["code"] = code
             r = torch.where(nonfinite, torch.full_like(r, -3.0), r)
-            self.state[nonfinite] = 0
-            self.state[nonfinite, :, 6] = 1
+            blank = torch.zeros_like(self.state)
+            blank[:, :, 6] = 1
+            self.state.copy_(torch.where(nonfinite[:, None, None], blank, self.state))
         return obs, r, done, info
 
 

@@ -37,8 +37,33 @@ from typing import Any, Callable
 import torch
 
 
+class InPlaceDict(dict):
+    """Per-world state: assigning a tensor of the same shape and dtype to an existing key copies into it, so the tensors
+    a captured CUDA graph reads and writes stay the same objects."""
+
+    def __setitem__(self, k, val):
+        old = self.get(k)
+        if torch.is_tensor(val) and torch.is_tensor(old) and old.shape == val.shape and old.dtype == val.dtype and old.device == val.device:
+            if old.data_ptr() != val.data_ptr():
+                old.copy_(val)
+        else:
+            super().__setitem__(k, val)
+
+
 class EnvBase:
+    """Defaults of the env protocol, and CUDA-graph stepping: with use_graphs(True) the env's `_step(action)` (pure tensor
+    work: no host syncs, no data-dependent Python branches, kernels on the current stream) is captured once and
+    replayed; resets stay eager between replays. Tensor attributes and InPlaceDict entries are updated in place, so the
+    graph's tensors are the env's own. `graph_stale()` marks the graph for recapture (e.g. new per-group friction)."""
     code_names: dict = {}
+
+    def __setattr__(self, k, val):
+        old = self.__dict__.get(k)
+        if torch.is_tensor(val) and torch.is_tensor(old) and old.shape == val.shape and old.dtype == val.dtype and old.device == val.device:
+            if old.data_ptr() != val.data_ptr():
+                old.copy_(val)
+        else:
+            object.__setattr__(self, k, val)
 
     def on_iteration(self, phase=None, it=0, frac=0.0):
         pass
@@ -48,6 +73,56 @@ class EnvBase:
 
     def best_allowed(self):
         return True
+
+    # ------------------------------------------------------------ CUDA graphs
+    def use_graphs(self, on=True):
+        object.__setattr__(self, "_graphs_on", bool(on) and self.dev.type == "cuda")
+        object.__setattr__(self, "_graph", None)
+
+    def graph_stale(self):
+        object.__setattr__(self, "_graph", None)
+
+    def graph_generators(self):
+        """The CUDA generators the step draws from (registered with the graph so replays advance them)."""
+        g = getattr(self, "gs", None) or getattr(self, "g", None)
+        return [g] if isinstance(g, torch.Generator) and g.device.type == "cuda" else []
+
+    def _run_step(self, action):
+        if not getattr(self, "_graphs_on", False):
+            return self._step(action)
+        G = getattr(self, "_graph", None)
+        if G is not None:
+            G["a"].copy_(action)
+            G["graph"].replay()
+            # (the graph's outputs are its static buffers, overwritten by the next replay: callers get copies)
+            return tuple(t.clone() if torch.is_tensor(t) else ({k: v.clone() for k, v in t.items()} if isinstance(t, dict) else t) for t in G["out"])
+        # an eager step on a side stream (it is this step, and the warm-up the capture needs), then the capture
+        a_static = action.clone()
+        s = torch.cuda.Stream()
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s):
+            out = self._step(a_static)
+        torch.cuda.current_stream().wait_stream(s)
+        res = tuple(t.clone() if torch.is_tensor(t) else ({k: v.clone() for k, v in t.items()} if isinstance(t, dict) else t) for t in out)
+        graph = torch.cuda.CUDAGraph()
+        for gen in self.graph_generators():
+            graph.register_generator_state(gen)
+        pool = getattr(self, "_graph_pool", None) or torch.cuda.graph_pool_handle()
+        object.__setattr__(self, "_graph_pool", pool)
+        snap = self._graph_snapshot()
+        with torch.cuda.graph(graph, pool=pool):
+            gout = self._step(a_static)
+        self._graph_restore(snap)          # (capture records without running; the state is the eager step's)
+        object.__setattr__(self, "_graph", dict(graph=graph, a=a_static, out=gout))
+        return res
+
+    # (the host-side counters a step advances; capturing runs the Python code once more, so they are put back)
+    def _graph_snapshot(self):
+        return {k: v for k, v in self.__dict__.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+
+    def _graph_restore(self, snap):
+        for k, v in snap.items():
+            object.__setattr__(self, k, v)
 
 
 @dataclass

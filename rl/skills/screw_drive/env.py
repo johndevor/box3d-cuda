@@ -25,7 +25,7 @@ import torch
 
 from rl.common.cuda import load_ext
 from rl.common.randomization import Bern, IntU, LogU, Spec, U
-from rl.common.skill import EnvBase
+from rl.common.skill import EnvBase, InPlaceDict
 from rl.ext import screw_reference as SR
 from rl.skills.peg_insert.env import (FT_PROFILES, load_cpu_reference, load_cuda_ext as load_manifold_ext, loguni, qconj, qmul, qrot,
                                       quat_of, rotvec_between, rotvec_of, uni)
@@ -129,13 +129,16 @@ class ScrewDriveBatch(EnvBase):
         self.group_of = torch.arange(n, device=self.dev) * G // n
         self.group_slices = [(i * n // G, (i + 1) * n // G) for i in range(G)]
         self.group_mu = self.cfg.draw("friction", self.g, G, self.dev)
-        self.p, self.v = {}, {}
+        self.group_mu_f = self.group_mu.tolist()       # (host floats for the kernel calls: no sync inside a captured step)
+        self.p, self.v = InPlaceDict(), InPlaceDict()
         self.ft_buf = f(n, 4, 6)
         self.ft_ptr = 0
         self.reset(torch.ones(n, dtype=torch.bool, device=self.dev))
 
     def resample_friction(self):
         self.group_mu = self.cfg.draw("friction", self.g, len(self.group_slices), self.dev)
+        self.group_mu_f = self.group_mu.tolist()
+        self.graph_stale()
 
     # ------------------------------------------------------------ the shared pipeline's protocol
     def on_iteration(self, phase=None, it=0, frac=0.0):
@@ -157,7 +160,7 @@ class ScrewDriveBatch(EnvBase):
         return self.obs(update=False), self.priv()
 
     def step(self, action, autoreset=True):
-        obs, r, done, info = self._step(action)
+        obs, r, done, info = self._run_step(action)
         if autoreset and done.any():
             self.reset(done)
             obs = torch.where(done[:, None], self.obs(update=False), obs)
@@ -447,7 +450,7 @@ class ScrewDriveBatch(EnvBase):
                 if b <= a:          # (fewer worlds than friction groups: the sim-match runs one)
                     continue
                 out = self.mext.manifold_step(self.state[a:b], self.inv_mass[a:b], self.half[a:b], self.inv_inertia[a:b], self.pairs,
-                                              self.cache_ids[a:b], self.cache_imp[a:b], self.h, 1, 0.0, 0.0, float(self.group_mu[gi]),
+                                              self.cache_ids[a:b], self.cache_imp[a:b], self.h, 1, 0.0, 0.0, self.group_mu_f[gi],
                                               1e-3, 0.2, 0.0, self.cfg["solver_iterations"], 1e-4)
                 self.state[a:b] = out[0]
                 self.cache_ids[a:b] = out[3]
@@ -457,7 +460,7 @@ class ScrewDriveBatch(EnvBase):
             for gi, (a, b) in enumerate(self.group_slices):
                 if b <= a:
                     continue
-                c = cfgc(dt=self.h, substeps=1, gravity_y=0.0, restitution=0.0, friction=float(self.group_mu[gi]), position_slop=1e-3,
+                c = cfgc(dt=self.h, substeps=1, gravity_y=0.0, restitution=0.0, friction=self.group_mu_f[gi], position_slop=1e-3,
                          position_correction=0.2, angular_damping=0.0, solver_iterations=self.cfg["solver_iterations"], sat_epsilon=1e-4)
                 out = self.mref.step_manifold_reference(self.state[a:b].tolist(), self.inv_mass[a:b].tolist(), self.half[a:b].tolist(),
                                                         self.inv_inertia[a:b].tolist(), self.pairs.tolist(), self.cache_ids[a:b].tolist(),
@@ -584,7 +587,7 @@ class ScrewDriveBatch(EnvBase):
         # a back-out: the screw rides the bit again; the wrist's reference restarts where the tip is (World2: a new
         # compliance session)
         released = (mode0 >= 0.5) & (mode0 < 2.5) & (mode == 0)
-        if released.any():
+        if True:          # (unconditional masked updates: no host sync in a captured step)
             v["backouts"] = v["backouts"] + released.float()
             v["last_fail_tilt"] = torch.where(released[:, None], self._tilt_offset(nq), v["last_fail_tilt"])
             v["ref_tip"] = torch.where(released[:, None], self._tip(), v["ref_tip"])
@@ -641,14 +644,15 @@ class ScrewDriveBatch(EnvBase):
         info = dict(code=code, success=success, belief_err=p["belief_err"].clone(), thx=p["thx"].clone(), backouts=v["backouts"].clone(),
                     size=p["size"].clone(), phil=p["phil"].clone(), modeb=p["modeb"].clone())
         nonfinite = ~torch.isfinite(self.state).all(-1).all(-1) | ~torch.isfinite(obs).all(-1)
-        if nonfinite.any():
+        if True:  # (a solver blow-up ends the episode as a failure; unconditional masked updates: no host sync)
             done = done | nonfinite
             code = torch.where(nonfinite, torch.full_like(code, 10), code)
             info["code"] = code
             info["success"] = success & ~nonfinite
             r = torch.where(nonfinite, torch.full_like(r, -3.0), r)
             obs = torch.nan_to_num(obs)
-            self.state[nonfinite] = 0
-            self.state[nonfinite, :, 6] = 1
+            blank = torch.zeros_like(self.state)
+            blank[:, :, 6] = 1
+            self.state.copy_(torch.where(nonfinite[:, None, None], blank, self.state))
         v["prev_mode"] = mode.clone()
         return obs, r, done, info
