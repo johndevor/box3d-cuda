@@ -58,13 +58,13 @@ def pinned_insert_cfg(w2):
     import math
     c, mm = w2["case"], 1000.0
     sig = w2.get("estimate_sigma", [0.0005] * 3 + [0.005] * 3)
-    f = ((w2.get("ft_sigma") or {}).get("force_n") or [2.5])
-    f = f[0] if isinstance(f, list) else f
-    prof = 2 if f < 0.5 else 1 if f < 2.0 else 0          # FT_PROFILES: ur12e 2.5 N, ur5e 1.75 N, ft300s 0.1 N
+    ft = w2.get("ft") or {}
+    prof = {"ur-e-series-ur12e": 0, "ur-e-series-ur5e": 1, "robotiq-ft300s": 2}.get(ft.get("profile"), 0)   # FT_PROFILES rows
+    quiet = 0.0 if ft.get("noise") == 0 else 1.0           # World2's sensor noise-free: so is this one (no noise, no tare offset)
     return dict(start_height_mm=w2["start_offset_m"][1] * mm, start_lateral_mm=0.0, start_tilt_deg=0.0,
                 target_sigma_mm=sig[0] * mm, target_sigma_rot_deg=math.degrees(sig[3]), in_hand_sigma_mm=w2.get("in_hand_sigma_m", 0.0005) * mm,
                 target_err_z_mm=0.0, in_hand_err_z_mm=0.0, max_force_n=w2.get("max_force_n", 40.0), ft_profile=prof, ft_extra_delay_s=0.0,
-                ft_gain_err=0.0, ft_noise_mult=1.0, flange_h=0.1, action_latency_p=0.0, motor_lag_s=0.0, vmass=2.0, friction=c["friction"],
+                ft_gain_err=0.0, ft_noise_mult=quiet, ft_tare_offset=quiet, flange_h=0.1, action_latency_p=0.0, motor_lag_s=0.0, vmass=2.0, friction=c["friction"],
                 pose_scale=0.0, belief_error_scale=0.0, clearance_mm=c["clearance_m"] * mm, host_chamfer_mm=c["host_chamfer_m"] * mm)
 
 

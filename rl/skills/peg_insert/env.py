@@ -57,6 +57,7 @@ SPEC = Spec(dict(
     target_err_z_mm=U(0.02, 0.2), in_hand_err_z_mm=U(0.02, 0.15), in_hand_rot_deg=0.2,
     max_force_n=U(20.0, 60.0),
     ft_profile=IntU(0, 3),                   # FT_PROFILES row
+    ft_tare_offset=1.0,                      # the filter's state at the tare (one noisy reading: an offset of ~sigma); 0 in the sim-match
     ft_extra_delay_s=U(0.0, 0.012), ft_gain_err=U(0.005, 0.01), ft_noise_mult=U(1.0, 1.5), flange_h=U(0.08, 0.2),
     action_latency_p=Bern(0.3), motor_lag_s=U(0.0, 0.03), vmass=U(1.7, 2.3),
     substeps_per_world_step=4, solver_iterations=8, timeout_s=6.0,
@@ -338,7 +339,7 @@ class PegInsertBatch(EnvBase):
         self._set("ft_delay", idx, torch.round((prof[:, 3] + p["ftd"][idx]) / dt).long().clamp(1, 3))
         self._set("ft_range", idx, prof[:, 4])
         self._set("ft_sig", idx, prof[:, :2])
-        self._set("ft_f", idx, torch.randn(m, 6, generator=self.g, device=self.dev) * prof[:, [0, 0, 0, 1, 1, 1]])
+        self._set("ft_f", idx, torch.randn(m, 6, generator=self.g, device=self.dev) * prof[:, [0, 0, 0, 1, 1, 1]] * self.cfg["ft_tare_offset"])
         self._set("ft_drift", idx, torch.zeros(m, 6, device=self.dev))
         self._set("ft_tare", idx, self.v["ft_f"][idx].clone())
         self.ft_buf[idx] = 0

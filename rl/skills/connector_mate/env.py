@@ -45,7 +45,7 @@ SPEC = Spec(dict(
     start_height_mm=U(1.0, 15.0), start_lateral_mm=U(0.0, 3.0), start_tilt_deg=U(0.0, 3.5),
     target_sigma_mm=U(0.1, 1.0), target_sigma_rot_deg=U(0.05, 1.5), in_hand_sigma_mm=U(0.05, 0.5),
     target_err_z_mm=U(0.02, 0.2), in_hand_err_z_mm=U(0.02, 0.15), in_hand_rot_deg=0.2,
-    ft_profile=IntU(0, 3), ft_extra_delay_s=U(0.0, 0.012), ft_gain_err=U(0.005, 0.01), ft_noise_mult=U(1.0, 1.5), flange_h=U(0.08, 0.2),
+    ft_profile=IntU(0, 3), ft_tare_offset=1.0, ft_extra_delay_s=U(0.0, 0.012), ft_gain_err=U(0.005, 0.01), ft_noise_mult=U(1.0, 1.5), flange_h=U(0.08, 0.2),
     action_latency_p=Bern(0.3), motor_lag_s=U(0.0, 0.03), vmass=U(1.7, 2.3), physical_p=Bern(0.35), feature_known_p=Bern(0.5),
     detent=1.0,                        # 0: no detent force (the sim-match's sliding-fit probe; World2 latches by rule)
     chain_states=None, chain_sigma_mm=0.3, chain_present_mm=(0.0, 0.5),   # the chain test's step 2 (chain.py)

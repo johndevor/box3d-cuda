@@ -95,7 +95,7 @@ def insert_checks(w2, T, end, depth_mm, seated_codes=("depth", "policy", "stop")
     # force tolerances: 1 N of physics allowance plus 3 sigma of the difference of two independent noisy means over the
     # window (World2's stated F/T sigma per tick; a lateral magnitude's spread is 0.655 sigma)
     sig = ((w2.get("ft_sigma") or {}).get("force_n") or [2.5])
-    sig = float(sig[0] if isinstance(sig, list) else sig)
+    sig = 0.0 if (w2.get("ft") or {}).get("noise") == 0 else float(sig[0] if isinstance(sig, list) else sig)   # (noise-free sensors: 1 N)
     nm = max(1, len(moving))
     tol_push, tol_lat = round(1.0 + 3 * sig * math.sqrt(2 / nm), 2), round(1.0 + 3 * 0.655 * sig * math.sqrt(2 / nm), 2)
     return [
