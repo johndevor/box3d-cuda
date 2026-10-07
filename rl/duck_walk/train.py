@@ -73,22 +73,24 @@ def main():
     ap.add_argument("--iterations", type=int, default=6)
     ap.add_argument("--minutes", type=float, default=90)
     ap.add_argument("--dr", default="{}", help="JSON overrides of env.default_dr")
+    ap.add_argument("--clock-hz", type=float, default=0.0)
+    ap.add_argument("--clearance", type=float, default=0.03)
     a = ap.parse_args()
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     dev = torch.device(a.device)
     torch.manual_seed(a.seed)
-    env = DuckWalkEnv(a.envs, device=a.device, seed=a.seed, dr=json.loads(a.dr), substeps=a.substeps, iterations=a.iterations)
-    ac = ActorCritic(OBS_SIZE, env.PRIV_SIZE, LEGS).to(dev)
+    env = DuckWalkEnv(a.envs, device=a.device, seed=a.seed, dr=json.loads(a.dr), substeps=a.substeps, iterations=a.iterations, clock_hz=a.clock_hz, clearance_m=a.clearance)
+    ac = ActorCritic(env.obs_size, env.PRIV_SIZE, LEGS).to(dev)
     opt = torch.optim.Adam(ac.parameters(), lr=a.lr)
     if a.init:
         ck = torch.load(a.init, map_location=dev); ac.load_state_dict(ck["model"]); print(json.dumps({"event": "init", "from": a.init}))
-    cfg = dict(vars(a), dr_full=env.dr, obs=OBS_SIZE, priv=env.PRIV_SIZE, act=LEGS, device_name=torch.cuda.get_device_name(0) if dev.type == "cuda" else "cpu")
+    cfg = dict(vars(a), dr_full=env.dr, obs=env.obs_size, priv=env.PRIV_SIZE, act=LEGS, device_name=torch.cuda.get_device_name(0) if dev.type == "cuda" else "cpu")
     (out / "config.json").write_text(json.dumps(cfg, indent=1))
     print(json.dumps({"event": "start", **{k: v for k, v in cfg.items() if k != "dr_full"}}), flush=True)
     E, Hn = a.envs, a.horizon
     gamma, lam, clip, epochs, minibatches = 0.99, 0.95, 0.2, 5, 4
     obs = env.obs(); priv = env.priv()
-    buf = {k: torch.zeros(Hn, E, *s, device=dev) for k, s in dict(obs=(OBS_SIZE,), priv=(env.PRIV_SIZE,), act=(LEGS,), logp=(), val=(), rew=(), done=(), tout=()).items()}
+    buf = {k: torch.zeros(Hn, E, *s, device=dev) for k, s in dict(obs=(env.obs_size,), priv=(env.PRIV_SIZE,), act=(LEGS,), logp=(), val=(), rew=(), done=(), tout=()).items()}
     steps, it, t0, best = 0, 0, time.time(), -1e9
     ep_stats = []
     desired_kl = 0.01

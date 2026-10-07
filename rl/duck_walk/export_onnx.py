@@ -42,7 +42,7 @@ def main():
     ac.load_state_dict(ck["model"]); ac.eval()
     st = Student(ac).eval()
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
-    x = torch.zeros(1, OBS_SIZE)
+    x = torch.zeros(1, cfg['obs'])
     torch.onnx.export(st, x, str(out / "policy.onnx"), input_names=["obs"], output_names=["action"], opset_version=17, dynamo=False)
     sha = hashlib.sha256((out / "policy.onnx").read_bytes()).hexdigest()
     here = Path(__file__).resolve().parent
@@ -53,7 +53,8 @@ def main():
         commit, branch = cfg.get("box3d_cuda_commit", "unknown"), "duck-walk-world2"
     manifest = {
         "id": a.id, "contract": "world2-learned-skill/1", "skill": "walk", "policy": "policy.onnx", "sha256": sha, "rate_hz": RATE_HZ,
-        "observation": ["imu_gyro", "imu_gravity", "leg_joint_pos", "leg_joint_vel", "prev_action", "command"], "history": HISTORY,
+        "observation": ["imu_gyro", "imu_gravity", "leg_joint_pos", "leg_joint_vel", "prev_action", "command"] + (["foot_contact", "gait_clock"] if cfg.get("clock_hz", 0) > 0 else []), "history": HISTORY,
+        **({"gait_clock_hz": cfg["clock_hz"]} if cfg.get("clock_hz", 0) > 0 else {}),
         "action": {"kind": "leg-joint-targets", "scale": {"rad": ACTION_SCALE}}, "input": "obs", "output": "action",
         "families": ["open-duck-mini-v2"],
         **({"heading_hold": {"gain": a.heading_hold, "max": 0.3}} if a.heading_hold > 0 else {}),
@@ -71,7 +72,7 @@ def main():
     try:
         import onnxruntime as ort
         s = ort.InferenceSession(str(out / "policy.onnx"))
-        xs = torch.randn(16, 1, OBS_SIZE)
+        xs = torch.randn(16, 1, cfg['obs'])
         err = max(float(abs(s.run(None, {"obs": x.numpy()})[0] - st(x).detach().numpy()).max()) for x in xs)
         print("onnx parity max abs", err)
     except Exception as e:

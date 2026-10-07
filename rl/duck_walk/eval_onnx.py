@@ -18,14 +18,14 @@ ap.add_argument("policy"); ap.add_argument("--envs", type=int, default=16); ap.a
 ap.add_argument("--dr", default="off"); ap.add_argument("--vx", type=float, default=0.15); ap.add_argument("--dump", default=None)
 ap.add_argument("--device", default="cpu"); ap.add_argument("--heading-hold", type=float, default=0.0, help="gain of the program-side heading loop (World2 skills/duck-walk.mjs)"); ap.add_argument("--settle", type=float, default=1.0)
 a = ap.parse_args()
-sess = ort.InferenceSession(str(Path(a.policy) / "policy.onnx"))
-env = DuckWalkEnv(a.envs, device=a.device, seed=123, dr_on=(a.dr == "on"), dr=dict(push_p=0.0, cmd_zero_p=0.0, cmd_vx=(a.vx, a.vx), episode_s=1e9, init_yaw=0.0, cmd_wz=0.0))
+sess = ort.InferenceSession(str(Path(a.policy) / "policy.onnx")); man = json.loads((Path(a.policy) / "manifest.json").read_text())
+env = DuckWalkEnv(a.envs, device=a.device, seed=123, clock_hz=man.get("gait_clock_hz", 0.0), dr_on=(a.dr == "on"), dr=dict(push_p=0.0, cmd_zero_p=0.0, cmd_vx=(a.vx, a.vx), episode_s=1e9, init_yaw=0.0, cmd_wz=0.0))
 env.cmd[:, 0] = a.vx
 from .env import LEGS
 # settle (hold) like World2's program, then walk
 for _ in range(int(a.settle * RATE_HZ)):
     obs, priv, r, done, info = env.step(torch.zeros(a.envs, LEGS))
-env.prev_action.zero_()
+env.prev_action.zero_(); env.t.zero_(); env.hist[:] = env._frame()[:, None]
 x0 = env.trunk()["p"][:, 0].clone(); z0 = env.trunk()["p"][:, 2].clone(); yaw0 = env.trunk()["yaw"].clone(); fell = torch.zeros(a.envs, dtype=torch.bool)
 on = torch.ones(a.envs, 2, dtype=torch.bool); lifts = torch.zeros(a.envs, 2); maxh = torch.zeros(a.envs, 2)
 dumps = []
