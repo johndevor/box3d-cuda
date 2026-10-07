@@ -21,7 +21,9 @@ import numpy as np
 import torch
 
 
-def check(name, value, tol, note=""):
+def check(name, value, tol, note="", needs=None):
+    """needs: the randomization setting a check's behaviour exists under (e.g. 'full_wrench'): a failing check with
+    `needs` blocks only training runs that turn that setting on (rl/train.py's gate)."""
     if isinstance(tol, tuple) and tol[0] == "min":
         ok = value is not None and value >= tol[1]
     elif isinstance(tol, tuple) and tol[0] == "equal":
@@ -29,7 +31,7 @@ def check(name, value, tol, note=""):
     else:
         ok = value is not None and abs(value) <= tol
     v = None if value is None else (value if isinstance(value, bool) else round(float(value), 4) if isinstance(value, (int, float, np.floating)) else value)
-    return {"name": name, "value": v, "tolerance": list(tol) if isinstance(tol, tuple) else tol, "pass": bool(ok), "note": note}
+    return {"name": name, "value": v, "tolerance": list(tol) if isinstance(tol, tuple) else tol, "pass": bool(ok), "note": note, **({"needs": needs} if needs else {})}
 
 
 def rms(a, b):

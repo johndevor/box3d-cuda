@@ -37,13 +37,16 @@ def main():
     else:
         checks, box3d = skill.sim_match(w2, a.device)
         rep = {"skill": skill.name, "pass": all(c["pass"] for c in checks), "checks": checks, "box3d": box3d, "device": a.device}
-        code = 0 if rep["pass"] else 1
+        # (failing checks that all carry `needs` are conditional: rl/train.py allows a run that does not use them)
+        cond = [c["name"] for c in checks if not c["pass"] and c.get("needs")]
+        rep["conditional_fail"] = cond
+        code = 0 if rep["pass"] or len(cond) == sum(not c["pass"] for c in checks) else 1
     rep.update(provenance=provenance(), world2={k: w2.get(k) for k in ("world2", "probe", "case", "end", "wall_s")}, wall_s=round(time.time() - t0, 1))
     if a.out:
         Path(a.out).write_text(json.dumps(rep, indent=1, default=str))
     for c in rep.get("checks", []):
         print(f"  {'ok  ' if c['pass'] else 'FAIL'} {c['name']}: {c['value']} (tolerance {c['tolerance']})", file=sys.stderr)
-    print(json.dumps({"skill": skill.name, "pass": rep["pass"], "failed": [c["name"] for c in rep.get("checks", []) if not c["pass"]], "unavailable": rep.get("unavailable")}))
+    print(json.dumps({"skill": skill.name, "pass": rep["pass"], "conditional_fail": rep.get("conditional_fail"), "failed": [c["name"] for c in rep.get("checks", []) if not c["pass"]], "unavailable": rep.get("unavailable")}))
     sys.exit(code)
 
 

@@ -61,7 +61,7 @@ SPEC = Spec(dict(
     trun_per_m=U(3.0, 12.0), kj=LogU(2e6, 5e7), nut_k=U(0.15, 0.25), strip_p=Bern(0.15), strip_rel=U(0.7, 1.3),
     phillips_p=Bern(0.5), flank_deg=U(7.0, 13.0), flank_mu=U(0.08, 0.14), hex_fraction=U(0.6, 1.0), clutch_scatter=0.01,
     kx_rel=U(0.25, 0.8), theta_x_deg=U(1.8, 3.5), capture_over_d=U(0.1, 0.2), mode_b_p=Bern(0.3),
-    insert_tilt_deg=U(0.0, 4.0), insert_offset_mm=U(0.0, 0.25),
+    insert_tilt_deg=U(0.0, 4.0), insert_tilt_az_deg=U(0.0, 360.0), insert_offset_mm=U(0.0, 0.25),
     rot_sigma_deg=U(0.3, 2.5), seat_sigma_mm=U(0.1, 0.5), seat_sigma_z_mm=U(0.05, 0.2), in_hand_mm=0.05,
     start_height_mm=U(1.0, 5.0), wobble_deg=U(0.0, 1.0), stiff_mult=U(0.6, 1.5),
     torque_noise_nm=U(0.005, 0.02), torque_delay_p=Bern(0.5),
@@ -209,7 +209,7 @@ class ScrewDriveBatch(EnvBase):
         P["thx"] = torch.deg2rad(D("theta_x_deg"))
         P["rcap"] = D("capture_over_d") * P["d"]
         P["modeb"] = D("mode_b_p")
-        az = uni(g, m, (0, 2 * math.pi), d)
+        az = torch.deg2rad(D("insert_tilt_az_deg"))
         tau = torch.deg2rad(D("insert_tilt_deg"))
         down = cvec(DOWN, d).expand(m, 3)
         qi = quat_of(torch.stack([torch.cos(az), torch.sin(az), 0 * az], -1) * tau[:, None])

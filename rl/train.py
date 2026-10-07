@@ -37,18 +37,26 @@ def scale_minutes(R, f):
             R[k] = v * f
 
 
-def check_sim_match(path, skill, prov):
+def check_sim_match(path, skill, prov, uses=lambda k: True):
+    """uses(setting) -> whether this training turns a randomization setting on: a failing check that `needs` a setting
+    the run does not use is recorded, not blocking."""
     rep = json.loads(Path(path).read_text())
-    problems = []
+    problems, excused = [], []
     if rep.get("skill") != skill.name:
         problems.append(f"report is for {rep.get('skill')}")
-    if not rep.get("pass"):
-        problems.append("it did not pass: " + "; ".join(c["name"] for c in rep.get("checks", []) if not c.get("pass")))
+    for c in rep.get("checks", []):
+        if not c.get("pass"):
+            if c.get("needs") and not uses(c["needs"]):
+                excused.append(f"{c['name']} (needs {c['needs']}, which this run does not use)")
+            else:
+                problems.append(c["name"] + (f" (needs {c['needs']}, which this run uses)" if c.get("needs") else ""))
+    if not rep.get("checks") and not rep.get("pass"):
+        problems.append("it did not pass")
     if rep.get("provenance", {}).get("rl_sources") != prov["rl_sources"]:
         problems.append(f"it ran on other sources ({rep.get('provenance', {}).get('rl_sources')} vs {prov['rl_sources']})")
     if problems:
         raise SystemExit(f"sim-match gate: {path}: " + "; ".join(problems) + " -> training not allowed (rerun python -m rl.simmatch, or --no-sim-match for a dev run)")
-    return {"report": str(path), "pass": True, "checks": [{k: c[k] for k in ("name", "value", "tolerance", "pass")} for c in rep["checks"]], "world2": rep.get("world2", {})}
+    return {"report": str(path), "pass": True, "excused": excused, "checks": [{k: c[k] for k in ("name", "value", "tolerance", "pass")} for c in rep["checks"]], "world2": rep.get("world2", {})}
 
 
 def main():
@@ -72,12 +80,6 @@ def main():
         raise SystemExit(f"--device {a.device}: training runs on CUDA (use --cpu-ok for a local smoke test)")
     dev = cuda.require_device(a.device)
     prov = provenance()
-    if a.no_sim_match:
-        sm = dict(skipped=True)
-    elif a.sim_match:
-        sm = check_sim_match(a.sim_match, skill, prov)
-    else:
-        raise SystemExit("sim-match gate: pass --sim-match <report> (python -m rl.simmatch <skill> --world2 <trace>) or --no-sim-match")
     R = copy.deepcopy(skill.recipe if a.recipe == "default" else skill.recipes[a.recipe])
     for kv in a.set:
         k, v = kv.split("=", 1)
@@ -86,6 +88,17 @@ def main():
         scale_minutes(R, a.time_scale)
     R.update(device=a.device)
     cfg = json.loads(a.cfg)
+
+    def uses(k):
+        on = lambda v: v is not None and v is not False and v != 0 and tuple(v if isinstance(v, (list, tuple)) else [v]) not in ((0, 0), (0,))
+        v = cfg.get(k, R.get("cfg", {}).get(k, skill.spec[k] if k in skill.spec else None))
+        return on(v) or any(on(dict(R.get("cfg", {}), **st.get("cfg", {}), **cfg).get(k)) for st in R.get("stages", []))
+    if a.no_sim_match:
+        sm = dict(skipped=True)
+    elif a.sim_match:
+        sm = check_sim_match(a.sim_match, skill, prov, uses)
+    else:
+        raise SystemExit("sim-match gate: pass --sim-match <report> (python -m rl.simmatch <skill> --world2 <trace>) or --no-sim-match")
     torch.manual_seed(a.seed)
     mf = open(out / "metrics.jsonl", "a")
 

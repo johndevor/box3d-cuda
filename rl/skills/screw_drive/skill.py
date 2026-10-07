@@ -20,10 +20,12 @@ RECIPE["eval_ticks"] = 380
 
 
 # The fast recipe (default): a residual over the scripted drive (rl/common/priors.py ScriptedScrewPrior), asymmetric PPO,
-# trained in World2's opt-in interaction (thread catch mode A, the full driving wrench) and its crooked-insert cases (the
-# program believes the layout's axis half the time; inserts to 6.5 degrees, 0.6 mm off: World2's hard set inside).
+# on World2's crooked-insert cases (the program believes the layout's axis half the time; inserts to 6.5 degrees, 0.6 mm
+# off: World2's hard set inside), both thread catches (B: World2's default referee; A: its opt-in catch window), the
+# held driving wrench (World2's default). Not the full wrench: its sim-match check fails (box3d's lateral moment while
+# running down a 2-degree insert reads ~0.05 N m (40 %) over World2's at the same depths and tilt direction).
 RESIDUAL = dict(kind="asymmetric", envs=131072, eval_n=2048, eval_seed=10_000, eval_ticks=380, graphs=False,
-                cfg=dict(mode_b_p=0.0, full_wrench=1.0, layout_belief_p=0.5, insert_tilt_deg=(0.0, 6.5), insert_offset_mm=(0.0, 0.6), curriculum_frac=0.0),
+                cfg=dict(mode_b_p=0.5, full_wrench=0.0, layout_belief_p=0.5, insert_tilt_deg=(0.0, 6.5), insert_offset_mm=(0.0, 0.6), curriculum_frac=0.0),
                 model=dict(prior=dict(kind="scripted_screw", args={}), residual_scale=1.0, log_std=-1.2, init_bias={}, init_log_std={}),
                 ppo=dict(horizon=64, lr=3e-4, gamma=0.995, lam=0.95, clip=0.2, epochs=4, minibatches=4, ent=0.0, kl="stop", kl_target=0.03,
                          score="success", min_episodes=4000, plateau_iters=30, min_iters=20, max_minutes=6.0, max_steps=3e9))
@@ -95,10 +97,10 @@ def sim_match(w2, device):
     def replay(cfg_, act, seed=0):
         env = make_env(1, device=device, seed=seed, cfg=cfg_)
         obs, _ = env.observe()
-        T = dict(t=[], torque_nm=[], turns=[], seat_z_mm=[], moment_xy_nm=[], mode=[], clicked=[])
+        T = dict(t=[], torque_nm=[], turns=[], seat_z_mm=[], moment_xy_nm=[], moment_vec_nm=[], mode=[], clicked=[])
         end = None
         rec = lambda k, o: (T["t"].append(round(k / 30, 3)), T["torque_nm"].append(float(o[0, 19])), T["turns"].append(float(o[0, 20])),
-                            T["seat_z_mm"].append(float((env._tip()[0, 2] + env.p["L"][0]) * mm)), T["moment_xy_nm"].append(float(math.hypot(o[0, 14], o[0, 15]))),
+                            T["seat_z_mm"].append(float((env._tip()[0, 2] + env.p["L"][0]) * mm)), T["moment_xy_nm"].append(float(math.hypot(o[0, 14], o[0, 15]))), T["moment_vec_nm"].append([float(o[0, 14]), float(o[0, 15])]),
                             T["mode"].append(int(env.J[0, SR.J_MODE])), T["clicked"].append(float(env.J[0, SR.J_CLICKED])))
         for k in range(int(env.cfg["timeout_s"] * 30) + 2):
             rec(k, obs)
@@ -162,14 +164,42 @@ def sim_match(w2, device):
             z, t, m = np.array(tr["seat_z_mm"]), np.array(tr["t"]), np.array(tr["moment_xy_nm"])
             sel = (t > t0 + 0.2) & (z > 0.3)
             return float(m[sel].mean()) if sel.any() else None
-        # (the moment's size depends on the tilt's direction against the spin, drawn per world and not recorded by
-        # World2: box3d's is the median over 8 directions (seeds; CPU: 0.147-0.247 N m against World2's 0.123), the first seed's trace kept for the catch checks)
-        mbs = [moment(T2, start_b)]
-        for sd in range(1, 8):
-            Tk, _ = replay(cfg2, sched, seed=sd)
-            mbs.append(moment(Tk, next((Tk["t"][i] for i, m in enumerate(Tk["mode"]) if m >= 1), None)))
-        mbs = [x for x in mbs if x is not None]
-        mw, mb = moment(Wi, start_w), (float(np.median(mbs)) if mbs else None)
+        # (the moment depends on the tilt's direction against the spin; World2 draws the insert's direction from its seed:
+        # box3d replays 12 directions and compares the one whose running-down moment points the way World2's does)
+        def mvec(tr, t0):
+            if t0 is None or not tr.get("moment_vec_nm"):
+                return None
+            z, t, m = np.array(tr["seat_z_mm"]), np.array(tr["t"]), np.array(tr["moment_vec_nm"])
+            sel = (t > t0 + 0.2) & (z > 0.3)
+            return m[sel].mean(0) if sel.any() else None
+        vw = mvec(Wi, start_w)
+        cand = []
+        for az in range(0, 360, 30):
+            Tk, _ = replay(dict(cfg2, insert_tilt_az_deg=float(az)), sched)
+            sk = next((Tk["t"][i] for i, m in enumerate(Tk["mode"]) if m >= 1), None)
+            vk = mvec(Tk, sk)
+            if vk is not None:
+                ang = abs((math.degrees(math.atan2(vk[1], vk[0]) - math.atan2(vw[1], vw[0])) + 180.0) % 360.0 - 180.0) if vw is not None else 0.0
+                cand.append((abs(ang), az, moment(Tk, sk), Tk, sk))
+        best = min(cand, key=lambda c: c[0]) if cand else None
+        mbs = [c[2] for c in cand]
+        mw, mb = moment(Wi, start_w), (best[2] if best else None)
+
+        # compared at the same depths (the time windows differ by the start height, checked on its own above): the mean
+        # over the common seat-distance range of box3d's moment minus World2's
+        def by_depth(tr, t0):
+            z, t, m = np.array(tr["seat_z_mm"]), np.array(tr["t"]), np.array(tr["moment_xy_nm"])
+            sel = (t > t0 + 0.2) & (z > 0.3)
+            o = np.argsort(z[sel])
+            return z[sel][o], m[sel][o]
+        dmb = None
+        if best is not None and start_w is not None:
+            zb, mb_ = by_depth(best[3], best[4])
+            zw, mw_ = by_depth(Wi, start_w)
+            lo, hi = max(zb.min(), zw.min()), min(zb.max(), zw.max())
+            if hi > lo:
+                zz = np.linspace(lo, hi, 40)
+                dmb = float(np.mean(np.interp(zz, zb, mb_) - np.interp(zz, zw, mw_)))
         checks += [
             check("[catch] clicked by the back-turn in both", bool(I.get("clicked")) and bool(end2 and end2["clicked"]), ("equal", True),
                   "turning back inside the capture drops the lead thread into the start"),
@@ -178,10 +208,11 @@ def sim_match(w2, device):
             check("[catch] clean start on the 2-degree insert in both", (not (I.get("thread_start") or {}).get("cross_threaded", True)) and bool(end2 and not end2["crossed"]), ("equal", True),
                   "2 degrees is under the cross-thread angle plus the click's 1 degree"),
             check("[catch] seated in both", bool(I.get("end", {}).get("ok")) and bool(end2 and end2["code"] == "seated"), ("equal", True), ""),
-            check("[wrench] mean lateral moment while running down (N m, box3d - World2)", (mb - mw) if mb is not None and mw is not None else None, max(0.05, 0.3 * (mw or 0)),
-                  "the full driving wrench: the bit's moment of the tilt between the tool and the screw on the crooked axis, with the lateral spring about the flange (0.05 N m or 30 %)"),
+            check("[wrench] lateral moment while running down, at the same depths (N m, box3d - World2)", dmb, max(0.05, 0.3 * (mw or 0)),
+                  "the full driving wrench: the bit's moment of the tilt between the tool and the screw on the crooked axis, with the lateral spring about the flange (0.05 N m or 30 %)",
+                  needs="full_wrench"),
         ]
-        out["interaction"] = dict(trace=T2, end=end2, cfg=cfg2, start_s=start_b, moment_mean_nm=mb, moment_by_seed_nm=mbs, world2_moment_mean_nm=mw)
+        out["interaction"] = dict(trace=T2, end=end2, cfg=cfg2, start_s=start_b, moment_mean_nm=mb, moment_by_direction_nm=mbs, direction=dict(az_deg=best[1], angle_off_deg=round(best[0], 1)) if best else None, moment_diff_by_depth_nm=dmb, world2_moment_mean_nm=mw)
     return checks, out
 
 
