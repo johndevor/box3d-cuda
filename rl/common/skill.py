@@ -3,6 +3,8 @@ small descriptor. Kept small on purpose: a model generated from a World2 design 
 
 The env protocol (batched, one device, autoreset):
     n, dev, obs_size, priv_size, act_size          ints / torch.device
+        (several effectors, e.g. two arms: one policy over all of them, the action their concatenation; the
+        manifest's action names the split, and a prior or per-arm heads can act on slices of it)
     observe() -> (obs[N, obs_size], priv[N, priv_size])     the current observation (fresh worlds included)
     step(action[N, act_size], autoreset=True) -> (obs, priv, reward[N], done[N], info)
         info: tensors per world; at a done world: "success" (bool), optionally "code" (int), "timeout" (bool, the
