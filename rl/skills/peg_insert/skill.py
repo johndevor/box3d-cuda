@@ -18,8 +18,10 @@ MANIP_RECIPE = dict(
 )
 
 
-# The fast recipe (default): a residual over the scripted insertion (rl/common/priors.py ScriptedInsertPrior), asymmetric
-# PPO (the policy on its observations, the critic on the privileged state too), many worlds, CUDA-graph stepping.
+# The fast recipe: a residual over the scripted insertion (rl/common/priors.py ScriptedInsertPrior), asymmetric PPO (the
+# policy on its observations, the critic on the privileged state too), many worlds. The connector's default; the peg's
+# alternative ("residual"): in 4 minutes it reached box3d hard 76 % but World2's peg sets 24/30 nominal, 0/90 hard (it
+# pushes 30-45 N at the mouth and never finds the bore), so the peg keeps the teacher-student recipe by default.
 def residual_recipe(minutes=4.0, envs=131072, **ppo):
     return dict(kind="asymmetric", envs=envs, eval_n=2048, eval_seed=10_000, graphs=False,
                 model=dict(prior=dict(kind="scripted_insert", args={}), residual_scale=1.0, log_std=-1.2, init_bias={}, init_log_std={}),
@@ -49,8 +51,8 @@ def make_env(n, device="cuda", seed=0, cfg=None, **env):
 
 
 SKILL = Skill(
-    name="peg_insert", contract_skill="insert", make_env=make_env, spec=SPEC, model=MODEL, recipe=residual_recipe(),
-    recipes={"teacher_student": MANIP_RECIPE},
+    name="peg_insert", contract_skill="insert", make_env=make_env, spec=SPEC, model=MODEL, recipe=MANIP_RECIPE,
+    recipes={"residual": residual_recipe()},
     eval_sets={"nominal": {}, "hard_1.5x": {"pose_scale": 1.5}}, eval_splits=clearance_bins, extensions=("b3_manifold",), eval_ticks=200,
     manifest=insert_manifest(["peg-hole"],
         "PPO in box3d-cuda (crude box peg/hole, heavy domain randomisation: clearance, pose error, friction, mass, F/T noise/delay/drift/gain, action latency, motor lag); World2's Rapier referees",
