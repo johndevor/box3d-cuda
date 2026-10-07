@@ -19,6 +19,16 @@ RECIPE["finetune_log_std_at"] = {6: -2.5}
 RECIPE["eval_ticks"] = 380
 
 
+# The fast recipe (default): a residual over the scripted drive (rl/common/priors.py ScriptedScrewPrior), asymmetric PPO,
+# trained in World2's opt-in interaction (thread catch mode A, the full driving wrench) and its crooked-insert cases (the
+# program believes the layout's axis half the time; inserts to 6.5 degrees, 0.6 mm off: World2's hard set inside).
+RESIDUAL = dict(kind="asymmetric", envs=65536, eval_n=2048, eval_seed=10_000, eval_ticks=380, graphs=True,
+                cfg=dict(mode_b_p=0.0, full_wrench=1.0, layout_belief_p=0.5, insert_tilt_deg=(0.0, 6.5), insert_offset_mm=(0.0, 0.6), curriculum_frac=0.0),
+                model=dict(prior=dict(kind="scripted_screw", args={}), residual_scale=1.0, log_std=-1.2, init_bias={}, init_log_std={}),
+                ppo=dict(horizon=64, lr=3e-4, gamma=0.995, lam=0.95, clip=0.2, epochs=4, minibatches=4, ent=0.0, kl="stop", kl_target=0.03,
+                         score="success", min_episodes=4000, plateau_iters=30, min_iters=20, max_minutes=6.0, max_steps=3e9))
+
+
 def splits(p0, succ, final):
     berr, thx, phil, size, modeb = p0["belief_err"], p0["thx"], p0["phil"], p0["size"], p0["modeb"]
     backouts = final.get("backouts", succ.float() * 0)
@@ -56,8 +66,10 @@ def make_env(n, device="cuda", seed=0, cfg=None, **env):
 
 
 SKILL = Skill(
-    name="screw_drive", contract_skill="screw", make_env=make_env, spec=SPEC, model=MODEL, recipe=RECIPE,
-    eval_sets={"nominal": {}, "hard_1.5x": {"pose_scale": 1.5}}, eval_splits=splits, extensions=("b3_manifold", "b3_screw"), eval_ticks=380,
+    name="screw_drive", contract_skill="screw", make_env=make_env, spec=SPEC, model=MODEL, recipe=RESIDUAL,
+    recipes={"teacher_student": RECIPE},
+    eval_sets={"nominal": {}, "hard_1.5x": {"pose_scale": 1.5}, "crooked_4_6": {"insert_tilt_deg": (4.0, 6.0), "insert_offset_mm": (0.45, 0.6), "layout_belief_p": 1.0}},
+    eval_splits=splits, extensions=("b3_manifold", "b3_screw"), eval_ticks=380,
     manifest=manifest, description="screw driving (World2 screw-drive contract)",
 )
 SKILL.code_names = CODE_NAMES

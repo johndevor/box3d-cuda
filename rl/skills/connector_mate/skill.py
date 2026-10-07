@@ -3,7 +3,7 @@ import copy
 
 from rl.common.evaluate import rate
 from rl.common.skill import Skill
-from rl.skills.peg_insert.skill import MANIP_RECIPE, MODEL, clearance_bins, insert_manifest
+from rl.skills.peg_insert.skill import MANIP_RECIPE, MODEL, clearance_bins, insert_manifest, residual_recipe
 
 from .env import CODE_NAMES, SPEC, ConnectorMateBatch
 
@@ -23,7 +23,8 @@ def make_env(n, device="cuda", seed=0, cfg=None, **env):
 
 
 SKILL = Skill(
-    name="connector_mate", contract_skill="insert", make_env=make_env, spec=SPEC, model=MODEL, recipe=RECIPE,
+    name="connector_mate", contract_skill="insert", make_env=make_env, spec=SPEC, model=MODEL, recipe=residual_recipe(minutes=5.0),
+    recipes={"teacher_student": RECIPE},
     eval_sets={"nominal": {}, "hard_1.5x": {"pose_scale": 1.5}}, eval_splits=splits, extensions=("b3_manifold", "b3_detent"), eval_ticks=200,
     manifest=insert_manifest(["box-pocket", "connector"],
         "PPO in box3d-cuda (box plug/pocket + detent latch model, heavy domain randomisation: latch curve, funnel, clearance, sizes, friction, pose error, F/T noise/delay/drift/gain, action latency, motor lag, contact or physical-tier compliance); World2's Rapier referees",

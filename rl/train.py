@@ -63,6 +63,7 @@ def main():
     ap.add_argument("--time-scale", type=float, default=1.0, help="multiply every phase's max_minutes")
     ap.add_argument("--sim-match", default=None, help="the passing sim-match report for this skill (python -m rl.simmatch)")
     ap.add_argument("--no-sim-match", action="store_true")
+    ap.add_argument("--recipe", default="default", help="the skill's default recipe or one of its alternatives (Skill.recipes)")
     a = ap.parse_args()
     skill = load_skill(a.skill)
     out = Path(a.out or f"runs/{skill.name}")
@@ -77,7 +78,7 @@ def main():
         sm = check_sim_match(a.sim_match, skill, prov)
     else:
         raise SystemExit("sim-match gate: pass --sim-match <report> (python -m rl.simmatch <skill> --world2 <trace>) or --no-sim-match")
-    R = copy.deepcopy(skill.recipe)
+    R = copy.deepcopy(skill.recipe if a.recipe == "default" else skill.recipes[a.recipe])
     for kv in a.set:
         k, v = kv.split("=", 1)
         recipes.set_path(R, k, v)
@@ -100,7 +101,7 @@ def main():
         return env
 
     run = dict(skill=skill.name, contract_skill=skill.contract_skill, provenance=prov, device=cuda.device_record(dev), args=vars(a), recipe=R,
-               randomization=skill.spec.override(cfg).to_json(), randomization_overrides=cfg, sim_match=sm, started=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+               randomization=skill.spec.override(dict(R.get("cfg", {}), **cfg)).to_json(), randomization_overrides=dict(R.get("cfg", {}), **cfg), sim_match=sm, started=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     (out / "run.json").write_text(json.dumps(run, indent=1, default=str))
     log(dict(event="start", skill=skill.name, device=run["device"], commit=prov.get("commit"), dirty=prov.get("dirty"), sim_match="skipped" if a.no_sim_match else "pass"))
     t0 = time.time()

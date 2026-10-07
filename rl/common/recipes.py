@@ -25,8 +25,8 @@ from .evaluate import evaluate, model_act
 from .ppo import PPOConfig, best_or_last, ppo_phase
 
 
-def _model(skill, env, actor_in, extra=None):
-    spec = dict(skill.model, **(extra or {}))
+def _model(skill, env, actor_in, extra=None, R=None):
+    spec = dict(skill.model, **((R or {}).get("model") or {}), **(extra or {}))      # (a recipe may give its own model settings, e.g. a prior)
     return models.build(spec, actor_in, env.obs_size + env.priv_size, env.act_size).to(env.dev)
 
 
@@ -46,7 +46,7 @@ def teacher_student(skill, env, R, cfg, out, log, init=None):
     S = {}
     t_in = lambda o, p: torch.cat([o, p], -1)
     s_in = lambda o, p: o
-    teacher = _model(skill, env, env.obs_size + env.priv_size)
+    teacher = _model(skill, env, env.obs_size + env.priv_size, R=R)
     tcfg = PPOConfig().update(R.get("ppo")).update(R.get("teacher"))
     if R.get("resume_teacher"):
         _load(teacher, R["resume_teacher"])
@@ -56,7 +56,7 @@ def teacher_student(skill, env, R, cfg, out, log, init=None):
     getattr(env, "end_curriculum", lambda: None)()
     S["teacher_eval"] = evaluate(skill, model_act(teacher, t_in), cfg, R["eval_n"], R["eval_seed"], R["device"], R.get("eval_ticks"))
     log(dict(event="teacher_eval", **S["teacher_eval"]))
-    student = _model(skill, env, env.obs_size, dict(log_std=R.get("student_log_std", -1.5)))
+    student = _model(skill, env, env.obs_size, dict(log_std=R.get("student_log_std", -1.5)), R=R)
     student.critic.load_state_dict(teacher.critic.state_dict())
     student.crit_norm.load_state_dict(teacher.crit_norm.state_dict())
     D = {**dict(iters=150, lr=1e-3, epochs=4, minibatches=4, beta_frac=0.4), **R.get("distill", {})}
@@ -79,7 +79,7 @@ def teacher_student(skill, env, R, cfg, out, log, init=None):
 
 def asymmetric(skill, env, R, cfg, out, log, init=None):
     a_in = lambda o, p: o
-    ac = _model(skill, env, env.obs_size)
+    ac = _model(skill, env, env.obs_size, R=R)
     if init is not None:
         ac = init
     pcfg = PPOConfig().update(R.get("ppo"))
@@ -98,6 +98,15 @@ RECIPES = dict(teacher_student=teacher_student, asymmetric=asymmetric)
 def run(skill, R, cfg, out, log, make_env):
     """R: the recipe settings (kind, its phases, device, eval_n, eval_seed); cfg: randomization overrides."""
     stages = R.get("stages")
+    cfg = dict(R.get("cfg", {}), **cfg)                 # (the recipe's own randomization, under the run's overrides)
+    graphs = R.get("graphs", False)
+    make_env0 = make_env
+
+    def make_env(n, c, e):
+        env = make_env0(n, c, e)
+        if graphs and env.dev.type == "cuda":
+            env.use_graphs(True)
+        return env
     if not stages:
         env = make_env(R["envs"], cfg, R.get("env", {}))
         ac, a_in, S = RECIPES[R["kind"]](skill, env, R, cfg, out, log)

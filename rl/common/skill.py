@@ -37,6 +37,28 @@ from typing import Any, Callable
 import torch
 
 
+_CONST = {}
+
+
+def cvec(values, device):
+    """A constant float tensor, cached per (values, device): no host-to-device copy inside a captured step."""
+    key = (tuple(float(x) for x in values), str(device))
+    t = _CONST.get(key)
+    if t is None:
+        t = _CONST[key] = torch.tensor(key[0], dtype=torch.float32, device=device)
+    return t
+
+
+def clone_out(t):
+    if torch.is_tensor(t):
+        return t.clone()
+    if isinstance(t, dict):
+        return {k: clone_out(v) for k, v in t.items()}
+    if isinstance(t, (tuple, list)):
+        return type(t)(clone_out(v) for v in t)
+    return t
+
+
 class InPlaceDict(dict):
     """Per-world state: assigning a tensor of the same shape and dtype to an existing key copies into it, so the tensors
     a captured CUDA graph reads and writes stay the same objects."""
@@ -95,7 +117,7 @@ class EnvBase:
             G["a"].copy_(action)
             G["graph"].replay()
             # (the graph's outputs are its static buffers, overwritten by the next replay: callers get copies)
-            return tuple(t.clone() if torch.is_tensor(t) else ({k: v.clone() for k, v in t.items()} if isinstance(t, dict) else t) for t in G["out"])
+            return clone_out(tuple(G["out"]))
         # an eager step on a side stream (it is this step, and the warm-up the capture needs), then the capture
         a_static = action.clone()
         s = torch.cuda.Stream()
@@ -103,15 +125,25 @@ class EnvBase:
         with torch.cuda.stream(s):
             out = self._step(a_static)
         torch.cuda.current_stream().wait_stream(s)
-        res = tuple(t.clone() if torch.is_tensor(t) else ({k: v.clone() for k, v in t.items()} if isinstance(t, dict) else t) for t in out)
+        res = clone_out(tuple(out))
         graph = torch.cuda.CUDAGraph()
         for gen in self.graph_generators():
             graph.register_generator_state(gen)
         pool = getattr(self, "_graph_pool", None) or torch.cuda.graph_pool_handle()
         object.__setattr__(self, "_graph_pool", pool)
         snap = self._graph_snapshot()
-        with torch.cuda.graph(graph, pool=pool):
-            gout = self._step(a_static)
+        try:
+            with torch.cuda.graph(graph, pool=pool):
+                gout = self._step(a_static)
+        except Exception as e:
+            # a step that cannot be captured runs eager from now on, said once (training goes on, slower)
+            self._graph_restore(snap)
+            torch.cuda.synchronize()
+            object.__setattr__(self, "_graphs_on", False)
+            import json
+            import sys
+            print(json.dumps(dict(event="graph_capture_failed", env=type(self).__name__, error=str(e).splitlines()[0][:300])), file=sys.stderr, flush=True)
+            return res
         self._graph_restore(snap)          # (capture records without running; the state is the eager step's)
         object.__setattr__(self, "_graph", dict(graph=graph, a=a_static, out=gout))
         return res
@@ -141,6 +173,7 @@ class Skill:
     extensions: tuple = ()
     eval_ticks: int = 200
     description: str = ""
+    recipes: dict = field(default_factory=dict)     # alternative recipes by name (python -m rl.train --recipe NAME)
 
 
 SKILLS = ("peg_insert", "connector_mate", "screw_drive", "duck_walk")

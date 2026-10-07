@@ -26,7 +26,7 @@ import torch
 
 from rl.common.cuda import load_ext
 from rl.common.randomization import Bern, IntU, LogU, Spec, U
-from rl.common.skill import EnvBase, InPlaceDict
+from rl.common.skill import EnvBase, cvec, InPlaceDict
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -253,13 +253,13 @@ class PegInsertBatch(EnvBase):
         for k in range(4):
             phi = k * math.pi / 2
             cz, sz = math.cos(phi), math.sin(phi)
-            qz = torch.tensor([0, 0, math.sin(phi / 2), math.cos(phi / 2)], device=self.dev).expand(m, 4)
+            qz = cvec([0, 0, math.sin(phi / 2), math.cos(phi / 2)], self.dev).expand(m, 4)
             # template for the +x side (x outward), rotated about z by phi
             local = [
                 (torch.stack([a + (ch + T) / 2, 0 * a, -(D + ch) / 2], -1), torch.stack([(ch + T) / 2, W, (D - ch) / 2], -1), None),
                 (torch.stack([a + ch + T / 2, 0 * a, -ch / 2], -1), torch.stack([T / 2, W, ch / 2], -1), None),
                 (torch.stack([a + ch, 0 * a, -ch], -1), torch.stack([ch * r2, W, ch * r2], -1),
-                 torch.tensor([0, math.sin(math.pi / 8), 0, math.cos(math.pi / 8)], device=self.dev).expand(m, 4)),
+                 cvec([0, math.sin(math.pi / 8), 0, math.cos(math.pi / 8)], self.dev).expand(m, 4)),
             ]
             for j, (p, hf, q) in enumerate(local):
                 i = 3 * k + j
@@ -307,7 +307,7 @@ class PegInsertBatch(EnvBase):
         self.cache_ids[idx] = 0
         self.cache_imp[idx] = 0
         # beliefs
-        ax = torch.tensor([0.0, 0.0, -1.0], device=self.dev)
+        ax = cvec([0.0, 0.0, -1.0], self.dev)
         self.ax = ax
         D = p["depth"][idx]
         true_target = torch.stack([0 * D, 0 * D, -D], -1)
@@ -444,7 +444,7 @@ class PegInsertBatch(EnvBase):
         x = self.ft_buf[torch.arange(self.n, device=self.dev), rd]
         x = x + torch.randn(self.n, 6, generator=self.g, device=self.dev) * v["ft_sw"]
         v["ft_f"] = v["ft_f"] + v["ft_alpha"][:, None] * (x - v["ft_f"])
-        v["ft_drift"] = v["ft_drift"] + torch.randn(self.n, 6, generator=self.g, device=self.dev) * torch.tensor([0.002] * 3 + [0.0001] * 3, device=self.dev)
+        v["ft_drift"] = v["ft_drift"] + torch.randn(self.n, 6, generator=self.g, device=self.dev) * cvec([0.002] * 3 + [0.0001] * 3, self.dev)
         out = v["ft_f"] + v["ft_drift"] - v["ft_tare"]
         r = v["ft_range"][:, None]
         return torch.maximum(torch.minimum(out, r), -r)

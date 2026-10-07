@@ -26,6 +26,7 @@ from pathlib import Path
 import torch
 
 from rl.common.cuda import load_ext
+from rl.common.skill import cvec
 from rl.common.randomization import Bern, IntU, LogU, Spec, U
 from rl.ext import detent_reference as DR
 from rl.skills.peg_insert.env import (B, N_STATIC, LIMITS, ACTION_SCALE, RATE_HZ, OBS_FIELDS, OBS_SIZE, PegInsertBatch, loguni, uni,
@@ -76,11 +77,11 @@ def pocket_statics(ax_, ay_, D, ch, yaw):
     quat[..., 3] = 1
     r2 = math.sqrt(0.5)
     qy = qyaw(yaw)
-    qc = torch.tensor([0, math.sin(math.pi / 8), 0, math.cos(math.pi / 8)], device=dev).expand(m, 4)
+    qc = cvec([0, math.sin(math.pi / 8), 0, math.cos(math.pi / 8)], dev).expand(m, 4)
     for k in range(4):
         phi = k * math.pi / 2
         a = ax_ if k % 2 == 0 else ay_
-        qz = qmul(qy, torch.tensor([0, 0, math.sin(phi / 2), math.cos(phi / 2)], device=dev).expand(m, 4))
+        qz = qmul(qy, cvec([0, 0, math.sin(phi / 2), math.cos(phi / 2)], dev).expand(m, 4))
         local = [
             (torch.stack([a + (ch + T) / 2, 0 * a, -(D + ch) / 2], -1), torch.stack([(ch + T) / 2, W, (D - ch) / 2], -1), None),
             (torch.stack([a + ch + T / 2, 0 * a, -ch / 2], -1), torch.stack([T / 2, W, ch / 2], -1), None),
@@ -209,7 +210,7 @@ class ConnectorMateBatch(PegInsertBatch):
 
     # ------------------------------------------------------------ one controller substep: the impedance law, the detent, the contacts
     def _tilt(self):
-        a = qrot(self.state[:, 0, 3:7], torch.tensor([0.0, 0.0, -1.0], device=self.dev).expand(self.n, 3))
+        a = qrot(self.state[:, 0, 3:7], cvec([0.0, 0.0, -1.0], self.dev).expand(self.n, 3))
         return torch.atan2(a[:, :2].norm(dim=-1), -a[:, 2])
 
     def _substep(self, ref, nq, k, krot):

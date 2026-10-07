@@ -25,7 +25,7 @@ import torch
 
 from rl.common.cuda import load_ext
 from rl.common.randomization import Bern, IntU, LogU, Spec, U
-from rl.common.skill import EnvBase, InPlaceDict
+from rl.common.skill import EnvBase, cvec, InPlaceDict
 from rl.ext import screw_reference as SR
 from rl.skills.peg_insert.env import (FT_PROFILES, load_cpu_reference, load_cuda_ext as load_manifold_ext, loguni, qconj, qmul, qrot,
                                       quat_of, rotvec_between, rotvec_of, uni)
@@ -91,9 +91,7 @@ def qbetween(p, q):
     o = torch.cat([x, w], -1)
     o = o / o.norm(dim=-1, keepdim=True).clamp_min(1e-12)
     bad = (w < 1e-9).squeeze(-1)
-    if bad.any():
-        o[bad] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=o.device)
-    return o
+    return torch.where(bad[:, None], cvec([1.0, 0.0, 0.0, 0.0], o.device).expand_as(o), o)     # (no host sync)
 
 
 class ScrewDriveBatch(EnvBase):
@@ -213,7 +211,7 @@ class ScrewDriveBatch(EnvBase):
         P["modeb"] = D("mode_b_p")
         az = uni(g, m, (0, 2 * math.pi), d)
         tau = torch.deg2rad(D("insert_tilt_deg"))
-        down = torch.tensor(DOWN, device=d).expand(m, 3)
+        down = cvec(DOWN, d).expand(m, 3)
         qi = quat_of(torch.stack([torch.cos(az), torch.sin(az), 0 * az], -1) * tau[:, None])
         P["uins"] = qrot(qi, down)
         az2 = uni(g, m, (0, 2 * math.pi), d)
@@ -268,12 +266,12 @@ class ScrewDriveBatch(EnvBase):
         for k in range(4):
             phi = k * math.pi / 2
             cz, sz = math.cos(phi), math.sin(phi)
-            qz = torch.tensor([0, 0, math.sin(phi / 2), math.cos(phi / 2)], device=dev).expand(m, 4)
+            qz = cvec([0, 0, math.sin(phi / 2), math.cos(phi / 2)], dev).expand(m, 4)
             local = [
                 (torch.stack([a + (ch + T) / 2, 0 * a, -(D + ch) / 2], -1), torch.stack([(ch + T) / 2, W, (D - ch) / 2], -1), None),
                 (torch.stack([a + ch + T / 2, 0 * a, -ch / 2], -1), torch.stack([T / 2, W, ch / 2], -1), None),
                 (torch.stack([a + ch, 0 * a, -ch], -1), torch.stack([ch * r2, W, ch * r2], -1),
-                 torch.tensor([0, math.sin(math.pi / 8), 0, math.cos(math.pi / 8)], device=dev).expand(m, 4)),
+                 cvec([0, math.sin(math.pi / 8), 0, math.cos(math.pi / 8)], dev).expand(m, 4)),
             ]
             for j, (p, hf, q) in enumerate(local):
                 i = 3 * k + j
@@ -301,11 +299,11 @@ class ScrewDriveBatch(EnvBase):
             self.p[k][idx] = val
         self._geometry(idx)
         p, m, dev, mm = self.p, len(idx), self.dev, 1000.0
-        down = torch.tensor(DOWN, device=dev).expand(m, 3)
+        down = cvec(DOWN, dev).expand(m, 3)
         # task frame: z the believed axis, x/y the contract's basis for a downward axis turned with it
         qbu = qbetween(down, p["bu"][idx])
-        X = qrot(qbu, torch.tensor([0.0, -1.0, 0.0], device=dev).expand(m, 3))
-        Y = qrot(qbu, torch.tensor([-1.0, 0.0, 0.0], device=dev).expand(m, 3))
+        X = qrot(qbu, cvec([0.0, -1.0, 0.0], dev).expand(m, 3))
+        Y = qrot(qbu, cvec([-1.0, 0.0, 0.0], dev).expand(m, 3))
         self._set("frame", idx, torch.stack([X, Y, p["bu"][idx]], 1))   # rows x, y, z
         self._set("qbu", idx, qbu)
         # start: the wrist over the believed seat, the tip h0 above it along the believed axis; the screw wobbles on the bit
@@ -388,7 +386,7 @@ class ScrewDriveBatch(EnvBase):
 
     # ------------------------------------------------------------ helpers (SI)
     def _axis(self, idx=slice(None)):
-        return qrot(self.state[idx, 0, 3:7], torch.tensor(DOWN, device=self.dev).expand(self.state[idx, 0].shape[0], 3))
+        return qrot(self.state[idx, 0, 3:7], cvec(DOWN, self.dev).expand(self.state[idx, 0].shape[0], 3))
 
     def _tip(self, idx=slice(None)):
         return self.state[idx, 0, 0:3] / 1000.0 + self._axis(idx) * (self.p["L"][idx] / 2)[:, None]
@@ -486,7 +484,7 @@ class ScrewDriveBatch(EnvBase):
         x = self.ft_buf[torch.arange(self.n, device=self.dev), rd]
         x = x + torch.randn(self.n, 6, generator=self.g, device=self.dev) * v["ft_sw"]
         v["ft_f"] = v["ft_f"] + v["ft_alpha"][:, None] * (x - v["ft_f"])
-        v["ft_drift"] = v["ft_drift"] + torch.randn(self.n, 6, generator=self.g, device=self.dev) * torch.tensor([0.002] * 3 + [0.0001] * 3, device=self.dev)
+        v["ft_drift"] = v["ft_drift"] + torch.randn(self.n, 6, generator=self.g, device=self.dev) * cvec([0.002] * 3 + [0.0001] * 3, self.dev)
         out = v["ft_f"] + v["ft_drift"] - v["ft_tare"]
         r = v["ft_range"][:, None]
         return torch.maximum(torch.minimum(out, r), -r)
@@ -494,13 +492,13 @@ class ScrewDriveBatch(EnvBase):
     # ------------------------------------------------------------ observation
     def _tilt_offset(self, q):
         """(x, y) task components of the rotation from the believed hole axis to orientation q's axis."""
-        down = torch.tensor(DOWN, device=self.dev).expand(self.n, 3)
+        down = cvec(DOWN, self.dev).expand(self.n, 3)
         rv = rotvec_between(self.v["qbu"], qbetween(down, qrot(q, down)))
         return self.to_task(rv)[:, :2]
 
     def obs(self, update=True):
         v, p = self.v, self.p
-        down = torch.tensor(DOWN, device=self.dev).expand(self.n, 3)
+        down = cvec(DOWN, self.dev).expand(self.n, 3)
         btip = self._tip() + p["iherr"]
         bq = v["ref_q"]
         bax = qrot(bq, down)
@@ -525,7 +523,7 @@ class ScrewDriveBatch(EnvBase):
 
     def priv(self):
         v, p, J = self.v, self.p, self.J
-        down = torch.tensor(DOWN, device=self.dev).expand(self.n, 3)
+        down = cvec(DOWN, self.dev).expand(self.n, 3)
         rv = rotvec_between(qbetween(down, self._axis()), qbetween(down, p["uins"]))
         r = self._tip() - p["mouth"]
         mode = J[:, SR.J_MODE]

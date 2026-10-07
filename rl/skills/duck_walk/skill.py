@@ -34,6 +34,13 @@ RECIPE = dict(
         dict(name="v2", env=dict(clock_hz=2.5, clearance_m=0.035), ppo=dict(ent=0.002, max_minutes=90, max_steps=2.0e9)),
     ],
 )
+# The fast recipe (default): the v2 interface from scratch over a gait prior (rl/common/priors.py GaitPrior: the
+# observation's 2.5 Hz clock lifts each foot in its half of the cycle, scaled by the command; the policy corrects it),
+# many worlds, CUDA-graph stepping. Frame (43): ... command 36:39, foot_contact 39:41, gait_clock (sin, cos) 41:43.
+GAIT = dict(kind="gait", args=dict(n_in=43 * HISTORY, n_act=LEGS, sin_idx=41, cmd_vx_idx=36, cmd_wz_idx=38,
+                                   lift_l=[0, 0, -0.5, 1.0, -0.5, 0, 0, 0, 0, 0], lift_r=[0, 0, 0, 0, 0, 0, 0, 0.5, 1.0, -0.5], amp=0.5, v_ref=0.15, w_ref=0.4))
+FAST = dict(kind="asymmetric", envs=32768, eval_n=64, eval_seed=10_000, graphs=True, ppo=dict(PPO, ent=0.003, max_minutes=5.0, max_steps=3e9, minibatches=8),
+            model=dict(prior=GAIT), env=dict(substeps=8, iterations=6, clock_hz=2.5, clearance_m=0.035))
 CRITERIA = dict(window_s=10.0, vx=0.15, settle_s=1.0, min_forward_m=0.5, max_lateral_m=0.5, min_liftoffs=4, sole_clearance_m=0.004,
                 sole_down_m=0.003,   # (World2's judge: on the floor under 1 mm; box3d's sole height reads 1.5-2 mm in stance)
                 heading_gain=1.0, heading_max=0.3)
@@ -122,7 +129,7 @@ def manifest(spec, env=None):
 
 
 SKILL = Skill(
-    name="duck_walk", contract_skill="walk", make_env=make_env, spec=SPEC, model=MODEL, recipe=RECIPE,
+    name="duck_walk", contract_skill="walk", make_env=make_env, spec=SPEC, model=MODEL, recipe=FAST, recipes={"staged": RECIPE},
     eval_sets={"nominal": {"dr_on": False}, "dr": {}}, evaluate=evaluate, manifest=manifest, extensions=("b3_duck_cuda",),
     description="Open Duck Mini v2 walking (World2 walk contract)",
 )
