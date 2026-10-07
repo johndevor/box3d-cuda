@@ -92,8 +92,8 @@ def sim_match(w2, device):
                seat_sigma_z_mm=c["seat_sigma_m"] * mm, in_hand_mm=0.0, start_height_mm=c["start_height_m"] * mm, wobble_deg=0.0, stiff_mult=1.0,
                torque_noise_nm=c["torque_sigma_nm"], torque_delay_p=0.0, ft_profile=1, ft_extra_delay_s=0.0, ft_gain_err=0.0, ft_noise_mult=1.0,
                action_latency_p=0.0, motor_lag_s=0.0, vmass=2.0, friction=0.3, pose_scale=0.0, set_torque_nm=c["torque_nm"], curriculum_frac=0.0)
-    def replay(cfg_, act):
-        env = make_env(1, device=device, seed=0, cfg=cfg_)
+    def replay(cfg_, act, seed=0):
+        env = make_env(1, device=device, seed=seed, cfg=cfg_)
         obs, _ = env.observe()
         T = dict(t=[], torque_nm=[], turns=[], seat_z_mm=[], moment_xy_nm=[], mode=[], clicked=[])
         end = None
@@ -162,7 +162,14 @@ def sim_match(w2, device):
             z, t, m = np.array(tr["seat_z_mm"]), np.array(tr["t"]), np.array(tr["moment_xy_nm"])
             sel = (t > t0 + 0.2) & (z > 0.3)
             return float(m[sel].mean()) if sel.any() else None
-        mw, mb = moment(Wi, start_w), moment(T2, start_b)
+        # (the moment's size depends on the tilt's direction against the spin, drawn per world and not recorded by
+        # World2: box3d's is the median over 8 directions (seeds; CPU: 0.147-0.247 N m against World2's 0.123), the first seed's trace kept for the catch checks)
+        mbs = [moment(T2, start_b)]
+        for sd in range(1, 8):
+            Tk, _ = replay(cfg2, sched, seed=sd)
+            mbs.append(moment(Tk, next((Tk["t"][i] for i, m in enumerate(Tk["mode"]) if m >= 1), None)))
+        mbs = [x for x in mbs if x is not None]
+        mw, mb = moment(Wi, start_w), (float(np.median(mbs)) if mbs else None)
         checks += [
             check("[catch] clicked by the back-turn in both", bool(I.get("clicked")) and bool(end2 and end2["clicked"]), ("equal", True),
                   "turning back inside the capture drops the lead thread into the start"),
@@ -174,7 +181,7 @@ def sim_match(w2, device):
             check("[wrench] mean lateral moment while running down (N m, box3d - World2)", (mb - mw) if mb is not None and mw is not None else None, max(0.05, 0.3 * (mw or 0)),
                   "the full driving wrench: the bit's moment of the tilt between the tool and the screw on the crooked axis, with the lateral spring about the flange (0.05 N m or 30 %)"),
         ]
-        out["interaction"] = dict(trace=T2, end=end2, cfg=cfg2, start_s=start_b, moment_mean_nm=mb, world2_moment_mean_nm=mw)
+        out["interaction"] = dict(trace=T2, end=end2, cfg=cfg2, start_s=start_b, moment_mean_nm=mb, moment_by_seed_nm=mbs, world2_moment_mean_nm=mw)
     return checks, out
 
 
