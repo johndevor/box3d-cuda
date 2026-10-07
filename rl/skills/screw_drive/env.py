@@ -69,7 +69,8 @@ SPEC = Spec(dict(
     action_latency_p=Bern(0.3), motor_lag_s=U(0.0, 0.03), vmass=U(1.7, 2.3), friction=U(0.1, 0.5), friction_groups=8,
     substeps_per_world_step=4, solver_iterations=8, timeout_s=LIMITS["timeout_s"],
     pose_scale=1.0,                           # multiplies the belief errors and offsets (hard sets)
-    curriculum_frac=0.3,                      # the teacher's pose errors ramp 0.3 -> 1 x over this fraction of its time
+    set_torque_nm=0.0,                        # > 0: every screw's set torque (else drawn in its size's range)
+    curriculum_frac=0.3,                     # the teacher's pose errors ramp 0.3 -> 1 x over this fraction of its time
 ))
 
 
@@ -184,6 +185,8 @@ class ScrewDriveBatch(EnvBase):
         P["L"] = P["tp"] + P["eng"]
         P["trun"] = D("trun_per_m") * P["d"]
         P["tset_nom"] = S[:, 2] + (S[:, 3] - S[:, 2]) * ru()
+        if c["set_torque_nm"] > 0:                # (a pinned set torque: the sim-match's case)
+            P["tset_nom"] = torch.full_like(P["tset_nom"], c["set_torque_nm"])
         P["tset"] = P["tset_nom"] * (1 + c["clutch_scatter"] * rn(m))
         P["kj"] = D("kj")
         P["nutk"] = D("nut_k")
