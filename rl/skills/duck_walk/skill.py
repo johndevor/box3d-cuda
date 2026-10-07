@@ -1,6 +1,6 @@
 """duck_walk: the Open Duck Mini v2 on its own batched solver (duck_sim.h), World2's walk contract (leg-joint-targets).
 
-Recipe: asymmetric PPO in two stages, as duck-walk-box3d-v1 -> v2 were made: v1 (IMU, encoders, previous action,
+Recipe: asymmetric PPO in stages, as duck-walk-box3d-v1 -> v2 were made: balance (no pushes or turns), v1 (IMU, encoders, previous action,
 command) from scratch, then v2 (+ foot switches and a 2.5 Hz gait clock, a reference-gait reward) warm-started from v1
 with the new observation columns at zero weight (transfer below).
 Evaluation (World2's judge, tasks/open-duck-walk: 10 s window at 0.15 m/s after a 1 s hold, the program-side heading
@@ -22,9 +22,14 @@ PPO = dict(horizon=24, lr=3e-4, gamma=0.99, lam=0.95, clip=0.2, epochs=5, miniba
 RECIPE = dict(
     kind="asymmetric", envs=8192, eval_n=64, eval_seed=10_000, ppo=PPO,
     env=dict(substeps=8, iterations=6),
+    # From scratch the full v1 task (pushes, yaw-rate commands, a random start heading, a small alive bonus) did not learn
+    # (an RTX PRO 6000 run: 490 M steps, episodes ~2.7 s, the action noise growing): duck-walk-box3d-v1 itself came from a
+    # chain of runs that began with a larger alive bonus. So a first stage stands and steps without pushes or turns.
     stages=[
-        dict(name="v1", env=dict(clock_hz=0.0), ppo=dict(max_minutes=60, max_steps=600e6)),
-        dict(name="v2", env=dict(clock_hz=2.5, clearance_m=0.035), ppo=dict(ent=0.002, max_minutes=55, max_steps=1.5e9)),
+        dict(name="balance", env=dict(clock_hz=0.0, alive_bonus=0.5), cfg=dict(push_p=0.0, cmd_wz=0.0, init_yaw=0.0),
+             ppo=dict(ent=0.003, max_minutes=15, max_steps=250e6)),
+        dict(name="v1", env=dict(clock_hz=0.0), ppo=dict(ent=0.004, max_minutes=40, max_steps=600e6)),
+        dict(name="v2", env=dict(clock_hz=2.5, clearance_m=0.035), ppo=dict(ent=0.002, max_minutes=50, max_steps=1.2e9)),
     ],
 )
 CRITERIA = dict(window_s=10.0, vx=0.15, settle_s=1.0, min_forward_m=0.5, max_lateral_m=0.5, min_liftoffs=4, sole_clearance_m=0.004,
@@ -67,7 +72,7 @@ def evaluate(act_fn, cfg, n, seed, device, env=None):
     C = CRITERIA
     cfg = dict(cfg or {})
     dr_on = cfg.pop("dr_on", True)
-    over = dict(push_p=0.0, cmd_zero_p=0.0, cmd_vx=(C["vx"], C["vx"]), episode_s=1e9, init_yaw=0.0, cmd_wz=0.0, **cfg)
+    over = {**cfg, **dict(push_p=0.0, cmd_zero_p=0.0, cmd_vx=(C["vx"], C["vx"]), episode_s=1e9, init_yaw=0.0, cmd_wz=0.0)}
     e = DuckWalkEnv(n, device=device, seed=seed, dr=SPEC.override(over) if dr_on else over, dr_on=dr_on, **(env or {}))
     e.cmd[:, 0] = C["vx"]
     for _ in range(int(C["settle_s"] * RATE_HZ)):

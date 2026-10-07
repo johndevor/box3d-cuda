@@ -108,10 +108,11 @@ def run(skill, R, cfg, out, log, make_env):
         Ri.pop("stages", None)
         sub = out / f"stage{i + 1}-{st.get('name', i + 1)}"
         sub.mkdir(parents=True, exist_ok=True)
-        env = make_env(Ri["envs"], cfg, Ri.get("env", {}))
+        cfg_i = dict(cfg, **st.get("cfg", {}))           # a stage's own randomization (a curriculum), over the run's
+        env = make_env(Ri["envs"], cfg_i, Ri.get("env", {}))
         init = skill.transfer(ac, env) if ac is not None else None
-        log(dict(event="stage", stage=i + 1, name=st.get("name"), env=Ri.get("env", {}), init=init is not None))
-        ac, a_in, Si = RECIPES[Ri["kind"]](skill, env, Ri, cfg, sub, log, init=init)
+        log(dict(event="stage", stage=i + 1, name=st.get("name"), env=Ri.get("env", {}), cfg=st.get("cfg", {}), init=init is not None))
+        ac, a_in, Si = RECIPES[Ri["kind"]](skill, env, Ri, cfg_i, sub, log, init=init)
         S["stages"][st.get("name", str(i + 1))] = Si
         steps += Si.get("steps", 0)
     S.update({k: v for k, v in Si.items() if k in skill.eval_sets})
@@ -128,11 +129,16 @@ def merge(a, b):
 
 
 def set_path(d, path, value):
+    """path: dotted keys; a number indexes a list (stages.1.ppo.max_minutes)."""
     keys = path.split(".")
     for k in keys[:-1]:
-        d = d.setdefault(k, {})
+        d = d[int(k)] if isinstance(d, list) else d.setdefault(k, {})
     try:
         value = json.loads(value)
     except (TypeError, ValueError):
         pass
-    d[keys[-1]] = value
+    last = keys[-1]
+    if isinstance(d, list):
+        d[int(last)] = value
+    else:
+        d[last] = value

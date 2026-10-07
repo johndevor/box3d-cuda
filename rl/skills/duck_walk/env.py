@@ -91,11 +91,11 @@ def default_dr(**over):
 class DuckWalkEnv(EnvBase):
     """E batched duck worlds (rl/common/skill.py env protocol). step(action) -> obs, priv, reward, done, info."""
 
-    def __init__(self, n_envs, device="cpu", seed=0, dr=None, substeps=4, iterations=8, model_file=MODEL_FILE, dr_on=True, clock_hz=0.0, clearance_m=0.03):
+    def __init__(self, n_envs, device="cpu", seed=0, dr=None, substeps=4, iterations=8, model_file=MODEL_FILE, dr_on=True, clock_hz=0.0, clearance_m=0.03, alive_bonus=0.1):
         # clock_hz > 0: the v2 interface: the frame adds foot_contact (2: the foot switches) and gait_clock (2: sin, cos of
         # 2*pi*clock_hz*t from the episode's start), and the reward follows a periodic reference gait (each foot swings up
         # to clearance_m in its half of the cycle, stands in the other; both stand when the command is zero)
-        self.clock_hz, self.clearance = float(clock_hz), float(clearance_m)
+        self.clock_hz, self.clearance, self.alive_bonus = float(clock_hz), float(clearance_m), float(alive_bonus)   # (alive_bonus: a standing-first curriculum stage)
         self.frame = FRAME + (4 if self.clock_hz > 0 else 0)
         self.obs_size = self.frame * HISTORY
         self.E, self.device = n_envs, torch.device(device)
@@ -404,7 +404,7 @@ class DuckWalkEnv(EnvBase):
             track_vx=2.0 * torch.exp(-(T["vx"] - cmd[:, 0]) ** 2 / 0.01),
             track_vy=1.0 * torch.exp(-(T["vy"] - cmd[:, 1]) ** 2 / 0.01),
             track_wz=1.5 * torch.exp(-(T["wz"] - cmd[:, 2]) ** 2 / 0.02),
-            alive=torch.full_like(T["vx"], 0.1),
+            alive=torch.full_like(T["vx"], self.alive_bonus),
             upright=-2.0 * (1 - T["up"][:, 1]),
             height=-2000.0 * (T["h"] - self.trunk_y0).clamp(max=0) ** 2,
             air=3.0 * r_air,
