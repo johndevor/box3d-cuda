@@ -410,6 +410,8 @@ class PegInsertBatch(EnvBase):
     def _kernel(self):
         if self.dev.type == "cuda":
             for gi, (a, b) in enumerate(self.group_slices):
+                if b <= a:          # (fewer worlds than friction groups: the sim-match runs one)
+                    continue
                 out = self.ext.manifold_step(self.state[a:b], self.inv_mass[a:b], self.half[a:b], self.inv_inertia[a:b], self.pairs,
                                              self.cache_ids[a:b], self.cache_imp[a:b], self.h, 1, 0.0, 0.0, float(self.group_mu[gi]),
                                              1e-3, 0.2, 0.0, self.cfg["solver_iterations"], 1e-4)
