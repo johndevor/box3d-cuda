@@ -21,7 +21,8 @@ def _git(*a):
 def sources_hash():
     h = hashlib.sha256()
     for f in sorted((ROOT / "rl").rglob("*")):
-        if f.is_file() and f.suffix in (".py", ".cu", ".cpp", ".h", ".json") and "__pycache__" not in f.parts and f.name != "PROVENANCE.json":
+        if f.is_file() and f.suffix in (".py", ".cu", ".cpp", ".h", ".json") and "__pycache__" not in f.parts and f.name != "PROVENANCE.json" \
+                and not f.name.startswith("._"):          # (macOS tar metadata)
             h.update(str(f.relative_to(ROOT)).encode())
             h.update(f.read_bytes())
     for f in ("csrc/manifold.cu",):
