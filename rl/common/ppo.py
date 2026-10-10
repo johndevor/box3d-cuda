@@ -5,6 +5,8 @@ One implementation, two schedules the skills use:
   - kl="adaptive": the learning rate follows the KL toward kl_target (x1.5 / /1.5, in [1e-5, 1e-3]) (the duck).
 Normalisers update either once per rollout on its whole batch (norm="batch") or every step (norm="step").
 Timeouts can be bootstrapped (r + gamma V(s) where an episode ran out of time rather than ended).
+An env with a `score_mask` (bool [N], e.g. rl/common/sgs.py's uniformly sampled worlds) is scored on those worlds' episodes
+only (success_score in the row); the row's success stays the rate over every world.
 The best checkpoint is chosen by the windowed success rate (score="success", at least min_episodes finished) or the
 mean episode return (score="return"); a phase stops on its budget (minutes, env steps) or a plateau of the score.
 """
@@ -62,8 +64,8 @@ class Stats:
         self.succ, self.codes, self.ret, self.len, self.tout = (deque(maxlen=window) for _ in range(5))
         self.cap = per_step_cap
 
-    def add(self, done, info, ep_ret, ep_len):
-        idx = done.nonzero().squeeze(-1)
+    def add(self, done, info, ep_ret, ep_len, mask=None):
+        idx = (done if mask is None else done & mask).nonzero().squeeze(-1)
         if self.cap:
             idx = idx[: self.cap]
         if len(idx) == 0:
@@ -99,6 +101,8 @@ def ppo_phase(env, ac, actor_in, cfg: PPOConfig, out, phase, log, extra_row=None
     ep_ret = torch.zeros(N, device=dev)
     ep_len = torch.zeros(N, device=dev)
     stats = Stats(getattr(env, "code_names", None), cfg.stats_window, per_step_cap=256 if cfg.score == "return" else None)
+    smask = getattr(env, "score_mask", None)
+    sstats = Stats(None, cfg.stats_window) if smask is not None else None
     a_in = actor_in(obs, priv)
     buf = dict(ain=torch.zeros(H, N, a_in.shape[1], device=dev), cin=torch.zeros(H, N, obs.shape[1] + priv.shape[1], device=dev),
                act=torch.zeros(H, N, env.act_size, device=dev))
@@ -122,6 +126,8 @@ def ppo_phase(env, ac, actor_in, cfg: PPOConfig, out, phase, log, extra_row=None
                 ep_ret += r
                 ep_len += 1
                 stats.add(done, info, ep_ret, ep_len)
+                if sstats is not None:
+                    sstats.add(done, info, ep_ret, ep_len, smask)
                 buf["rew"][t], buf["done"][t] = r, done.float()
                 buf["tout"][t] = info["timeout"].float() if "timeout" in info else 0.0
                 ep_ret = torch.where(done, torch.zeros_like(ep_ret), ep_ret)
@@ -180,9 +186,13 @@ def ppo_phase(env, ac, actor_in, cfg: PPOConfig, out, phase, log, extra_row=None
         wall = time.time() - t0
         row = dict(phase=phase, it=it, steps=steps, wall_s=round(wall, 1), sps=round(steps / max(wall, 1e-9)), kl=round(sum(kls) / max(1, len(kls)), 4),
                    lr=opt.param_groups[0]["lr"], std=round(ac.log_std.exp().mean().item(), 3), **stats.row(), **env.iteration_info(), **(extra_row(it) if extra_row else {}))
+        srow = row
+        if sstats is not None:
+            srow = sstats.row()
+            row.update(success_score=srow.get("success"), episodes_score=srow["episodes"])
         log(row)
-        score = row.get("success", -math.inf) if cfg.score == "success" else (row["ret"] if row["episodes"] else -math.inf)
-        enough = row["episodes"] >= min(cfg.min_episodes, N) if cfg.score == "success" else it > 20
+        score = srow.get("success", -math.inf) if cfg.score == "success" else (srow["ret"] if srow["episodes"] else -math.inf)
+        enough = srow["episodes"] >= min(cfg.min_episodes, N if sstats is None else int(smask.sum())) if cfg.score == "success" else it > 20
         hist.append(score)
         ck = lambda: dict(model=ac.state_dict(), sizes=ac.sizes, row=row, steps=steps)
         if enough and env.best_allowed() and score > best:

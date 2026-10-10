@@ -8,6 +8,9 @@ asymmetric (locomotion): PPO with the actor on the policy observations and the c
 stages: a list of recipe runs with their own env settings, each warm-started from the previous stage's policy
     through the skill's `transfer(prev_ac, new_env) -> ac` (e.g. new observation columns at zero weight).
 
+sgs: {"enabled": true, ...} turns on Success-Guided Sampling of the training env's resets (rl/common/sgs.py); off by
+    default. Evaluation envs are never SGS envs (held-out seeds, the task distribution as is).
+
 Every recipe returns a summary for eval.json and leaves out/policy.pt (the student/actor that export.py writes).
 Settings come from the skill's recipe dict, overridable from the command line (--set key=value, dotted paths).
 """
@@ -108,6 +111,9 @@ def run(skill, R, cfg, out, log, make_env):
         env = make_env0(n, c, e)
         if graphs and env.dev.type == "cuda":
             env.use_graphs(True)
+        if (R.get("sgs") or {}).get("enabled"):
+            from .sgs import attach
+            attach(env, R["sgs"], log)
         return env
     if not stages:
         env = make_env(R["envs"], cfg, R.get("env", {}))
